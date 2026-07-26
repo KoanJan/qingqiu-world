@@ -15,13 +15,13 @@ import (
 	"path/filepath"
 	"sync"
 
-	"private-buddy-server/internal/config"
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/schema"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/llm"
 
 	_ "github.com/glebarez/go-sqlite/compat"
 )

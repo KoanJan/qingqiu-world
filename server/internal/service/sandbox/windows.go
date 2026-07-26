@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os/exec"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // runWindows executes the command via plain os/exec without sandbox isolation.

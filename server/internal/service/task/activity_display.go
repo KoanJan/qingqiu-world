@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"strings"
 
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/schema"
-	"private-buddy-server/internal/service/task/tools"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/task/tools"
 )
 
 // argumentKeys maps tool names to the parameter keys used to extract a display target.

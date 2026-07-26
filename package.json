@@ -1,20 +1,20 @@
 {
-  "name": "private-buddy",
-  "version": "0.0.35",
-  "description": "Private Buddy - A private AI chat assistant",
+  "name": "qingqiu-world",
+  "version": "0.1.0",
+  "description": "Qingqiu World - A world where agents are born, grow, interact, and evolve",
   "main": "electron/dist/main.js",
   "scripts": {
     "postinstall": "cd web && npm install",
-    "dev": "tsc -p electron/tsconfig.json && node -e \"require('fs').copyFileSync('electron/splash.html','electron/dist/splash.html')\" && electron .",
+    "dev": "tsc -p electron/tsconfig.json && node -e \"require('fs').copyFileSync('electron/splash.html','electron/dist/splash.html');require('fs').copyFileSync('electron/splash-icon.png','electron/dist/splash-icon.png')\" && electron .",
     "dev:web": "cd web && npm run dev",
     "dev:server": "cd server && ./start.sh",
     "build:web": "cd web && npm run build",
-    "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').copyFileSync('electron/splash.html','electron/dist/splash.html')\"",
-    "build:server": "cd server && go build -o private-buddy-server ./cmd/",
-    "build:server:mac:amd64": "cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o private-buddy-server ./cmd/",
-    "build:server:mac:arm64": "cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o private-buddy-server ./cmd/",
-    "build:server:win": "cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o private-buddy-server.exe ./cmd/",
-    "build:server:linux": "cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o private-buddy-server ./cmd/",
+    "build:electron": "tsc -p electron/tsconfig.json && node -e \"require('fs').copyFileSync('electron/splash.html','electron/dist/splash.html');require('fs').copyFileSync('electron/splash-icon.png','electron/dist/splash-icon.png')\"",
+    "build:server": "cd server && go build -o qingqiu-world-server ./cmd/",
+    "build:server:mac:amd64": "cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=amd64 go build -o qingqiu-world-server ./cmd/",
+    "build:server:mac:arm64": "cd server && CGO_ENABLED=0 GOOS=darwin GOARCH=arm64 go build -o qingqiu-world-server ./cmd/",
+    "build:server:win": "cd server && CGO_ENABLED=0 GOOS=windows GOARCH=amd64 go build -o qingqiu-world-server.exe ./cmd/",
+    "build:server:linux": "cd server && CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -o qingqiu-world-server ./cmd/",
     "build": "npm run build:web && npm run build:electron",
     "dist:mac:amd64": "npm run build:server:mac:amd64 && npm run build && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --mac --x64 --config.directories.output=dist-electron/mac/amd64",
     "dist:mac:arm64": "npm run build:server:mac:arm64 && npm run build && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --mac --arm64 --config.directories.output=dist-electron/mac/arm64",
@@ -22,8 +22,8 @@
     "dist:linux": "npm run build:server:linux && npm run build && ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ ELECTRON_BUILDER_BINARIES_MIRROR=https://npmmirror.com/mirrors/electron-builder-binaries/ electron-builder --linux --config.directories.output=dist-electron/linux/amd64"
   },
   "author": {
-    "name": "Private Buddy Team",
-    "email": "private-buddy@example.com"
+    "name": "Qingqiu World Team",
+    "email": "qingqiu-world@example.com"
   },
   "license": "GPLv3",
   "devDependencies": {

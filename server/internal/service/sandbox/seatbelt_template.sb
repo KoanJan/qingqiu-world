@@ -1,4 +1,4 @@
-;; private-buddy Seatbelt sandbox policy
+;; qingqiu-world Seatbelt sandbox policy
 ;; Design: availability over security. Restrict writes only;
 ;; everything else (reads, execution, network) is allowed by default.
 ;; mach-lookup is NOT covered by (allow default) and must be listed explicitly.

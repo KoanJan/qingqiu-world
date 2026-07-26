@@ -10,10 +10,10 @@ import (
 	"os"
 	"time"
 
-	"private-buddy-ci/audit/internal/audit"
-	"private-buddy-ci/audit/internal/audit/baseline"
-	"private-buddy-ci/audit/internal/audit/checker"
-	"private-buddy-ci/audit/internal/audit/reporter"
+	"qingqiu-world-ci/audit/internal/audit"
+	"qingqiu-world-ci/audit/internal/audit/baseline"
+	"qingqiu-world-ci/audit/internal/audit/checker"
+	"qingqiu-world-ci/audit/internal/audit/reporter"
 )
 
 // Version is set at build time via ldflags.

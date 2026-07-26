@@ -1,6 +1,6 @@
 package runtime
 
-import applogger "private-buddy-server/internal/logger"
+import applogger "qingqiu-world-server/internal/logger"
 
 // ==========================================================================
 // Integration Hooks

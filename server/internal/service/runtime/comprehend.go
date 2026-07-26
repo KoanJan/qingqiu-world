@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"strings"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // buildActiveWorksSummary generates a natural language description of the

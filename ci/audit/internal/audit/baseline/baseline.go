@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"private-buddy-ci/audit/internal/audit/checker"
+	"qingqiu-world-ci/audit/internal/audit/checker"
 )
 
 // BaselineFile is the filename for the audit baseline stored at the project root.

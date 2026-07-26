@@ -5,8 +5,8 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // WriteNotesTool implements an append-only, structured notes system for persisting agent's working memory.

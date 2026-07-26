@@ -2,7 +2,7 @@ package eventqueue
 
 import (
 	"fmt"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // ---------------------------------------------------------------------------

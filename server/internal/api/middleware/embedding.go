@@ -1,8 +1,8 @@
 package middleware
 
 import (
-	"private-buddy-server/internal/api/response"
-	"private-buddy-server/internal/dops"
+	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/dops"
 
 	"github.com/gin-gonic/gin"
 )

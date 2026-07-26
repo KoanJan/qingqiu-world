@@ -12,14 +12,14 @@ WORKDIR /server
 COPY server/go.mod server/go.sum ./
 RUN go mod download
 COPY server/ ./
-RUN CGO_ENABLED=0 GOOS=linux go build -o private-buddy-server ./cmd/
+RUN CGO_ENABLED=0 GOOS=linux go build -o qingqiu-world-server ./cmd/
 
 # Stage 3: Runtime with nginx
 FROM alpine:3.21
 RUN apk add --no-cache nginx ca-certificates tzdata
 
 WORKDIR /app
-COPY --from=server-builder /server/private-buddy-server .
+COPY --from=server-builder /server/qingqiu-world-server .
 COPY --from=web-builder /web-dist ./web-dist
 
 COPY docker/nginx.conf /etc/nginx/http.d/default.conf

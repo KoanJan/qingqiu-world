@@ -3,7 +3,7 @@ package schema
 import (
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // SearchConfigUpdate contains the mutable fields for updating a search config.

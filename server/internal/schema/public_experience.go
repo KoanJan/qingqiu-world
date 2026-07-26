@@ -3,7 +3,7 @@ package schema
 import (
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // PublicExperienceIngest is the request body for POST /api/public-experiences/ingest.

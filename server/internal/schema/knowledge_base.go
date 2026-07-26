@@ -3,7 +3,7 @@ package schema
 import (
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // KnowledgeBaseCreate represents the input for creating a knowledge base.

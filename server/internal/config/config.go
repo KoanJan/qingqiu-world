@@ -79,7 +79,7 @@ func (s *Settings) GetDataRoot() string {
 
 // DatabaseURL returns the SQLite database file path.
 func (s *Settings) DatabaseURL() string {
-	return filepath.Join(s.DataRoot, "db", "private_buddy.db")
+	return filepath.Join(s.DataRoot, "db", "database.db")
 }
 
 // GetWorkspaceRoot returns the workspace root directory path.
@@ -94,6 +94,16 @@ func (s *Settings) GetWorkspaceRoot() string {
 // GetAvatarsDir returns the directory path for agent avatar images.
 func (s *Settings) GetAvatarsDir() string {
 	return filepath.Join(s.DataRoot, "avatars")
+}
+
+// GetSettingsDir returns the directory for local user settings (data/settings/).
+func (s *Settings) GetSettingsDir() string {
+	return filepath.Join(s.DataRoot, "settings")
+}
+
+// GetBackgroundsDir returns the directory for user-uploaded background images (data/settings/backgrounds/).
+func (s *Settings) GetBackgroundsDir() string {
+	return filepath.Join(s.DataRoot, "settings", "backgrounds")
 }
 
 // GetKBDir returns the root directory path for knowledge base data.

@@ -7,14 +7,14 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/config"
-	"private-buddy-server/internal/api/response"
+	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/api/response"
 
 	"github.com/gin-gonic/gin"
 )
 
-// maxAvatarFileSize is the maximum allowed avatar file size (2MB).
-const maxAvatarFileSize = 2 * 1024 * 1024 // 2MB
+// maxAvatarFileSize is the maximum allowed avatar file size (20MB).
+const maxAvatarFileSize = 20 * 1024 * 1024 // 20MB
 
 // allowedAvatarExtensions defines the allowed image file extensions for avatars.
 var allowedAvatarExtensions = map[string]bool{

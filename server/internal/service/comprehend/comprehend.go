@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"sync"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/eventqueue"
-	"private-buddy-server/internal/service/kb"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/kb"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // ComprehensionResult holds the outcome of the comprehension phase.

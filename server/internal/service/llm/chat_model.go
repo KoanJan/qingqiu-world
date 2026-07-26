@@ -18,7 +18,7 @@ import (
 
 	openai "github.com/sashabaranov/go-openai"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Temperature presets for different LLM service categories.

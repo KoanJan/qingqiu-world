@@ -8,10 +8,10 @@ import (
 	"strings"
 	"testing"
 
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // TestDeliverToTool_Execute tests the Execute method of DeliverToTool.

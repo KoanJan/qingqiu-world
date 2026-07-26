@@ -189,7 +189,7 @@ When search is disabled, the agent never receives the web search tool. Its syste
 The bash tool is confined to a workspace directory:
 
 ```
-~/PrivateBuddyData/
+~/QingqiuWorldData/
 └── workspace/
     └── {agent_id}/
         ├── {session_id}/          # Session's workspace

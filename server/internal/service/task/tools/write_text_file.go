@@ -6,7 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // WriteTextFileTool creates, overwrites, or appends to text files atomically.

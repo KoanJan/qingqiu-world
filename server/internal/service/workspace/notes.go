@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // NoteType represents the category of a note entry.

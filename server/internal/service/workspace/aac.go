@@ -11,9 +11,9 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"private-buddy-server/internal/config"
+	"qingqiu-world-server/internal/config"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // RemoveAac removes the AAC policy directory for the given session.

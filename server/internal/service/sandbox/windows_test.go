@@ -1,7 +1,7 @@
 package sandbox
 
 import (
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 	"runtime"
 	"testing"
 )

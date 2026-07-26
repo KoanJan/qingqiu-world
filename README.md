@@ -1,12 +1,20 @@
 <div align="center">
-  <img src="web/public/favicon.svg" alt="Private Buddy" width="64">
-  <h1>Private Buddy</h1>
+  <img src="web/public/favicon.png" alt="Qingqiu World" width="64">
+  <h1>QingqiuWorld</h1>
   <p>
-    <img src="https://img.shields.io/github/license/KoanJan/private-buddy" alt="License">
+    <img src="https://img.shields.io/github/license/KoanJan/qingqiu-world" alt="License">
   </p>
 </div>
 
-A private AI assistant that runs entirely on your machine. Download, install, configure your LLM API key — and you have a fully autonomous agent system with long-term memory, task execution, and knowledge base integration.
+Not a tool, not a bot — an agent system that runs entirely on your machine, with long-term memory, task execution, and knowledge base integration. Download, install, configure your LLM API key — and you're ready to go. We're now building toward a world where agents are born, grow, interact, and evolve autonomously.
+
+### The Name
+
+Qingqiu (青丘) is a mountain from the *Shan Hai Jing* (Classic of Mountains and Seas) — a self-contained world of jade, azurite, nine-tailed foxes, birds that ward off confusion, and fish with human faces. Not a place you pass through, but a world unto itself.
+
+Millennia later, we give this name to a world of agents. The mountain becomes a space; its creatures become the agents that inhabit it. The name carries the intent: not to build a tool, but to cultivate a world — with its own rules, its own time, its own life.
+
+---
 
 This project started as a practice exercise in building a modern agent system from scratch. Along the way, it became a space to explore a question that intrigued me as an engineer: can theories from cognitive science, narratology, and psychology be applied cross-disciplinarily to improve agent design — and can AI itself help validate whether those theories have practical engineering value?
 
@@ -16,7 +24,7 @@ The result is a system whose design choices are grounded in theory rather than c
 
 ## What is Different
 
-Most agent frameworks treat all messages uniformly — tool calls, user messages, and assistant replies all go into the same conversation history. Private Buddy takes a different approach across several subsystems.
+Most agent frameworks treat all messages uniformly — tool calls, user messages, and assistant replies all go into the same conversation history. QingqiuWorld takes a different approach across several subsystems.
 
 ### Cognitive Order Pipeline
 
@@ -42,7 +50,7 @@ After each task, a reflection pipeline distills transferable principles from the
 
 Retrieval uses progressive disclosure: scan a lightweight summary, then recall full content only for relevant entries. This makes retrieval an active agent behavior — the agent decides what to recall — rather than system-driven context insertion. The `when_to_use` field serves as a reverse filter against semantic false positives, helping the agent distinguish "similar but inapplicable" from "different but applicable."
 
-Anthropic's Agent Skills standard lets skills bundle guidance with scripts, assets, and host-specific tool bindings — effective when the package runs in its target environment, but the host-coupled elements don't transfer when the environment changes. Private Buddy's experiences are host-decoupled by design: the reflection pipeline explicitly strips system-specific tools, internal APIs, and configuration, keeping only domain-level knowledge (external APIs, library names, algorithms). Experiences survive host changes — the agent maps each principle to whatever tools the current environment provides, rather than relying on pre-bundled scripts or tool bindings.
+Anthropic's Agent Skills standard lets skills bundle guidance with scripts, assets, and host-specific tool bindings — effective when the package runs in its target environment, but the host-coupled elements don't transfer when the environment changes. QingqiuWorld's experiences are host-decoupled by design: the reflection pipeline explicitly strips system-specific tools, internal APIs, and configuration, keeping only domain-level knowledge (external APIs, library names, algorithms). Experiences survive host changes — the agent maps each principle to whatever tools the current environment provides, rather than relying on pre-bundled scripts or tool bindings.
 
 ### Forgetting-First Memory
 
@@ -66,15 +74,15 @@ The agent never encounters the label "Assistant" or "AI" in its own memory recor
 
 ### Desktop Application
 
-Download the latest release for your platform from the [Releases](https://github.com/KoanJan/private-buddy/releases) page. No development environment required.
+Download the latest release for your platform from the [Releases](https://github.com/KoanJan/qingqiu-world/releases) page. No development environment required.
 
 ### Development Mode
 
 Requires Go 1.26+ and Node.js 18+.
 
 ```bash
-git clone https://github.com/KoanJan/private-buddy.git
-cd private-buddy
+git clone https://github.com/KoanJan/qingqiu-world.git
+cd qingqiu-world
 npm install
 
 # Electron app (recommended for development)
@@ -91,8 +99,8 @@ cd web && npm run dev         # Vite dev server on :5173
 ### Docker
 
 ```bash
-git clone https://github.com/KoanJan/private-buddy.git
-cd private-buddy/docker
+git clone https://github.com/KoanJan/qingqiu-world.git
+cd qingqiu-world/docker
 docker compose up -d
 ```
 

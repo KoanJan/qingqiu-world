@@ -21,7 +21,7 @@ import (
 	"os/exec"
 	"runtime"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Run executes a command within the platform sandbox. If the sandbox mechanism

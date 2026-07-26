@@ -15,7 +15,7 @@ encode.go:304:23: undefined: renameio.TempFile
 
 - **Removed** `github.com/google/renameio` dependency from `encode.go`
 - **Removed** `SavedGraph.Save()` method (the only consumer of `renameio`)
-- **Updated** internal import path: `github.com/coder/hnsw/heap` → `private-buddy-server/pkg/hnsw/heap`
+- **Updated** internal import path: `github.com/coder/hnsw/heap` → `qingqiu-world-server/pkg/hnsw/heap`
 
 Graph persistence is now handled by the caller via `Graph.Export` / `Graph.Import` with standard library (`os.Create` + `os.Rename`), which works across all platforms.
 

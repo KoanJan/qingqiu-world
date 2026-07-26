@@ -3,9 +3,9 @@ package dops
 import (
 	"encoding/json"
 	"fmt"
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 
 	"gorm.io/gorm"
 )
@@ -212,15 +212,15 @@ func UpdateAIPerson(aiPersonUpdates *AIPersonUpdates) error {
 		// Update agent-level fields
 		acUpdates := aiPersonUpdates.getAgentConfigUpdates()
 		if len(acUpdates) > 0 {
-			if err := tx.Model(&model.AgentConfig{PersonID: aiPersonUpdates.PersonID}).Updates(acUpdates).Error; err != nil {
+			if err := tx.Model(&model.AgentConfig{}).Where("person_id = ?", aiPersonUpdates.PersonID).Updates(acUpdates).Error; err != nil {
 				return err
 			}
 		}
 
-		// Update person-level fields (name and bio) if provided
+		// Update person-level fields (avatar and bio) if provided
 		pUpdates := aiPersonUpdates.getPersonUpdates()
-		if len(acUpdates) > 0 {
-			if err := tx.Model(&model.Person{ID: aiPersonUpdates.PersonID, Type: model.PersonTypeAI}).Updates(pUpdates).Error; err != nil {
+		if len(pUpdates) > 0 {
+			if err := tx.Model(&model.Person{}).Where("id = ? AND type = ?", aiPersonUpdates.PersonID, model.PersonTypeAI).Updates(pUpdates).Error; err != nil {
 				return err
 			}
 		}

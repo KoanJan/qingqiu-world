@@ -1,9 +1,9 @@
 services:
-  private-buddy:
+  qingqiu-world:
     build:
       context: ..
       dockerfile: docker/Dockerfile
-    container_name: private-buddy
+    container_name: qingqiu-world
     ports:
       - "${PORT:-18888}:18888"
     volumes:

@@ -10,9 +10,9 @@ import (
 	"strings"
 	"sync"
 
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 )
 
 // capabilityCache stores model json_schema support status in memory for fast lookup.

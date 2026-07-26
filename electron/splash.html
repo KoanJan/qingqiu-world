@@ -2,8 +2,8 @@
 <html>
 <head>
   <meta charset="UTF-8">
-  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline';">
-  <title>Private Buddy</title>
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; img-src 'self'; style-src 'unsafe-inline';">
+  <title>Qingqiu World</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -13,7 +13,7 @@
       flex-direction: column;
       align-items: center;
       justify-content: center;
-      background: #1a1a2e;
+      background: #ffffff;
       font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
       overflow: hidden;
       user-select: none;
@@ -24,10 +24,11 @@
       height: 96px;
       border-radius: 20px;
       margin-bottom: 24px;
-      background: #000;
+      object-fit: cover;
+      box-shadow: 0 2px 12px rgba(0, 0, 0, 0.08);
     }
     .splash-title {
-      color: #F5DEB3;
+      color: #1a1a2e;
       font-size: 22px;
       font-weight: 700;
       letter-spacing: 0.5px;
@@ -36,8 +37,8 @@
     .splash-spinner {
       width: 24px;
       height: 24px;
-      border: 3px solid rgba(245, 222, 179, 0.2);
-      border-top-color: #F5DEB3;
+      border: 3px solid #e5e7eb;
+      border-top-color: #6b7280;
       border-radius: 50%;
       animation: spin 0.8s linear infinite;
     }
@@ -47,18 +48,8 @@
   </style>
 </head>
 <body>
-  <svg class="splash-logo" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
-    <g transform="translate(92, 92) scale(0.82)">
-      <rect x="0" y="0" width="1024" height="1024" rx="224" ry="224" fill="#000000"/>
-      <svg x="157" y="161" width="710" height="702" viewBox="0 0 710 702">
-        <rect width="100%" height="100%" fill="#000000"/>
-        <g transform="translate(0,702) scale(0.1,-0.1)" fill="#F5DEB3" stroke="none">
-          <path d="M3623 5968 c45 -25 98 -78 113 -114 34 -81 10 -134 -162 -364 -135 -181 -172 -236 -267 -400 -84 -144 -189 -376 -236 -520 -43 -129 -77 -331 -81 -475 -4 -115 2 -128 33 -75 10 17 66 82 124 146 140 153 312 304 415 362 18 11 62 37 98 59 63 37 81 47 145 73 34 14 113 39 195 63 221 63 556 36 766 -63 182 -86 354 -238 465 -410 33 -51 93 -169 110 -215 53 -143 79 -290 79 -451 0 -246 -63 -463 -196 -670 -65 -102 -80 -120 -181 -220 -132 -132 -279 -220 -458 -277 -123 -39 -230 -51 -382 -44 -154 8 -215 20 -398 78 -340 107 -664 347 -904 667 -13 18 -28 32 -32 32 -10 0 -38 -61 -114 -245 -31 -77 -61 -149 -65 -160 -26 -61 -41 -99 -70 -180 -18 -49 -36 -99 -41 -110 -14 -34 -80 -217 -100 -275 -30 -91 -159 -453 -183 -515 -36 -91 -113 -209 -165 -250 -43 -35 -65 -44 -107 -45 -85 0 -168 46 -219 123 -50 76 -56 149 -21 277 46 169 129 413 148 435 4 5 8 15 8 23 0 8 6 28 14 45 8 18 28 68 45 112 18 44 36 89 41 100 5 11 28 63 50 115 47 108 292 591 321 632 11 14 19 29 19 31 0 7 104 179 141 234 34 50 35 53 9 123 -41 112 -62 230 -67 391 -7 209 12 379 66 574 11 39 23 81 26 95 4 14 10 34 15 45 5 11 14 38 20 60 6 22 15 49 19 60 5 11 16 40 26 65 10 25 21 54 25 65 24 62 151 311 192 377 26 43 48 82 48 88 0 5 5 10 10 10 6 0 10 5 10 11 0 13 168 266 215 324 88 107 168 178 223 196 41 13 183 4 215 -13z M4130 4344 c-141 -26 -280 -84 -405 -169 -178 -120 -386 -324 -548 -534 -63 -83 -63 -76 2 -166 209 -289 536 -539 811 -618 177 -52 261 -50 460 9 35 10 117 56 159 89 198 154 302 373 304 643 1 212 -67 394 -207 550 -55 61 -199 145 -305 178 -47 15 -225 27 -271 18z"/>
-        </g>
-      </svg>
-    </g>
-  </svg>
-  <div class="splash-title">Private Buddy</div>
+  <img class="splash-logo" src="splash-icon.png" alt="Logo" />
+  <div class="splash-title">Qingqiu World</div>
   <div class="splash-spinner"></div>
 </body>
 </html>

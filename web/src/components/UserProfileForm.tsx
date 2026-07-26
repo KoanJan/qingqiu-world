@@ -110,7 +110,7 @@ const UserProfileForm: React.FC<{ onCreated?: () => void; welcome?: boolean }> =
           width: '100%',
         }}>
           <img
-            src="./favicon.svg"
+            src="./favicon.png"
             alt="logo"
             style={{ width: 48, height: 48, marginBottom: 32, opacity: 0.85 }}
           />

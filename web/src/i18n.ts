@@ -4,7 +4,7 @@ import { storage } from './services/storage';
 import zh from './locales/zh.json';
 import en from './locales/en.json';
 
-const LANGUAGE_KEY = 'private-buddy-language';
+const LANGUAGE_KEY = 'qingqiu-world-language';
 
 const getSavedLanguage = (): string => {
   const saved = storage.getRaw(LANGUAGE_KEY);
@@ -28,10 +28,11 @@ i18n
     }
   });
 
-/** Switches the application language and persists the choice. */
+/** Switches the application language. Persists to both localStorage (for
+ *  i18next initialisation) and config.json (via useAppearance). */
 export const changeLanguage = (lang: string) => {
-  i18n.changeLanguage(lang);
   storage.setRaw(LANGUAGE_KEY, lang);
+  i18n.changeLanguage(lang);
 };
 
 /** Returns the currently active language code. */

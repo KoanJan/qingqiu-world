@@ -3,7 +3,7 @@ package schema
 import (
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // MessageCreate represents the input for creating a message.

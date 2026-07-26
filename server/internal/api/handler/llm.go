@@ -1,11 +1,11 @@
 package handler
 
 import (
-	"private-buddy-server/internal/api/response"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/schema"
+	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/schema"
 	"strconv"
 	"strings"
 

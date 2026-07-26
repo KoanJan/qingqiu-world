@@ -1,7 +1,7 @@
 package dops
 
 import (
-	"private-buddy-server/internal/database"
+	"qingqiu-world-server/internal/database"
 )
 
 // Get retrieves an entity by ID.

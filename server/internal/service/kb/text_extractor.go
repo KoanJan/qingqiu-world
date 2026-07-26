@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"private-buddy-server/internal/constants"
+	"qingqiu-world-server/internal/constants"
 
 	"github.com/ledongthuc/pdf"
 )

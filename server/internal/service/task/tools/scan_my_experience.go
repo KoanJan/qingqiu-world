@@ -5,10 +5,10 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"private-buddy-server/internal/service/experience"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/experience"
+	"qingqiu-world-server/internal/service/llm"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Retrieval parameters for experience scanning.

@@ -7,9 +7,9 @@ import (
 	"path/filepath"
 	"strings"
 
-	"private-buddy-server/internal/api/handler"
-	"private-buddy-server/internal/api/middleware"
-	"private-buddy-server/internal/config"
+	"qingqiu-world-server/internal/api/handler"
+	"qingqiu-world-server/internal/api/middleware"
+	"qingqiu-world-server/internal/config"
 
 	"github.com/gin-gonic/gin"
 )
@@ -115,6 +115,17 @@ func SetupRouter() *gin.Engine {
 		uploads := api.Group("/uploads")
 		{
 			uploads.POST("/avatar", h.UploadAvatar)
+		}
+
+		appearance := api.Group("/appearance")
+		{
+			appearance.GET("/settings", h.GetSettings)
+			appearance.PATCH("/settings", h.UpdateSettings)
+			// User-uploaded background images (dynamic data)
+			appearance.GET("/backgrounds", h.ListBackgrounds)
+			appearance.GET("/backgrounds/:filename", h.ServeBackground)
+			appearance.POST("/backgrounds", h.UploadBackground)
+			appearance.DELETE("/backgrounds/:filename", h.DeleteBackground)
 		}
 
 		systemLLMConfig := api.Group("/system-llm-config")

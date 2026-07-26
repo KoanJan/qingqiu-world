@@ -4,14 +4,14 @@ import (
 	"context"
 	"time"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/chat"
-	"private-buddy-server/internal/service/comprehend"
-	"private-buddy-server/internal/service/eventqueue"
-	"private-buddy-server/internal/service/task"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/chat"
+	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/task"
 )
 
 // userFriendlyErrorMsg is the default error message shown to users when

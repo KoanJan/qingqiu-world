@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
-	taskcontext "private-buddy-server/internal/service/task/context"
-	"private-buddy-server/internal/service/task/tools"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
+	taskcontext "qingqiu-world-server/internal/service/task/context"
+	"qingqiu-world-server/internal/service/task/tools"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // hardOutputLimit is the system-level byte fallback threshold for tool outputs.

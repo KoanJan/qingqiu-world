@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { Tooltip, Spin, message, Button } from 'antd';
 import { useTranslation } from 'react-i18next';
-import { changeLanguage, getCurrentLanguage } from './i18n';
 import useScrolling from './hooks/useScrolling';
+import useAppearance, { getBackgroundUrl } from './hooks/useAppearance';
 import SessionList from './components/SessionList';
 import ChatWindow from './components/ChatWindow';
 import LLMConfigList from './components/LLMConfigList';
@@ -10,6 +10,7 @@ import EmbeddingConfigForm from './components/EmbeddingConfigForm';
 import AgentConfig from './components/AgentConfig';
 import SearchConfigForm from './components/SearchConfigForm';
 import UserProfileForm from './components/UserProfileForm';
+import AppearancePanel from './components/AppearancePanel';
 import ResizableCard from './components/ResizableCard';
 import PanelDetail from './components/PanelDetail';
 import NappingCatButton from './components/NappingCatButton';
@@ -43,7 +44,7 @@ type SettingsSubview =
   | 'llm'
   | 'embedding'
   | 'search'
-  | 'language';
+  | 'custom';
 
 // Sidebar navigation items. KB and public-experience are merged into a single
 // 'library' entry; the right panel switches between them via a local tab bar.
@@ -53,7 +54,7 @@ const SETTINGS_CARDS: { key: SettingsSubview; iconType: IconType }[] = [
   { key: 'llm', iconType: 'llm' },
   { key: 'embedding', iconType: 'embedding' },
   { key: 'search', iconType: 'search' },
-  { key: 'language', iconType: 'language' },
+  { key: 'custom', iconType: 'custom' },
   { key: 'user', iconType: 'user' },
 ];
 
@@ -85,7 +86,6 @@ function App() {
   const [libraryTab, setLibraryTab] = useState<'kb' | 'public-experience'>('kb');
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
   const [selectedExp, setSelectedExp] = useState<PublicExperience | null>(null);
-  const [currentLang, setCurrentLang] = useState(getCurrentLanguage());
   const [version, setVersion] = useState<string>('');
   const [isMacElectron, setIsMacElectron] = useState(false);
   const [isWinLinuxElectron, setIsWinLinuxElectron] = useState(false);
@@ -95,6 +95,29 @@ function App() {
   const [systemLLMReady, setSystemLLMReady] = useState(false);
 
   useScrolling();
+
+  const {
+    settings: appearance,
+    loading: appearanceLoading,
+    selectColor,
+    addCustomColor,
+    removeCustomColor,
+    selectBgImage,
+    uploadBgImage,
+    deleteUserImage,
+    fetchUserImages,
+    updateGlassOpacity,
+    updateGlassBlur,
+    updateLanguage,
+    resetBackground,
+    resetOverlay,
+  } = useAppearance();
+
+  // Sync appearance CSS custom properties to :root so they cascade to all elements.
+  useEffect(() => {
+    document.documentElement.style.setProperty('--glass-opacity', String(appearance.glassOpacity));
+    document.documentElement.style.setProperty('--glass-blur', `${appearance.glassBlur}px`);
+  }, [appearance.glassOpacity, appearance.glassBlur]);
 
   useEffect(() => {
     if (window.electronAPI) {
@@ -200,11 +223,6 @@ function App() {
     setCurrentSession(tempSession);
   };
 
-  const handleLanguageChange = (lang: string) => {
-    changeLanguage(lang);
-    setCurrentLang(lang);
-  };
-
   const handleAgentCreated = () => {
     setRefreshKey(prev => prev + 1);
   };
@@ -218,7 +236,7 @@ function App() {
     llm: t('settings.llmConfig'),
     embedding: t('settings.embeddingConfig'),
     search: t('settings.searchConfig'),
-    language: t('settings.language'),
+    custom: t('settings.custom'),
   };
 
   // Advance to the next big view in the ring. Always slides left.
@@ -250,22 +268,30 @@ function App() {
     });
   };
 
-  const renderLanguagePanel = () => (
-    <PanelDetail title={t('settings.language')}>
-      <div className="lang-options">
-        <div
-          className={`lang-option-card ${currentLang === 'zh' ? 'active' : ''}`}
-          onClick={() => handleLanguageChange('zh')}
-        >
-          <span className="lang-option-text">中文</span>
-        </div>
-        <div
-          className={`lang-option-card ${currentLang === 'en' ? 'active' : ''}`}
-          onClick={() => handleLanguageChange('en')}
-        >
-          <span className="lang-option-text">English</span>
-        </div>
-      </div>
+  const renderPersonalizationPanel = () => (
+    <PanelDetail title={t('settings.custom')}>
+      <AppearancePanel
+        language={appearance.language}
+        bgMode={appearance.bgMode}
+        bgColor={appearance.bgColor}
+        bgImage={appearance.bgImage}
+        bgImageSource={appearance.bgImageSource}
+        customColors={appearance.customColors}
+        glassOpacity={appearance.glassOpacity}
+        glassBlur={appearance.glassBlur}
+        onLanguageChange={updateLanguage}
+        onSelectColor={selectColor}
+        onAddCustomColor={addCustomColor}
+        onRemoveCustomColor={removeCustomColor}
+        onSelectBgImage={selectBgImage}
+        onUploadBgImage={uploadBgImage}
+        onDeleteUserImage={deleteUserImage}
+        fetchUserImages={fetchUserImages}
+        onGlassOpacityChange={updateGlassOpacity}
+        onGlassBlurChange={updateGlassBlur}
+        onResetBackground={resetBackground}
+        onResetOverlay={resetOverlay}
+      />
     </PanelDetail>
   );
 
@@ -429,13 +455,26 @@ function App() {
     llm: renderLLMPanel,
     embedding: renderEmbeddingPanel,
     search: renderSearchPanel,
-    language: renderLanguagePanel,
+    custom: renderPersonalizationPanel,
   };
 
   const renderSettingsPanel = () => {
     const renderer = settingsPanelMap[settingsSubview];
     return renderer ? renderer() : null;
   };
+
+  // Wait for appearance settings to load from the backend before rendering
+  // anything — this ensures language, background, etc. are correct on first paint.
+  if (appearanceLoading) {
+    return (
+      <div style={{
+        display: 'flex', alignItems: 'center', justifyContent: 'center',
+        height: '100vh', width: '100vw', background: '#ffffff',
+      }}>
+        <Spin size="large" />
+      </div>
+    );
+  }
 
   // If user profile is still being checked, show full-screen loading.
   if (userProfileChecking) {
@@ -464,12 +503,21 @@ function App() {
   }
 
   return (
-    <div className="app-container">
+    <div
+      className="app-container"
+      style={{
+        ...(appearance.bgMode === 'color'
+          ? { background: appearance.bgColor }
+          : appearance.bgImage
+            ? { backgroundImage: `url(${getBackgroundUrl(appearance.bgImage, appearance.bgImageSource)})` }
+            : {}),
+      } as any}
+    >
       <header className={`app-header${isMacElectron ? ' app-header-mac' : ''}${isWinLinuxElectron ? ' app-header-win-linux' : ''}`}>
         <Tooltip title={version ? `v${version}` : ''} placement="right">
           <div className="app-logo">
-            <img src="./favicon.svg" alt="logo" className="app-logo-img" />
-            Private Buddy
+            <img src="./favicon.png" alt="logo" className="app-logo-img" />
+            Qingqiu World
           </div>
         </Tooltip>
         <div className="app-header-actions">

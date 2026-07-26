@@ -3,7 +3,7 @@ package schema
 import (
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // LLMConfigBase contains the common fields for LLM config creation and updates.

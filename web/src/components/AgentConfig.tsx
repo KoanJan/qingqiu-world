@@ -1,12 +1,13 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Modal, Form, Input, message, Select, Upload } from 'antd';
-import { EditOutlined, DeleteOutlined, PlusOutlined } from '@ant-design/icons';
+import { Modal, Form, Input, message, Select, Upload } from 'antd';
+import { PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
+import AgentAvatar from './AgentAvatar';
+import CardActions from './CardActions';
 import type { Agent, LLMConfig, KnowledgeBase } from '../types';
 import { agentApi, llmConfigApi, kbApi, uploadApi } from '../services/api';
 import { logger } from '../logger';
 import { confirmDelete } from '../utils/confirm';
-import AgentAvatar from './AgentAvatar';
 
 interface AgentConfigProps {
   showCreate?: boolean;
@@ -259,26 +260,10 @@ const AgentConfig: React.FC<AgentConfigProps> = ({ showCreate, onCreateClose, on
             >
               <AgentAvatar avatar={agent.avatar} size={44} iconSize={20} borderRadius="10px" />
               <div className="item-card-block-name">{agent.name}</div>
-              <div className="item-card-block-desc">{agent.bio || t('agent.noDescription')}</div>
-              <div className="item-actions item-card-block-actions">
-                <Button
-                  type="text"
-                  size="small"
-                  icon={<EditOutlined />}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    handleEditAgent(agent);
-                  }}
-                  style={{ color: 'var(--color-text-secondary)' }}
-                />
-                <Button
-                  type="text"
-                  size="small"
-                  danger
-                  icon={<DeleteOutlined />}
-                  onClick={(e) => handleDeleteAgent(agent.id, e)}
-                />
-              </div>
+              <CardActions
+                onEdit={(e) => { e.stopPropagation(); handleEditAgent(agent); }}
+                onDelete={(e) => handleDeleteAgent(agent.id, e)}
+              />
             </div>
           ))
         )}

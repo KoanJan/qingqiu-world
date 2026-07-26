@@ -12,10 +12,10 @@ import (
 	"sync"
 	"time"
 
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/eventqueue"
 )
 
 // runtimeManager manages agentRuntime instances for all agents.

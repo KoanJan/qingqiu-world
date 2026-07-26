@@ -1,5 +1,5 @@
-appId: com.private-buddy.app
-productName: Private Buddy
+appId: com.qingqiu-world.app
+productName: Qingqiu World
 directories:
   output: dist-electron
 files:
@@ -11,31 +11,31 @@ mac:
     - dmg
     - zip
   category: public.app-category.productivity
-  icon: build/icon.icns
+  icon: app-icons/icon.icns
   hardenedRuntime: true
   extraResources:
-    - from: server/private-buddy-server
-      to: server/private-buddy-server
+    - from: server/qingqiu-world-server
+      to: server/qingqiu-world-server
   extendInfo:
-    NSMicrophoneUsageDescription: "Private Buddy does not use the microphone."
-    NSCameraUsageDescription: "Private Buddy does not use the camera."
+    NSMicrophoneUsageDescription: "Qingqiu World does not use the microphone."
+    NSCameraUsageDescription: "Qingqiu World does not use the camera."
 win:
   artifactName: "${name}-${version}-win-${arch}.${ext}"
   target:
     - target: nsis
       arch:
         - x64
-  icon: build/icon.ico
+  icon: app-icons/icon.ico
   extraResources:
-    - from: server/private-buddy-server.exe
-      to: server/private-buddy-server.exe
+    - from: server/qingqiu-world-server.exe
+      to: server/qingqiu-world-server.exe
 linux:
   artifactName: "${name}-${version}-linux-${arch}.${ext}"
   target:
     - deb
     - rpm
-  icon: build/icon-1024.png
+  icon: app-icons/icon-1024.png
   category: Utility
   extraResources:
-    - from: server/private-buddy-server
-      to: server/private-buddy-server
+    - from: server/qingqiu-world-server
+      to: server/qingqiu-world-server

@@ -3,7 +3,7 @@ set -e
 
 # Start the Go server in the background on internal port 8080
 export PORT=8080
-/app/private-buddy-server &
+/app/qingqiu-world-server &
 SERVER_PID=$!
 
 # Start nginx in the foreground

@@ -18,9 +18,9 @@ import (
 	"path/filepath"
 	"time"
 
-	"private-buddy-server/internal/config"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/config"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"

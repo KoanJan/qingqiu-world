@@ -1,8 +1,8 @@
 package dops
 
 import (
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
 
 	"gorm.io/gorm"
 )

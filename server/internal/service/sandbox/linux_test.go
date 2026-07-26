@@ -3,7 +3,7 @@ package sandbox
 import (
 	"os/exec"
 	"path/filepath"
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 	"runtime"
 	"strings"
 	"testing"

@@ -1,3 +1,3 @@
-module private-buddy-ci/audit
+module qingqiu-world-ci/audit
 
 go 1.26.1

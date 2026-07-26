@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"math"
 
-	"private-buddy-server/internal/service/vectorutils"
+	"qingqiu-world-server/internal/service/vectorutils"
 
 	_ "github.com/glebarez/go-sqlite/compat"
 )

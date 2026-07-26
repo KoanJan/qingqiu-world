@@ -2,8 +2,8 @@ package dops
 
 import (
 	"fmt"
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
 )
 
 // GetAgentConfigWithPerson retrieves an agent config with its associated Person.

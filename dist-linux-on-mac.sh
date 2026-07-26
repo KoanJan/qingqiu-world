@@ -47,8 +47,8 @@ build_arch() {
 
     # Step 1: Build Go server for Linux (embed bwrap for $GOARCH via build tags)
     echo "=== Building Go server for linux/$GOARCH ==="
-    rm -f server/private-buddy-server
-    cd server && CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -o private-buddy-server ./cmd/
+    rm -f server/qingqiu-world-server
+    cd server && CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH go build -o qingqiu-world-server ./cmd/
     cd "$SCRIPT_DIR"
 
     # Step 2: Build web and electron
@@ -68,15 +68,15 @@ build_arch() {
     fi
 
     # Step 6: Patch the missing electron binary
-    if [ ! -f "$UNPACKED_DIR/private-buddy" ] && [ -f "$ELECTRON_ZIP" ]; then
+    if [ ! -f "$UNPACKED_DIR/qingqiu-world" ] && [ -f "$ELECTRON_ZIP" ]; then
         echo "=== Patching missing electron binary ==="
         cd "$UNPACKED_DIR"
         unzip -o "$ELECTRON_ZIP" electron
-        mv electron private-buddy
+        mv electron qingqiu-world
         cd "$SCRIPT_DIR"
         echo "=== Patched successfully ==="
     else
-        echo "=== private-buddy binary already exists or zip not found, skipping patch ==="
+        echo "=== qingqiu-world binary already exists or zip not found, skipping patch ==="
     fi
 
     # Step 7: Package the pre-built directory into deb/rpm

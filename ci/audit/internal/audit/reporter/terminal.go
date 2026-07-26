@@ -10,7 +10,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"private-buddy-ci/audit/internal/audit/checker"
+	"qingqiu-world-ci/audit/internal/audit/checker"
 )
 
 // TerminalReporter outputs audit findings to stdout as a formatted table.

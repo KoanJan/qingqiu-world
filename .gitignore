@@ -19,7 +19,7 @@ dist/
 dist-electron/
 electron/dist/
 web-dist/
-build/
+app-icons/
 
 # Environment variables
 .env
@@ -53,8 +53,8 @@ server/data/
 draft
 
 # Go build artifacts
-server/private-buddy-server
-server/private-buddy-server.exe
+server/qingqiu-world-server
+server/qingqiu-world-server.exe
 server/audit
 server/audit.exe
 server/.pid

@@ -9,12 +9,12 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/workspace"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // DeliverToTool copies files from the agent's output/ directory to another

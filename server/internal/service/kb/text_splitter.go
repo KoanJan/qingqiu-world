@@ -3,7 +3,7 @@ package kb
 import (
 	"strings"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 
 	"github.com/pkoukk/tiktoken-go"
 )

@@ -17,7 +17,7 @@ package eventqueue
 import (
 	"sync"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // ---------------------------------------------------------------------------

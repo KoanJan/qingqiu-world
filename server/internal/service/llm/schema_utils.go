@@ -5,7 +5,7 @@ import (
 
 	invopop "github.com/invopop/jsonschema"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // GenerateSchema generates a standard JSON Schema (json.RawMessage) from a Go

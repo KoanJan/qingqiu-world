@@ -10,7 +10,7 @@ import path from 'path';
 import net from 'net';
 
 /** The application display name. */
-export const APP_NAME = 'Private Buddy';
+export const APP_NAME = 'Qingqiu World';
 
 /** The server listen hostname. */
 export const SERVER_HOST = '127.0.0.1';
@@ -75,10 +75,10 @@ export function getProjectRoot(): string {
 /** Returns the path to the server executable binary, located in server/ under project root or resources. */
 export function getServerExecutable(): string {
   if (isDev()) {
-    const exeName = process.platform === 'win32' ? 'private-buddy-server.exe' : 'private-buddy-server';
+    const exeName = process.platform === 'win32' ? 'qingqiu-world-server.exe' : 'qingqiu-world-server';
     return path.join(getProjectRoot(), 'server', exeName);
   }
-  const exeName = process.platform === 'win32' ? 'private-buddy-server.exe' : 'private-buddy-server';
+  const exeName = process.platform === 'win32' ? 'qingqiu-world-server.exe' : 'qingqiu-world-server';
   return path.join(process.resourcesPath, 'server', exeName);
 }
 

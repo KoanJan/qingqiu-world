@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type IconType = 'user' | 'agent' | 'llm' | 'embedding' | 'search' | 'language' | 'library' | 'kb' | 'exp';
+export type IconType = 'user' | 'agent' | 'llm' | 'embedding' | 'search' | 'library' | 'kb' | 'exp' | 'custom';
 
 /* ===== Clean geometric SVG icons =====
    Simple shapes using currentColor + opacity for theme consistency. */
@@ -53,18 +53,6 @@ const FlatEmbeddingIcon = () => (
   </svg>
 );
 
-// Globe: circle with meridian ellipse and latitude lines.
-const FlatLanguageIcon = () => (
-  <svg viewBox="0 0 24 24" fill="currentColor">
-    <circle cx="12" cy="12" r="9" opacity=".15" />
-    <circle cx="12" cy="12" r="9" fill="none" stroke="currentColor" strokeWidth="1.3" opacity=".85" />
-    <ellipse cx="12" cy="12" rx="4" ry="9" fill="none" stroke="currentColor" strokeWidth="1" opacity=".4" />
-    <line x1="3" y1="12" x2="21" y2="12" stroke="currentColor" strokeWidth="1" opacity=".4" />
-    <path d="M4.5 7.5h15" stroke="currentColor" strokeWidth=".8" opacity=".25" />
-    <path d="M4.5 16.5h15" stroke="currentColor" strokeWidth=".8" opacity=".25" />
-  </svg>
-);
-
 // Magnifying glass: ring lens + angled handle.
 const FlatSearchIcon = () => (
   <svg viewBox="0 0 24 24" fill="currentColor">
@@ -108,6 +96,17 @@ const FlatExpIcon = () => (
   </svg>
 );
 
+// Interface: palette with swatch (Lucide palette style).
+const FlatInterfaceIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="13.5" cy="6.5" r=".5" fill="currentColor" opacity=".7" />
+    <circle cx="17.5" cy="10.5" r=".5" fill="currentColor" opacity=".7" />
+    <circle cx="8.5" cy="7.5" r=".5" fill="currentColor" opacity=".7" />
+    <circle cx="6.5" cy="12.5" r=".5" fill="currentColor" opacity=".7" />
+    <path d="M12 2C6.5 2 2 6.5 2 12s4.5 10 10 10c.926 0 1.648-.746 1.648-1.688 0-.437-.18-.835-.437-1.125-.29-.289-.438-.652-.438-1.125a1.64 1.64 0 0 1 1.668-1.668h1.996c3.051 0 5.555-2.503 5.555-5.554C21.965 6.012 17.461 2 12 2z" opacity=".85" />
+  </svg>
+);
+
 /* ===== Icon map ===== */
 
 interface IconConfig {
@@ -122,10 +121,10 @@ const ICON_MAP: Record<IconType, IconConfig> = {
   llm:     { icon: <FlatLLMIcon />,         colorVar: 'var(--color-llm)',        bgVar: 'var(--color-llm-bg)' },
   embedding:{ icon: <FlatEmbeddingIcon />,  colorVar: 'var(--color-embedding)',  bgVar: 'var(--color-embedding-bg)' },
   search:  { icon: <FlatSearchIcon />,      colorVar: 'var(--color-search)',     bgVar: 'var(--color-search-bg)' },
-  language:{ icon: <FlatLanguageIcon />,    colorVar: 'var(--color-language)',   bgVar: 'var(--color-language-bg)' },
   library: { icon: <FlatLibraryIcon />,     colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
   kb:      { icon: <FlatKBIcon />,          colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
   exp:     { icon: <FlatExpIcon />,         colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
+  custom:    { icon: <FlatInterfaceIcon />, colorVar: 'var(--color-primary)', bgVar: 'var(--color-primary-bg)' },
 };
 
 /* ===== ConfigIcon component ===== */

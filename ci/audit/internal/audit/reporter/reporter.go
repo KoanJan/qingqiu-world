@@ -3,7 +3,7 @@
 package reporter
 
 import (
-	"private-buddy-ci/audit/internal/audit/checker"
+	"qingqiu-world-ci/audit/internal/audit/checker"
 )
 
 // SummaryStats holds aggregated statistics about audit findings.

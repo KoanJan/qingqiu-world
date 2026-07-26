@@ -8,14 +8,14 @@ import (
 
 	"github.com/gin-gonic/gin"
 
-	"private-buddy-server/internal/api/response"
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/schema"
-	"private-buddy-server/internal/service/memory"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // Handler handles core API HTTP requests.

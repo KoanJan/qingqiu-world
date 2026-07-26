@@ -3,11 +3,11 @@ package chatcontext
 import (
 	"strings"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // SearchMessagesByKeywords searches messages in the given sessions for keyword matches.

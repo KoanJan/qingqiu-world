@@ -92,8 +92,21 @@ function createMainWindow(autoShow: boolean = false): void {
   });
 }
 
-function showMainWindow(): void {
+// ---- startup synchronisation ----
+// The splash screen stays visible until BOTH the renderer has finished
+// loading AND the Go backend has passed its health check.  Only then do
+// we close the splash, show the main window and notify the frontend.
+
+let serverReady = false;
+let serverError = '';
+let windowLoaded = false;
+
+function tryShowMainWindow(): void {
   if (!mainWindow || mainWindow.isDestroyed()) return;
+  if (!windowLoaded) return;
+  // Allow showing even when server failed — the frontend shows an error.
+  if (!serverReady && !serverError) return;
+
   if (splashWindow && !splashWindow.isDestroyed()) {
     splashWindow.close();
   }
@@ -123,17 +136,26 @@ app.on('ready', async () => {
   startServer()
     .then(() => {
       console.log('Server started successfully');
+      serverReady = true;
       mainWindow?.webContents.send('backend-status', 'ready');
+      tryShowMainWindow();
     })
     .catch((err: Error) => {
       const errMsg = err.message;
       console.error('Failed to start server:', errMsg);
+      serverError = errMsg;
       mainWindow?.webContents.send('backend-error', errMsg);
+      tryShowMainWindow();
     });
 
   mainWindow?.webContents.once('did-finish-load', () => {
-    mainWindow?.webContents.send('backend-status', 'ready');
-    showMainWindow();
+    windowLoaded = true;
+    // If the backend became ready before the page finished loading,
+    // the IPC event above was dropped — re-send it now.
+    if (serverReady) {
+      mainWindow?.webContents.send('backend-status', 'ready');
+    }
+    tryShowMainWindow();
   });
 });
 

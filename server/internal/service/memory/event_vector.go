@@ -3,7 +3,7 @@ package memory
 import (
 	"context"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // VectorizationTask is a message that needs event creation, embedding

@@ -17,7 +17,7 @@
 //   - RecallExperienceTool: Read the full content of a specific experience (progressive disclosure step 2)
 package tools
 
-import "private-buddy-server/internal/service/llm"
+import "qingqiu-world-server/internal/service/llm"
 
 // ToolName is the type-safe identifier for a tool using int enum values.
 // Each tool implementation returns its corresponding constant from Name().

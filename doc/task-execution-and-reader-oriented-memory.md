@@ -98,7 +98,7 @@ Trimming the oldest entries minimizes information loss because the information t
 Each task execution operates within an isolated workspace that provides two complementary information channels:
 
 ```
-~/PrivateBuddyData/workspace/{agent_id}/{session_id}/
+~/QingqiuWorldData/workspace/{agent_id}/{session_id}/
     .meta/
         notes.md         # System-managed: reader-oriented shared context (why)
         fingerprint.txt  # System-managed: reflection dedup hash

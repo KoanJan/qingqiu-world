@@ -7,15 +7,15 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/dops"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/comprehend"
-	"private-buddy-server/internal/service/eventqueue"
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/task"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/service/workspace"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // WorkPlan describes a single unit of work to be created by the runtime.

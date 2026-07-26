@@ -3,10 +3,10 @@ package runtime
 import (
 	"context"
 
-	"private-buddy-server/internal/service/experience"
-	"private-buddy-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/experience"
+	"qingqiu-world-server/internal/service/memory"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Heartbeat check frequency constants.

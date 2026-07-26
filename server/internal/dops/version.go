@@ -1,10 +1,10 @@
 package dops
 
 import (
-	"private-buddy-server/internal/config"
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 )
 
 // GetVersion returns the version record in db of app

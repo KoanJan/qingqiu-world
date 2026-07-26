@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Modal, Input, message, Form } from 'antd';
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { Modal, Input, message, Form } from 'antd';
 import { useTranslation } from 'react-i18next';
+import CardActions from './CardActions';
 import { logger } from '../logger';
 import { confirmDelete } from '../utils/confirm';
 
@@ -213,26 +213,11 @@ export default function ConfigList<T extends { id: number }>({
                       {secondary}
                     </div>
                   </div>
-                  <div className="item-actions">
-                    <Button
-                      type="text"
-                      size="small"
-                      icon={<EditOutlined />}
-                      onClick={e => {
-                        e.stopPropagation();
-                        handleEdit(config);
-                      }}
-                      style={{ color: 'var(--color-text-secondary)' }}
-                    />
-                    <Button
-                      type="text"
-                      size="small"
-                      danger
-                      icon={<DeleteOutlined />}
-                      onClick={e => handleDelete(config.id, e)}
-                    />
-                  </div>
                 </div>
+                <CardActions
+                  onEdit={(e) => { e.stopPropagation(); handleEdit(config); }}
+                  onDelete={(e) => handleDelete(config.id, e)}
+                />
               </div>
               );
             })}

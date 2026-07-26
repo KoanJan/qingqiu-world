@@ -1,4 +1,4 @@
-module private-buddy-server
+module qingqiu-world-server
 
 go 1.26.1
 

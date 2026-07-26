@@ -7,8 +7,8 @@ import (
 	"io"
 	"net/http"
 
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // defaultSearchNumResults is the default number of web search results returned.

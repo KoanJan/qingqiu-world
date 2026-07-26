@@ -4,11 +4,11 @@ import (
 	"context"
 	"fmt"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/vectorutils"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/vectorutils"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // createEvent creates an event record and returns the event_id.

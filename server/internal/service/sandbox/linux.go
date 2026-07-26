@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // bwrap path cache — extracted once per process lifetime.

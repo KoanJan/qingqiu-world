@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // ReadTextFileTool reads text file contents with line-based pagination.

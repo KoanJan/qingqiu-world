@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Modal, Form, Input, message, Tag } from 'antd';
-import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
+import { Modal, Form, Input, message, Tag } from 'antd';
 import { useTranslation } from 'react-i18next';
+import CardActions from './CardActions';
 import type { KnowledgeBase } from '../types';
 import { kbApi } from '../services/api';
 import { logger } from '../logger';
@@ -181,22 +181,10 @@ const KnowledgeBaseList: React.FC<KnowledgeBaseListProps> = ({ onSelectKB, showC
                     </span>
                   </div>
                 </div>
-                <div className="item-actions">
-                  <Button
-                    type="text"
-                    size="small"
-                    icon={<EditOutlined />}
-                    onClick={e => { e.stopPropagation(); handleEdit(kb); }}
-                    style={{ color: 'var(--color-text-secondary)' }}
-                  />
-                  <Button
-                    type="text"
-                    size="small"
-                    danger
-                    icon={<DeleteOutlined />}
-                    onClick={e => handleDelete(kb.id, e)}
-                  />
-                </div>
+                <CardActions
+                  onEdit={(e) => { e.stopPropagation(); handleEdit(kb); }}
+                  onDelete={(e) => handleDelete(kb.id, e)}
+                />
               </div>
             </div>
           ))

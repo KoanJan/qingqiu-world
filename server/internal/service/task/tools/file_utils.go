@@ -7,7 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // maxFileBytes is the maximum file size allowed for read_text_file (10MB).

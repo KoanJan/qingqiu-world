@@ -16,7 +16,7 @@ type Person struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	Name      string    `gorm:"type:varchar(255);not null;uniqueIndex" json:"name"` // Immutable identity key
 	Bio       string    `gorm:"type:text;not null;default:''" json:"bio"`
-	Avatar    string    `gorm:"type:varchar(500);not null;default:''" json:"avatar"` // Relative path under PrivateBuddyData/avatars/
+	Avatar    string    `gorm:"type:varchar(500);not null;default:''" json:"avatar"` // Relative path under QingqiuWorldData/avatars/
 	Type      int       `gorm:"not null" json:"type"`                                // 1=AI, 2=Human
 	CreatedAt time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null;autoUpdateTime" json:"updated_at"`

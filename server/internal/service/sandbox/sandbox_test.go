@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // TestMain initializes the logger so sandbox execution tests can log without panicking.

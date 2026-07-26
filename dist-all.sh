@@ -31,7 +31,7 @@ echo ""
 echo "========================================="
 echo "  [1/5] macOS amd64"
 echo "========================================="
-rm -f server/private-buddy-server server/private-buddy-server.exe
+rm -f server/qingqiu-world-server server/qingqiu-world-server.exe
 npm run dist:mac:amd64
 
 # Step 2: macOS arm64
@@ -39,7 +39,7 @@ echo ""
 echo "========================================="
 echo "  [2/5] macOS arm64"
 echo "========================================="
-rm -f server/private-buddy-server server/private-buddy-server.exe
+rm -f server/qingqiu-world-server server/qingqiu-world-server.exe
 npm run dist:mac:arm64
 
 # Step 3: Windows amd64
@@ -47,7 +47,7 @@ echo ""
 echo "========================================="
 echo "  [3/5] Windows amd64"
 echo "========================================="
-rm -f server/private-buddy-server server/private-buddy-server.exe
+rm -f server/qingqiu-world-server server/qingqiu-world-server.exe
 npm run dist:win
 
 # Step 4: Linux (both amd64 and arm64)
@@ -55,7 +55,7 @@ echo ""
 echo "========================================="
 echo "  [4/4] Linux (amd64 + arm64)"
 echo "========================================="
-rm -f server/private-buddy-server server/private-buddy-server.exe
+rm -f server/qingqiu-world-server server/qingqiu-world-server.exe
 ./dist-linux-on-mac.sh all
 
 # Summary

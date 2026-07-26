@@ -1,10 +1,10 @@
 package handler
 
 import (
-	"private-buddy-server/internal/api/response"
-	"private-buddy-server/internal/dops"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/schema"
+	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/schema"
 
 	"github.com/gin-gonic/gin"
 )

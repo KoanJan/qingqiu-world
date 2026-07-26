@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 const (

@@ -12,7 +12,7 @@ import (
 	"path/filepath"
 	"time"
 
-	"private-buddy-server/internal/config"
+	"qingqiu-world-server/internal/config"
 )
 
 // L is the global logger instance.

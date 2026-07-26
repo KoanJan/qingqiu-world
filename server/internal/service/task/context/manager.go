@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/config"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // ContextManager manages the internal message history for a single task execution.

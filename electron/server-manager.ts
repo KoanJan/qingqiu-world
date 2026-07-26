@@ -73,7 +73,7 @@ export async function startServer(): Promise<void> {
     console.log(`[Server]   dev=${isDev()}, port=${port}, platform=${process.platform}`);
 
     if (!existsSync(exe)) {
-      throw new Error(`Server executable not found: ${exe}. Run: cd server && go build -o private-buddy-server ./cmd/`);
+      throw new Error(`Server executable not found: ${exe}. Run: cd server && go build -o qingqiu-world-server ./cmd/`);
     }
 
     const args: string[] = [];

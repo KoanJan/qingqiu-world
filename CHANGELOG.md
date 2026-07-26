@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.0] - 2026-07-27
+
+### Added
+- **Appearance Personalization**: customizable background (solid color or image) with quick-select color swatches including pure white, custom color picker, and system-preset/user-uploaded image galleries; glass overlay with independent opacity and blur sliders — both sliders now show guidance labels ("Fully Transparent" / "Opaque", "Clear" / "Blurry") at each end; settings persist across restarts
+
+### Changed
+- **Default Background**: new installations start with a clean white solid background instead of light gray
+- **Splash Screen Redesign**: startup screen changed from dark theme to clean white minimal style with the new app icon
+- **Card Border Visibility**: agent cards, LLM configuration cards, and color swatches now have subtle gray borders, ensuring they remain visible against white backgrounds
+- **Avatar Upload Limit**: increased from 1 MB to 20 MB
+
+### Fixed
+- **Agent Avatar Update**: updating an agent's avatar no longer fails with a database error
+- **Agent Empty State**: "No Agent" placeholder text now properly centered when the agent list is empty
 
 ## [0.0.35] - 2026-07-21
 

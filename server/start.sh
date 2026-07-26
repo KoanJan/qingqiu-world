@@ -28,10 +28,10 @@ fi
 
 echo "Building server..."
 export GOPROXY=https://goproxy.cn,direct
-go build -o private-buddy-server ./cmd/
+go build -o qingqiu-world-server ./cmd/
 
 echo "Starting server..."
-nohup "./private-buddy-server" > "$LOG_DIR/server.log" 2>&1 &
+nohup "./qingqiu-world-server" > "$LOG_DIR/server.log" 2>&1 &
 PID=$!
 echo "$PID" > "$PID_FILE"
 

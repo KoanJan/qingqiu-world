@@ -6,11 +6,11 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"private-buddy-server/internal/database"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/vectorutils"
+	"qingqiu-world-server/internal/database"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/vectorutils"
 )
 
 // Package-level state for the experience system singleton.

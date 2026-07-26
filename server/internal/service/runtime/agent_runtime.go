@@ -7,14 +7,14 @@ import (
 	"sync/atomic"
 	"time"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/comprehend"
-	"private-buddy-server/internal/service/eventqueue"
-	"private-buddy-server/internal/service/task"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/task"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // ==========================================================================

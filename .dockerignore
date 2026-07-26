@@ -10,7 +10,7 @@ logs
 
 # Build artifacts
 web-dist
-private-buddy-server
+qingqiu-world-server
 
 # IDE
 .idea

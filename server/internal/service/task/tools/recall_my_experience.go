@@ -4,9 +4,9 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // RecallExperienceTool lets the agent read the full content of a single

@@ -8,7 +8,7 @@ import (
 	"slices"
 	"time"
 
-	"private-buddy-server/pkg/hnsw/heap"
+	"qingqiu-world-server/pkg/hnsw/heap"
 
 	"golang.org/x/exp/maps"
 )

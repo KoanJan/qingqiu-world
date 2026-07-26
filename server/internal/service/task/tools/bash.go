@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/sandbox"
-	"private-buddy-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/sandbox"
+	"qingqiu-world-server/internal/service/workspace"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // maxStdoutBytes is the maximum bytes of stdout retained after truncation.

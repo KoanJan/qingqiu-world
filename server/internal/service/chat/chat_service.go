@@ -22,17 +22,17 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"private-buddy-server/internal/config"
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/chat/chatcontext"
-	"private-buddy-server/internal/service/comprehend"
-	"private-buddy-server/internal/service/llm"
-	"private-buddy-server/internal/service/memory"
-	"private-buddy-server/internal/service/task"
+	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/chat/chatcontext"
+	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/task"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // User-friendly error message for unexpected failures

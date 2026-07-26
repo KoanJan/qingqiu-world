@@ -1,8 +1,9 @@
 import React, { useEffect, useState } from 'react';
 import { Button, Modal, Form, Upload, message, Spin, Tag } from 'antd';
-import { DeleteOutlined, UploadOutlined, ReloadOutlined } from '@ant-design/icons';
+import { UploadOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
 import { useTranslation } from 'react-i18next';
+import CardActions from './CardActions';
 import { confirmDelete } from '../utils/confirm';
 import { experienceSourceLabel, experienceStatusInfo, experienceDisplayTitle } from '../utils/experience';
 import type { PublicExperience } from '../types';
@@ -27,7 +28,7 @@ const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ showIngest,
   const [loading, setLoading] = useState(false);
   const [ingestVisible, setIngestVisible] = useState(false);
   const [ingesting, setIngesting] = useState(false);
-  const [redistillingId, setRedistillingId] = useState<number | null>(null);
+  const [_redistillingId, setRedistillingId] = useState<number | null>(null);
   const [ingestForm] = Form.useForm();
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -198,28 +199,19 @@ const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ showIngest,
                         <span>{sourceLabel(exp.source_type)} · {new Date(exp.created_at).toLocaleDateString()}</span>
                       </div>
                     </div>
-                    <div className="item-actions" style={{ display: 'flex', gap: 4 }}>
-                      {isError && (
-                        <Button
-                          type="text"
-                          size="small"
-                          icon={<ReloadOutlined />}
-                          loading={redistillingId === exp.id}
-                          onClick={(e) => handleRedistill(e, exp.id)}
-                        />
-                      )}
-                      <Button
-                        type="text"
-                        size="small"
-                        danger
-                        icon={<DeleteOutlined />}
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          handleDelete(exp.id);
-                        }}
-                      />
-                    </div>
                   </div>
+                  <CardActions
+                    onDelete={(e) => { e.stopPropagation(); handleDelete(exp.id); }}
+                  >
+                    {isError && (
+                      <button
+                        className="item-card-action-btn"
+                        onClick={(e) => handleRedistill(e, exp.id)}
+                      >
+                        <ReloadOutlined />
+                      </button>
+                    )}
+                  </CardActions>
                 </div>
               );
             })}

@@ -1,4 +1,4 @@
-const STORAGE_PREFIX = 'private-buddy';
+const STORAGE_PREFIX = 'qingqiu-world';
 
 function key(name: string): string {
   return `${STORAGE_PREFIX}-${name}`;

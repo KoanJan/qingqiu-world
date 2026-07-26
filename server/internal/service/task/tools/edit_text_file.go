@@ -6,7 +6,7 @@ import (
 	"os"
 	"strings"
 
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/llm"
 )
 
 // EditTextFileTool makes precise text replacements in existing files.

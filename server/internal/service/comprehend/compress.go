@@ -3,7 +3,7 @@ package comprehend
 import (
 	"unicode/utf8"
 
-	"private-buddy-server/internal/config"
+	"qingqiu-world-server/internal/config"
 )
 
 // computeTargetVersion loads up to windowSize messages starting from startSeq

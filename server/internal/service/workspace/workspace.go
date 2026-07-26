@@ -19,7 +19,7 @@ import (
 	"path/filepath"
 	"strconv"
 
-	"private-buddy-server/internal/config"
+	"qingqiu-world-server/internal/config"
 )
 
 // getRoot returns the workspace root directory resolved to an absolute path,

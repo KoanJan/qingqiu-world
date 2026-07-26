@@ -6,12 +6,12 @@ import (
 	"strings"
 	"sync"
 
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/dops"
-	"private-buddy-server/internal/model"
-	"private-buddy-server/internal/service/llm"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/llm"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // narrativeManager coordinates per-(session, agent) narrative generation goroutines.

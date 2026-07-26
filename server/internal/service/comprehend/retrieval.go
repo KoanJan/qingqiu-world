@@ -1,10 +1,10 @@
 package comprehend
 
 import (
-	"private-buddy-server/internal/database"
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/model"
 
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Segment source constants

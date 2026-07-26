@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "Private Buddy",
+    "title": "Qingqiu World",
     "startNewChat": "开始新对话",
     "selectOrCreate": "选择一个会话或创建新对话开始聊天",
     "askAnything": "终于想起我啦？Shift+Enter换行",
@@ -136,7 +136,8 @@
     "searchConfig": "搜索引擎",
     "language": "语言",
     "systemLLMConfig": "系统模型",
-    "publicExperience": "经验"
+    "publicExperience": "经验",
+    "custom": "个性化"
   },
   "library": {
     "title": "资料库"
@@ -305,5 +306,36 @@
     "fieldProcedure": "操作步骤",
     "sourceContent": "源文件内容",
     "sourceContentUnavailable": "无法加载源文件"
+  },
+  "appearance": {
+    "title": "外观",
+    "background": "背景",
+    "overlay": "遮掩",
+    "bgColor": "纯色",
+    "bgImage": "图片",
+    "colorPresets": "默认颜色",
+    "customColor": "自定义颜色",
+    "addColor": "添加",
+    "colorAdded": "颜色已添加",
+    "myColors": "我的颜色",
+    "noCustomColors": "暂无调配的颜色",
+    "removeColor": "删除颜色",
+    "confirmDeleteColor": "确定要删除这个颜色吗？",
+    "systemPresets": "系统预设",
+    "presetDefault": "默认",
+    "myImages": "我的图片",
+    "uploadImage": "添加",
+    "noUserImages": "暂无上传的图片",
+    "deleteImage": "删除图片",
+    "confirmDeleteImage": "确定要删除这张图片吗？",
+    "invalidImageType": "请选择图片文件",
+    "glassOpacity": "透明度",
+    "glassBlur": "模糊度",
+    "transparent": "全透明",
+    "opaque": "不透明",
+    "clear": "清晰",
+    "blurry": "模糊",
+    "resetBackground": "恢复默认",
+    "resetOverlay": "恢复默认"
   }
 }

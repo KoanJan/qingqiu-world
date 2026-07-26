@@ -1,6 +1,6 @@
 {
   "app": {
-    "title": "Private Buddy",
+    "title": "Qingqiu World",
     "startNewChat": "Start New Chat",
     "selectOrCreate": "Select a session or create a new one to start chatting",
     "askAnything": "Finally remembered me? Shift+Enter for new line",
@@ -136,7 +136,8 @@
     "searchConfig": "Search Engine",
     "language": "Language",
     "systemLLMConfig": "System LLM",
-    "publicExperience": "Experience"
+    "publicExperience": "Experience",
+    "custom": "Custom"
   },
   "library": {
     "title": "Library"
@@ -305,5 +306,36 @@
     "fieldProcedure": "Procedure",
     "sourceContent": "Source Content",
     "sourceContentUnavailable": "Source content unavailable"
+  },
+  "appearance": {
+    "title": "Appearance",
+    "background": "Background",
+    "overlay": "Overlay",
+    "bgColor": "Color",
+    "bgImage": "Image",
+    "colorPresets": "Default Colors",
+    "customColor": "Custom Color",
+    "addColor": "Add",
+    "colorAdded": "Color added",
+    "myColors": "My Colors",
+    "noCustomColors": "No custom colors",
+    "removeColor": "Remove Color",
+    "confirmDeleteColor": "Delete this color?",
+    "systemPresets": "System Presets",
+    "presetDefault": "Default",
+    "myImages": "My Images",
+    "uploadImage": "Add",
+    "noUserImages": "No uploaded images",
+    "deleteImage": "Delete Image",
+    "confirmDeleteImage": "Delete this image?",
+    "invalidImageType": "Please select an image file",
+    "glassOpacity": "Opacity",
+    "glassBlur": "Blur",
+    "transparent": "Transparent",
+    "opaque": "Opaque",
+    "clear": "Clear",
+    "blurry": "Blurry",
+    "resetBackground": "Reset to Default",
+    "resetOverlay": "Reset to Default"
   }
 }

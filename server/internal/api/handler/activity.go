@@ -3,10 +3,10 @@ package handler
 import (
 	"github.com/gin-gonic/gin"
 
-	"private-buddy-server/internal/api/response"
-	"private-buddy-server/internal/dops"
-	applogger "private-buddy-server/internal/logger"
-	"private-buddy-server/internal/service/task"
+	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/service/task"
 )
 
 // GetSessionActivities returns a flat activity timeline for all task works in a session.

@@ -2,7 +2,7 @@ package llm
 
 import (
 	"encoding/json"
-	applogger "private-buddy-server/internal/logger"
+	applogger "qingqiu-world-server/internal/logger"
 	"testing"
 )
 

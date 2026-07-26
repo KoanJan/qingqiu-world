@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"time"
 
-	"private-buddy-server/internal/model"
+	"qingqiu-world-server/internal/model"
 )
 
 // AgentCreate represents the input for creating an agent config.
