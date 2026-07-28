@@ -10,7 +10,10 @@
     "noAgent": "No Agent",
     "noSession": "No Session",
     "loading": "Loading...",
-    "newChat": "New Chat"
+    "newChat": "New Chat",
+    "agentList": "Agent List",
+    "sessionList": "Session List",
+    "energy": "Energy: {{n}}"
   },
   "chat": {
     "me": "Me",

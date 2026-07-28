@@ -57,6 +57,15 @@ func GetUserName() string {
 	return person.Name
 }
 
+// GetAIPersons returns all persons with type=AI (agent identities).
+func GetAIPersons() ([]model.Person, error) {
+	var persons []model.Person
+	if err := database.DB.Where("type = ?", model.PersonTypeAI).Find(&persons).Error; err != nil {
+		return nil, fmt.Errorf("query ai persons: %w", err)
+	}
+	return persons, nil
+}
+
 // CreateAIPerson creates a Person (type=AI) and an AgentConfig in a single transaction.
 // Returns the created AgentConfig and Person.
 func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int64, avatar string, knowledgeBaseIDs []int64) (*model.AgentConfig, *model.Person, error) {
@@ -226,4 +235,58 @@ func UpdateAIPerson(aiPersonUpdates *AIPersonUpdates) error {
 		}
 		return nil
 	})
+}
+
+// SessionMember
+type SessionMember struct {
+	PersonID int64
+	Name     string
+	Avatar   string
+}
+
+// GetAIPersonInSession returns the brief of the AI person in the session
+func GetAIPersonInSession(sessionID int64) (*SessionMember, error) {
+	var sm SessionMember
+	err := database.DB.Raw(`SELECT ps.participant_id AS person_id, p.name, p.avatar
+		FROM participant_sessions ps
+		JOIN persons p ON p.id = ps.participant_id AND p.type = ?
+		WHERE ps.session_id = ?
+		LIMIT 1`, model.PersonTypeAI, sessionID).Scan(&sm).Error
+	return &sm, err
+}
+
+// GetAIPersonsInSessions returns a map of sessionID → SessionMember for
+// the given session IDs. Each session maps to its first AI participant.
+func GetAIPersonsInSessions(sessionIDs []int64) (map[int64]*SessionMember, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	type row struct {
+		SessionID int64
+		PersonID  int64
+		Name      string
+		Avatar    string
+	}
+	var rows []row
+	err := database.DB.Raw(`SELECT ps.session_id, ps.participant_id AS person_id,
+		p.name, p.avatar
+		FROM participant_sessions ps
+		JOIN persons p ON p.id = ps.participant_id AND p.type = ?
+		WHERE ps.session_id IN ?
+		GROUP BY ps.session_id`, model.PersonTypeAI, sessionIDs).Scan(&rows).Error
+	if err != nil {
+		return nil, err
+	}
+
+	result := make(map[int64]*SessionMember, len(rows))
+	for _, r := range rows {
+		if _, ok := result[r.SessionID]; !ok {
+			result[r.SessionID] = &SessionMember{
+				PersonID: r.PersonID,
+				Name:     r.Name,
+				Avatar:   r.Avatar,
+			}
+		}
+	}
+	return result, nil
 }

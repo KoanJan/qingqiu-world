@@ -3,9 +3,8 @@ package schema
 import (
 	"time"
 
+	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
-
-	"gorm.io/gorm"
 )
 
 // SessionBase contains the common fields for session creation.
@@ -28,55 +27,35 @@ type SessionUpdate struct {
 // AgentID is the person ID of the first AI participant,
 // resolved from participant_sessions.
 type SessionResponse struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	AgentID   int64     `json:"agent_id"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID          int64     `json:"id"`
+	Title       string    `json:"title"`
+	AgentID     int64     `json:"agent_id"`
+	AgentName   string    `json:"agent_name"`   // Resolved from persons table
+	AgentAvatar string    `json:"agent_avatar"` // Resolved from persons table
+	CreatedAt   time.Time `json:"created_at"`
+	UpdatedAt   time.Time `json:"updated_at"`
 }
 
 // NewSessionResponse converts a model.Session to a SessionResponse.
-// agentID is resolved from participant_sessions by the caller.
-func NewSessionResponse(m *model.Session, agentID int64) *SessionResponse {
+// agent is resolved from participant_sessions by the caller.
+func NewSessionResponse(m *model.Session, aiMember *dops.SessionMember) *SessionResponse {
 	return &SessionResponse{
-		ID:        m.ID,
-		Title:     m.Title,
-		AgentID:   agentID,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		ID:          m.ID,
+		Title:       m.Title,
+		AgentID:     aiMember.PersonID,
+		AgentName:   aiMember.Name,
+		AgentAvatar: aiMember.Avatar,
+		CreatedAt:   m.CreatedAt,
+		UpdatedAt:   m.UpdatedAt,
 	}
 }
 
 // NewSessionResponseList converts a list of model.Session to SessionResponse list.
-// Resolves the first AI person_id for each session from participant_sessions.
-func NewSessionResponseList(db *gorm.DB, entities []model.Session) []*SessionResponse {
+// personMap maps sessionID → AI participant info, pre-resolved by dops.GetAIPersonsInSessions.
+func NewSessionResponseList(entities []model.Session, personMap map[int64]*dops.SessionMember) []*SessionResponse {
 	if len(entities) == 0 {
 		return nil
 	}
-	sids := make([]int64, len(entities))
-	for i := range entities {
-		sids[i] = entities[i].ID
-	}
-
-	// Resolve session → first AI person ID from participant_sessions.
-	type row struct {
-		SessionID int64
-		PersonID  int64
-	}
-	var rows []row
-	db.Raw(`SELECT ps.session_id, ps.participant_id AS person_id
-		FROM participant_sessions ps
-		JOIN persons p ON p.id = ps.participant_id AND p.type = 1
-		WHERE ps.session_id IN ?
-		GROUP BY ps.session_id`, sids).Scan(&rows)
-
-	personMap := make(map[int64]int64, len(rows))
-	for _, r := range rows {
-		if _, ok := personMap[r.SessionID]; !ok {
-			personMap[r.SessionID] = r.PersonID
-		}
-	}
-
 	result := make([]*SessionResponse, 0, len(entities))
 	for i := range entities {
 		result = append(result, NewSessionResponse(&entities[i], personMap[entities[i].ID]))

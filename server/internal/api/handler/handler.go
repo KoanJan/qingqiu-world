@@ -28,7 +28,7 @@ func NewHandler() *Handler {
 
 // Root handles the API root endpoint.
 func (h *Handler) Root(c *gin.Context) {
-	response.SuccessMessage(c, "Private Buddy API is running", nil)
+	response.SuccessMessage(c, "Qingqiu World API is running", nil)
 }
 
 // GetVersion handles retrieving the application version.
@@ -106,86 +106,6 @@ func (h *Handler) CreateOrUpdateUserProfile(c *gin.Context) {
 		"bio":  person.Bio,
 		"type": person.Type,
 	})
-}
-
-// DEPRECATED: it's not a good api
-// ListAgentConfigsWithSessions handles listing all agent configs with their sessions.
-func (h *Handler) ListAgentConfigsWithSessions(c *gin.Context) {
-	var configs []model.AgentConfig
-	if err := database.DB.Order("updated_at DESC").Find(&configs).Error; err != nil {
-		applogger.Error("failed to list agent configs with sessions", "error", err)
-		response.InternalError(c, "Failed to list agent configs")
-		return
-	}
-
-	if len(configs) == 0 {
-		response.Success(c, []schema.AgentWithSessions{})
-		return
-	}
-
-	agentConfigIDs := make([]int64, len(configs))
-	for i, a := range configs {
-		agentConfigIDs[i] = a.ID
-	}
-
-	var allSessions []model.Session
-	// Resolve sessions via participant_sessions instead of sessions.agent_config_id.
-	if err := database.DB.
-		Joins("JOIN participant_sessions ps ON ps.session_id = sessions.id").
-		Joins("JOIN agent_configs ac ON ac.person_id = ps.participant_id").
-		Where("ac.id IN ?", agentConfigIDs).
-		Group("sessions.id").
-		Order("MAX(sessions.updated_at) DESC").
-		Find(&allSessions).Error; err != nil {
-		applogger.Error("failed to load sessions for agent config list, returning without sessions", "error", err)
-	}
-
-	// Resolve session → agent mapping from participant_sessions.
-	sids := make([]int64, len(allSessions))
-	for i, s := range allSessions {
-		sids[i] = s.ID
-	}
-	type sm struct {
-		SessionID     int64
-		AgentConfigID int64
-	}
-	var sessionAgents []sm
-	database.DB.Raw(`SELECT ps.session_id, ac.id AS agent_config_id
-		FROM participant_sessions ps
-		JOIN agent_configs ac ON ac.person_id = ps.participant_id
-		WHERE ps.session_id IN ?`, sids).Scan(&sessionAgents)
-
-	agentSessions := make(map[int64]map[int64]bool) // agentConfigID → set of sessionIDs
-	for _, sa := range sessionAgents {
-		if agentSessions[sa.AgentConfigID] == nil {
-			agentSessions[sa.AgentConfigID] = make(map[int64]bool)
-		}
-		agentSessions[sa.AgentConfigID][sa.SessionID] = true
-	}
-
-	sessionsByAgent := make(map[int64][]model.Session)
-	for _, s := range allSessions {
-		for agentConfigID, sessSet := range agentSessions {
-			if sessSet[s.ID] {
-				sessionsByAgent[agentConfigID] = append(sessionsByAgent[agentConfigID], s)
-			}
-		}
-	}
-
-	personsMap := loadAgentConfigPersons(configs)
-
-	result := make([]schema.AgentWithSessions, 0, len(configs))
-	for i := range configs {
-		sessions := sessionsByAgent[configs[i].ID]
-		if sessions == nil {
-			sessions = []model.Session{}
-		}
-		result = append(result, schema.AgentWithSessions{
-			AgentResponse: *schema.NewAgentResponse(&configs[i], personsMap[configs[i].PersonID]),
-			Sessions:      schema.NewSessionBriefList(sessions),
-		})
-	}
-	response.Success(c, result)
 }
 
 // receivedFileEntry represents a file or directory in a delivery tree.

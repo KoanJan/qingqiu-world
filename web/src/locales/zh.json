@@ -10,7 +10,10 @@
     "noAgent": "暂无Agent",
     "noSession": "暂无会话",
     "loading": "加载中...",
-    "newChat": "新建会话"
+    "newChat": "新建会话",
+    "agentList": "Agent列表",
+    "sessionList": "会话列表",
+    "energy": "能量: {{n}}"
   },
   "chat": {
     "me": "我",

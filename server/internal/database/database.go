@@ -37,7 +37,7 @@ import (
 // CreateEntity, UpdateEntity) so that *gorm.DB never leaks outside this package.
 var DB *gorm.DB
 
-// Init initializes the SQLite database connection.
+// Init initializes the SQLite database connection, creates tables, and seeds defaults.
 // Creates the database directory if it doesn't exist.
 // Configures WAL mode, busy timeout, and immediate transaction locking.
 func Init() {
@@ -70,14 +70,40 @@ func Init() {
 
 	DB = db
 	applogger.Info("Database initialized", "path", dbPath)
+
+	// Create all tables using GORM AutoMigrate.
+	models := allModels()
+	for _, m := range models {
+		if err := DB.AutoMigrate(m); err != nil {
+			panic(fmt.Sprintf("Failed to auto-migrate %T: %v", m, err))
+		}
+	}
+
+	ensureSearchConfig()
+
+	applogger.Info("Database schema migration completed")
 }
 
-// AutoMigrate creates all database tables using GORM AutoMigrate.
-// No data migration is performed — this version series does not support
-// compatibility with previous schema versions. Use manual migration scripts
-// for development data.
-func AutoMigrate() {
-	models := []interface{}{
+// clearAndInit truncates all data and re-seeds defaults.
+// Exported for use by the migration package when DB version is below threshold.
+func ClearAndInit() {
+	models := allModels()
+	for _, m := range models {
+		if err := DB.Where("1 = 1").Delete(m).Error; err != nil {
+			tableName := ""
+			if tabler, ok := m.(interface{ TableName() string }); ok {
+				tableName = tabler.TableName()
+			}
+			applogger.Error("clearAndInit: failed to clear table", "table", tableName, "error", err)
+		}
+	}
+	ensureSearchConfig()
+}
+
+// allModels returns the full list of model structs for table operations.
+// Exported so that the migration package can access the model list for clearAndInit.
+func allModels() []any {
+	return []any{
 		&model.Person{},
 		&model.LLMConfig{},
 		&model.EmbeddingConfig{},
@@ -108,21 +134,12 @@ func AutoMigrate() {
 		&model.SystemLLMConfig{},
 		&model.UploadedSkill{},
 		&model.AgentDelivery{},
+		&model.AgentState{},
 	}
-
-	for _, m := range models {
-		if err := DB.AutoMigrate(m); err != nil {
-			panic(fmt.Sprintf("Failed to auto-migrate %T: %v", m, err))
-		}
-	}
-
-	ensureSearchConfig()
-	ensureDBVersion()
-
-	applogger.Info("Database migration completed")
 }
 
 // ensureSearchConfig creates the default search config record if it doesn't exist.
+// Exported so that the migration package can call it during clearAndInit.
 func ensureSearchConfig() {
 	var count int64
 	DB.Model(&model.SearchConfig{}).Where("id = ?", 1).Count(&count)
@@ -132,18 +149,6 @@ func ensureSearchConfig() {
 			APIKey:      "",
 			Description: "",
 			IsActive:    false,
-		})
-	}
-}
-
-// ensureDBVersion creates the initial DB version record if the table is empty.
-func ensureDBVersion() {
-	var count int64
-	DB.Model(&model.DBVersion{}).Count(&count)
-	if count == 0 {
-		DB.Create(&model.DBVersion{
-			Version:     config.AppVersion,
-			Description: "Initial SQLite schema after MySQL migration",
 		})
 	}
 }

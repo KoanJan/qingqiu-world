@@ -11,6 +11,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/task"
 
@@ -227,6 +228,27 @@ func (r *agentRuntime) Run(ctx context.Context) {
 				continue
 			}
 
+			// ── Phase 0: Energy ──
+			// Lazy recovery + hard-block pre-check. Must run before any LLM
+			// calls (Comprehend, Decide) to avoid wasting tokens when energy
+			// is depleted. The snapshot stays consistent between RecoverEnergy
+			// and DeductEnergy since the event loop is single-goroutine.
+			agentState, err := energy.RecoverEnergy(r.agentPersonID)
+			if err != nil {
+				applogger.Error("energy recover failed, skipping event",
+					"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID, "error", err)
+				continue
+			}
+			cost := energyCost(TriggerSourceEvent)
+			if agentState.Energy < int(cost) {
+				applogger.Warn("energy insufficient, hard-block event",
+					"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID,
+					"energy", agentState.Energy, "cost", cost,
+					"event_type", event.Type,
+				)
+				continue
+			}
+
 			// ── Phase 1: Comprehend ──
 			// Understand the event in context: who is speaking, what do they mean,
 			// what's the user's state, what knowledge is relevant.
@@ -237,7 +259,19 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			// Based on comprehension, determine what action(s) to take.
 			// A single decision can produce multiple actions: e.g., cancel an
 			// old task AND create a new one.
-			decision := Decide(ctx, event, ac, llmConfig, comprehension, r.activeWorks)
+			decision := Decide(ctx, event, ac, llmConfig, comprehension, r.activeWorks,
+				TriggerSourceEvent, agentState)
+
+			// Energy: deduct only when Decide produced actions. A decision with
+			// no actions consumes no energy. Deduct failure is logged but does
+			// NOT block action execution — the decision is already made.
+			if len(decision.Actions) > 0 {
+				if err := energy.DeductEnergy(r.agentPersonID, cost); err != nil {
+					applogger.Error("energy deduct failed (decision already made, action may execute)",
+						"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID,
+						"cost", cost, "error", err)
+				}
+			}
 
 			// ── Phase 3: Execute ──
 			// Carry out all actions from the decision.
@@ -667,6 +701,14 @@ func createAgentRuntime(agentConfigID int64, onStatusChange func(agentConfigID, 
 
 	// Recover any abandoned works from previous run
 	recoverActiveWorks(agentConfigID)
+
+	// Energy: trigger lazy recovery on startup so the agent's energy state is
+	// initialized/refreshed before the first event arrives. Non-fatal — the
+	// event loop retries RecoverEnergy on the first event if this fails.
+	if _, err := energy.RecoverEnergy(ac.PersonID); err != nil {
+		applogger.Error("energy startup recovery failed",
+			"agent_config_id", agentConfigID, "person_id", ac.PersonID, "error", err)
+	}
 
 	return runtime, nil
 }

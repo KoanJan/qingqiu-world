@@ -2,7 +2,6 @@ package handler
 
 import (
 	"qingqiu-world-server/internal/api/response"
-	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
@@ -20,7 +19,15 @@ func (h *Handler) ListSessions(c *gin.Context) {
 		response.InternalError(c, err.Error())
 		return
 	}
-	response.Success(c, schema.NewSessionResponseList(database.DB, entities))
+	sids := make([]int64, len(entities))
+	for i := range entities {
+		sids[i] = entities[i].ID
+	}
+	personMap, err := dops.GetAIPersonsInSessions(sids)
+	if err != nil {
+		applogger.Error("failed to resolve AI persons for sessions", "count", len(sids), "error", err)
+	}
+	response.Success(c, schema.NewSessionResponseList(entities, personMap))
 }
 
 // GetSession handles retrieving a single session by ID.
@@ -31,8 +38,11 @@ func (h *Handler) GetSession(c *gin.Context) {
 		handleNotFound(c, "Session", id)
 		return
 	}
-	personID := dops.GetFirstAIParticipantID(id)
-	response.Success(c, schema.NewSessionResponse(entity, personID))
+	sm, err := dops.GetAIPersonInSession(id)
+	if err != nil {
+		applogger.Error("failed to resolve session person", "session_id", id, "error", err)
+	}
+	response.Success(c, schema.NewSessionResponse(entity, sm))
 }
 
 // UpdateSession handles updating an existing session.
@@ -58,8 +68,11 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 			entity = refreshed
 		}
 	}
-	personID := dops.GetFirstAIParticipantID(id)
-	response.Success(c, schema.NewSessionResponse(entity, personID))
+	sm, err := dops.GetAIPersonInSession(id)
+	if err != nil {
+		applogger.Error("failed to resolve session person", "session_id", id, "error", err)
+	}
+	response.Success(c, schema.NewSessionResponse(entity, sm))
 }
 
 // DeleteSession handles deleting a session and its resources.

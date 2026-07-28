@@ -2,6 +2,8 @@ export interface Session {
   id: number;
   title: string;
   agent_id: number;
+  agent_name: string;
+  agent_avatar: string;
   created_at: string;
   updated_at: string | null;
 }
@@ -50,22 +52,13 @@ export interface Agent {
   updated_at: string | null;
 }
 
-export interface SessionBrief {
+// AgentBrief is the minimal agent representation for the sidebar agent list.
+// Returned by GET /api/agents/with-energy.
+export interface AgentBrief {
   id: number;
-  title: string;
-  created_at: string;
-  updated_at: string | null;
-}
-
-export interface AgentWithSessions extends Agent {
-  sessions: SessionBrief[];
-}
-
-// Session with agent info for flat session list display
-export interface SessionWithAgent extends SessionBrief {
-  agent_id: number;
-  agent_name: string;
-  agent_avatar: string;
+  name: string;
+  avatar: string;
+  energy: number;
 }
 
 /** Status constant for completed messages. */

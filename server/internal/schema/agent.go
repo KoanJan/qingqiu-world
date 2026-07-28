@@ -41,20 +41,6 @@ type AgentResponse struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// SessionBrief is a lightweight view of a session for list display.
-type SessionBrief struct {
-	ID        int64     `json:"id"`
-	Title     string    `json:"title"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
-}
-
-// AgentWithSessions represents an agent with its associated sessions.
-type AgentWithSessions struct {
-	AgentResponse
-	Sessions []SessionBrief `json:"sessions"`
-}
-
 // NewAgentResponse converts a model.AgentConfig and model.Person to an AgentResponse.
 func NewAgentResponse(m *model.AgentConfig, person *model.Person) *AgentResponse {
 	var kbIDs []int64
@@ -88,20 +74,6 @@ func NewAgentResponseList(configs []model.AgentConfig, persons map[int64]*model.
 	result := make([]*AgentResponse, 0, len(configs))
 	for i := range configs {
 		result = append(result, NewAgentResponse(&configs[i], persons[configs[i].PersonID]))
-	}
-	return result
-}
-
-// NewSessionBriefList converts model.Session entities to a SessionBrief list.
-func NewSessionBriefList(entities []model.Session) []SessionBrief {
-	result := make([]SessionBrief, 0, len(entities))
-	for _, m := range entities {
-		result = append(result, SessionBrief{
-			ID:        m.ID,
-			Title:     m.Title,
-			CreatedAt: m.CreatedAt,
-			UpdatedAt: m.UpdatedAt,
-		})
 	}
 	return result
 }

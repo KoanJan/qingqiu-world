@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../logger';
-import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentWithSessions, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, ReceivedDelivery } from '../types';
+import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, ReceivedDelivery } from '../types';
 
 declare global {
   interface Window {
@@ -167,7 +167,7 @@ export const embeddingConfigApi = {
 /** API client for agent CRUD operations. */
 export const agentApi = {
   list: () => api.get<Agent[]>('/agents'),
-  listWithSessions: () => api.get<AgentWithSessions[]>('/agents/with-sessions'),
+  listWithEnergy: () => api.get<AgentBrief[]>('/agents/with-energy'),
   get: (id: number) => api.get<Agent>(`/agents/${id}`),
   create: (data: Partial<Agent>) => api.post<Agent>('/agents', data),
   update: (id: number, data: Partial<Agent>) => api.put<Agent>(`/agents/${id}`, data),

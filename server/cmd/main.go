@@ -16,7 +16,8 @@ import (
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
-	"qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/migration"
+	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/experience"
 	"qingqiu-world-server/internal/service/kb"
@@ -52,13 +53,22 @@ func main() {
 	}
 
 	config.Init()
-	logger.Init()
-	applogger.Info("Private Buddy Server config initialized", "config", config.Get())
+	applogger.Init()
+	applogger.Info("Qingqiu World Server config initialized", "config", config.Get())
 
-	applogger.Info("Starting Private Buddy Server")
+	applogger.Info("Starting Qingqiu World Server")
 
 	database.Init()
-	database.AutoMigrate()
+	migration.Run()
+
+	// Energy: initialize the global fixed timezone from <DATA_ROOT>/tz.txt.
+	// Must run before any energy operation (RecoverEnergy/DeductEnergy) and
+	// before agent runtimes start (which call RecoverEnergy on startup).
+	if err := energy.Init(); err != nil {
+		applogger.Error("energy timezone init failed, falling back to UTC", "error", err)
+		// Non-fatal: energy package falls back to UTC internally.
+	}
+
 	llm.LoadCapabilityCache()
 
 	// Initialize the embedding service once — shared by memory and experience systems.

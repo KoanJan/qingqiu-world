@@ -32,6 +32,7 @@ export interface AppearanceSettings {
  *  Dynamically discovered at build time via Vite's import.meta.glob;
  *  each entry holds the {filename, url} pair for direct use in galleries. */
 const presetModules = import.meta.glob('/src/assets/backgrounds/*.{png,jpg,jpeg,webp,gif,bmp}', { eager: true, query: '?url', import: 'default' });
+/** Pre-loaded background image entries sorted by filename. */
 export const PRESET_BACKGROUNDS: { filename: string; url: string }[] = Object.entries(presetModules)
   .map(([path, url]) => ({ filename: (path as string).split('/').pop()!, url: url as string }))
   .sort((a, b) => a.filename.localeCompare(b.filename));

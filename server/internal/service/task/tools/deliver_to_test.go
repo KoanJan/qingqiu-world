@@ -31,7 +31,6 @@ func TestDeliverToTool_Execute(t *testing.T) {
 	// Initialize logger and DB
 	applogger.Init()
 	database.Init()
-	database.AutoMigrate()
 
 	// Create test persons — Alice (human user) and sender
 	alicePerson := model.Person{Name: "Alice", Type: model.PersonTypeHuman}

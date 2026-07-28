@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-07-29
+
+### Added
+- **Agent Energy System**: each AI agent has a daily energy budget of 100 points (carry-over up to 200 cap), consumed on Decide output; zero energy triggers a hard block — the agent cannot perceive, reason, or respond until the next day. Energy recovers lazily on each Decide trigger with multi-day catch-up, and startup recovery restores energy for offline periods. Global timezone locked on first launch to `<DATA_ROOT>/tz.txt`, independent of OS timezone changes
+- **DB Data Migration**: independent `migration` package with semver-based incremental migration — databases at version >= 0.1.0 execute sequential migration scripts per version while older databases are cleared and re-initialized; each version's migration lives in its own file
+
+### Changed
+- **Agent List in Chat Sidebar**: the sidebar toggles between session list and agent list views; each agent card shows avatar, name, and current energy with a start-chat button; the standalone new-chat button removed
+
+### Fixed
+- **Session Sidebar Tooltip**: hover text changed from "New Chat" to "Sessions" to match its actual function
+
 ## [0.1.0] - 2026-07-27
 
 ### Added

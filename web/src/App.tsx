@@ -217,6 +217,8 @@ function App() {
       id: TEMP_SESSION_ID,
       title: 'New Chat',
       agent_id: agentId,
+      agent_name: '',
+      agent_avatar: '',
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };

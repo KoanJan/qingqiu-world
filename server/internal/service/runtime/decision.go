@@ -10,6 +10,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/task"
@@ -62,6 +63,34 @@ const (
 	ActionCancel
 )
 
+// TriggerSource indicates what triggered this Decide call, used to:
+//   - Pick the energy cost (CostPassive for eventqueue events, CostActive
+//     for heartbeat-driven active behavior — reserved for future versions)
+//   - Render the cost hint in the system message
+//
+// In 0.1.1, Decide is only invoked from the event loop, so the source is
+// always TriggerSourceEvent.
+type TriggerSource int
+
+const (
+	// TriggerSourceEvent means Decide was triggered by an eventqueue event
+	// (passive response). Energy cost: CostPassive (1).
+	TriggerSourceEvent TriggerSource = iota
+	// TriggerSourceHeartbeat means Decide was triggered by a heartbeat
+	// (active behavior). Energy cost: CostActive (5). Reserved for future
+	// versions — no callers in 0.1.1.
+	TriggerSourceHeartbeat
+)
+
+// energyCost maps a TriggerSource to its energy Cost.
+// Returns CostPassive for any unrecognized source (defensive default).
+func energyCost(src TriggerSource) energy.Cost {
+	if src == TriggerSourceHeartbeat {
+		return energy.CostActive
+	}
+	return energy.CostPassive
+}
+
 // Action is a single atomic decision from the Decide phase.
 // Each Action is self-contained: it carries its own type and all associated data.
 // A DecisionResult can contain multiple Actions of different types, enabling
@@ -92,8 +121,16 @@ type DecisionResult struct {
 }
 
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, agent_description, message_content, comprehension_context, active_works_context
+// Parameters: agent_name, agent_description, message_content, comprehension_context, activeWorksContext, energyDynamicSuffix
 const decidePromptTemplate = `You are %s, %s. Your job is to decide how to handle incoming events.
+
+You have a limited energy budget each day:
+- You receive 100 energy points per day. Unused points carry over, up to a maximum of 200.
+- Each response costs 1 energy point.
+
+Letting your energy drop to zero is dangerous. You will lose all ability to perceive, reason about, or respond to anything — you become blind and silent to the world. No matter how urgent or important something is, you won't even know it happened until the next day.
+
+Guard your energy carefully. Do not let it run too low — once it's gone, all you can do is wait. When your energy is critically low, spend your remaining points only on what you absolutely must respond to; everything else can wait.
 
 Decide what to do with this event. Return a list of actions — each action is independent and self-contained.
 
@@ -135,6 +172,7 @@ Decision rules (apply in order):
 Event: %s
 
 %s%s
+%s
 
 Write background, guidance, reason, and plan in the same language as the event content.`
 
@@ -153,7 +191,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 //
 // For other event types, simple rule-based decisions are used.
 // The LLM call uses TemperatureDeterministic for consistent decision making.
-func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, activeWorks []*work) DecisionResult {
+func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, activeWorks []*work, triggerSource TriggerSource, agentState *model.AgentState) DecisionResult {
 	// Non-message events use simple rule-based decisions
 	switch event.Type {
 	case eventqueue.EventTypeGroupChatJoined:
@@ -185,7 +223,7 @@ func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentCo
 	sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 
 	// Use LLM to decide — it can create, route, cancel, or produce no actions
-	return decideWithLLM(ctx, event, ac, llmConfig, comprehension, sameSessionWorks)
+	return decideWithLLM(ctx, event, ac, llmConfig, comprehension, sameSessionWorks, triggerSource, agentState)
 }
 
 // decideWorkCompleted handles EventTypeWorkCompleted with a rule-based decision.
@@ -235,8 +273,39 @@ func decideWorkCompleted(event *eventqueue.AgentEvent, ac *model.AgentConfig) De
 	}
 }
 
+// buildEnergyDynamicSuffix constructs the energy info appended at the end of the
+// Decide user prompt. Static rules live in decidePromptTemplate; only the dynamic
+// parts (current time, remaining energy, cost hint) are rendered here.
+// Adds urgency cues when energy is critically low.
+func buildEnergyDynamicSuffix(triggerSource TriggerSource, agentState *model.AgentState) string {
+	currentEnergy := 0
+	if agentState != nil {
+		currentEnergy = agentState.Energy
+	}
+
+	costHint := "This response will cost 1 energy."
+	if triggerSource == TriggerSourceHeartbeat {
+		costHint = "This response will cost 5 energy."
+	}
+
+	var urgency string
+	switch {
+	case currentEnergy <= 5:
+		urgency = " Critically low — spend only if absolutely necessary."
+	case currentEnergy <= 15:
+		urgency = " Running low — choose carefully."
+	}
+
+	return fmt.Sprintf("Current time: %s\nRemaining energy: %d.%s %s",
+		energy.Now().Format("2006-01-02 15:04:05 MST"),
+		currentEnergy,
+		urgency,
+		costHint,
+	)
+}
+
 // decideWithLLM uses LLM to decide whether to create new work or route to an existing one.
-func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, sameSessionWorks []*work) DecisionResult {
+func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, sameSessionWorks []*work, triggerSource TriggerSource, agentState *model.AgentState) DecisionResult {
 	// Validate event has content before calling LLM
 	eventDescription := event.FormatDescription()
 	if eventDescription == "" {
@@ -256,7 +325,7 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 		agentDescription = person.Bio
 	}
 
-	prompt := fmt.Sprintf(decidePromptTemplate, dops.GetAgentConfigName(ac.ID), agentDescription, eventDescription, comprehensionContext, activeWorksContext)
+	prompt := fmt.Sprintf(decidePromptTemplate, dops.GetAgentConfigName(ac.ID), agentDescription, eventDescription, comprehensionContext, activeWorksContext, buildEnergyDynamicSuffix(triggerSource, agentState))
 
 	// Active work IDs are listed in the prompt via buildActiveWorksContext so the
 	// LLM knows which values are valid for target_work_id. We do NOT use schema enum
