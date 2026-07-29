@@ -34,7 +34,7 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
     setLoading(true);
     try {
       const response = await sessionApi.list();
-      setSessions(response.data);
+      setSessions(response.data ?? []);
     } catch (error) {
       logger.error('Failed to load sessions:', error);
       message.error(t('messages.loadFailed'));
@@ -47,7 +47,7 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
     setLoading(true);
     try {
       const response = await agentApi.listWithEnergy();
-      setAgentsBrief(response.data);
+      setAgentsBrief(response.data ?? []);
     } catch (error) {
       logger.error('Failed to load agents with energy:', error);
       message.error(t('messages.loadFailed'));
