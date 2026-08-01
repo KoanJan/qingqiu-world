@@ -144,9 +144,9 @@ export const sessionApi = {
 export const messageApi = {
   list: (sessionId: number) => api.get<Message[]>(`/messages/${sessionId}`),
   send: (sessionId: number, content: string) =>
-      api.post<{trigger_message_id: number}>(`/chat/send/${sessionId}?message=${encodeURIComponent(content)}`),
+      api.post<{message_id: number}>(`/chat/send/${sessionId}?message=${encodeURIComponent(content)}`),
   createAndSend: (content: string, agentId?: number, title?: string) =>
-    api.post<{session_id: number, trigger_message_id: number}>(`/chat/new?message=${encodeURIComponent(content)}${agentId ? `&agent_id=${agentId}` : ''}${title ? `&title=${encodeURIComponent(title)}` : ''}`),
+    api.post<{session_id: number, message_id: number}>(`/chat/new?message=${encodeURIComponent(content)}${agentId ? `&agent_id=${agentId}` : ''}${title ? `&title=${encodeURIComponent(title)}` : ''}`),
 };
 
 /** API client for LLM configuration management. */

@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-08-01
+
+### Added
+- **Agent Event Recovery**: events received while an agent has no energy are now retained and processed after energy recovers, so agents can catch up on messages, scheduled reminders, and completed work that arrived during their inactive period
+
+### Changed
+- **Batched Message Understanding**: consecutive unread messages in a session are understood and decided as one bounded batch, allowing agents to respond to the complete conversation flow instead of reacting independently to each message
+- **Context Retrieval Pipeline**: conversation-history keyword search and knowledge-base retrieval now complete during understanding; replies use the resulting context while preserving a fixed message boundary throughout processing
+
 ## [0.1.1] - 2026-07-29
 
 ### Added

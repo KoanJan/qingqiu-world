@@ -18,9 +18,9 @@ const (
 
 // SessionMeta holds session-related traceability info for Metadata.
 type SessionMeta struct {
-	SessionID        int64
-	TriggerMessageID int64
-	SenderName       string // Who sent the triggering message
+	SessionID  int64
+	Trigger    string
+	SenderName string // Who sent the triggering message
 }
 
 // Metadata carries system-generated traceability info from work creation.
@@ -39,15 +39,14 @@ func (m Metadata) String() string {
 		if m.SessionMeta == nil {
 			return "Trigger: chat message (unknown session)"
 		}
-		return fmt.Sprintf("Trigger: chat message in session %d, from %s, message #%d",
-			m.SessionMeta.SessionID, m.SessionMeta.SenderName, m.SessionMeta.TriggerMessageID)
+		return fmt.Sprintf("Trigger: %s", m.SessionMeta.Trigger)
 	case SourceTypeScheduled:
 		return "Trigger: self-reminder alarm"
 	case SourceTypeWorkCompleted:
 		if m.SessionMeta == nil {
 			return "Trigger: previous work completed"
 		}
-		return fmt.Sprintf("Trigger: previous work completed in session %d", m.SessionMeta.SessionID)
+		return fmt.Sprintf("Trigger: %s", m.SessionMeta.Trigger)
 	default:
 		return ""
 	}

@@ -93,13 +93,13 @@ func (w *work) Run(ctx context.Context) {
 			Type:      eventqueue.EventTypeWorkCompleted,
 			SessionID: w.sessionID,
 			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:           w.ID,
-				WorkType:         int(w.plan.Type),
-				Guidance:         w.plan.Guidance,
-				Status:           status,
-				TaskOutput:       output,
-				TaskError:        taskErr,
-				TriggerMessageID: w.getTriggerMessageID(),
+				WorkID:     w.ID,
+				WorkType:   int(w.plan.Type),
+				Guidance:   w.plan.Guidance,
+				Status:     status,
+				TaskOutput: output,
+				TaskError:  taskErr,
+				Trigger:    w.getTrigger(),
 			},
 		})
 	}()
@@ -143,13 +143,10 @@ func (w *work) runTask(ctx context.Context) {
 		return
 	}
 
-	triggerMessageID := w.getTriggerMessageID()
-
 	w.taskResult = task.RunTask(task.RunTaskParams{
 		LLMConfig:  llmConfig,
 		SessionID:  w.sessionID,
 		PersonID:   ac.PersonID,
-		UserMsgID:  triggerMessageID,
 		WorkID:     w.ID,
 		Guidance:   w.plan.Guidance,
 		Background: w.plan.Background,
@@ -220,8 +217,6 @@ func (w *work) runChat(ctx context.Context) {
 		return
 	}
 
-	triggerMessageID := w.getTriggerMessageID()
-
 	draftID := int64(0)
 	if w.draft != nil {
 		draftID = w.draft.ID
@@ -239,17 +234,19 @@ func (w *work) runChat(ctx context.Context) {
 	var comprehensionInput *chat.ComprehensionInput
 	if w.comprehension != nil {
 		comprehensionInput = &chat.ComprehensionInput{
-			PreprocessingResult: w.comprehension.PreprocessingResult,
-			PersonState:         w.comprehension.PersonState,
-			KBSegments:          w.comprehension.KBSegments,
-			Guidance:            w.plan.Guidance,
-			TaskResult:          w.taskResult,
+			PersonState:        w.comprehension.PersonState,
+			HistorySegments:    historySegments(w.comprehension.HistorySearch),
+			KBSegments:         kbSegments(w.comprehension.KBRetrieval),
+			NeedsClarification: w.comprehension.NeedsClarification,
+			Clarification:      w.comprehension.Clarification,
+			Guidance:           w.plan.Guidance,
+			TaskResult:         w.taskResult,
 		}
 	}
 
 	result, err := chat.ExecuteChat(
 		ctx, session, ac, llmConfig,
-		triggerMessageID, draftID,
+		draftID, w.comprehension.ReadMessageRange,
 		triggerOverride, comprehensionInput,
 	)
 
@@ -273,6 +270,20 @@ func (w *work) runChat(ctx context.Context) {
 	}
 
 	w.commitDraft(result.Content)
+}
+
+func historySegments(search *comprehend.HistorySearch) []comprehend.Segment {
+	if search == nil {
+		return nil
+	}
+	return search.Segments
+}
+
+func kbSegments(retrieval *comprehend.KBRetrieval) []comprehend.Segment {
+	if retrieval == nil {
+		return nil
+	}
+	return retrieval.Segments
 }
 
 // commitDraft commits the draft by sending it through the serialized commit channel.
@@ -349,25 +360,11 @@ func (w *work) loadChatDependencies() (*model.Session, *model.AgentConfig, *mode
 	return session, ac, llmConfig
 }
 
-// getTriggerMessageID extracts the trigger message ID from the work's
-// initial event payload.
-//   - For EventTypeNewMessage: the user message that triggered this work.
-//   - For EventTypeScheduled: the user message that caused the alarm to be set
-//     (preserving the causal chain).
-//   - For EventTypeWorkCompleted: the user message that originally triggered
-//     the completed work (preserving the causal chain across the
-//     TaskWork → ChatWork boundary).
-func (w *work) getTriggerMessageID() int64 {
-	if payload, ok := w.initialPayload.(*eventqueue.NewMessagePayload); ok {
-		return payload.MessageID
+func (w *work) getTrigger() string {
+	if w.plan != nil && w.plan.Metadata != nil && w.plan.Metadata.SessionMeta != nil {
+		return w.plan.Metadata.SessionMeta.Trigger
 	}
-	if payload, ok := w.initialPayload.(*eventqueue.ScheduledEventPayload); ok {
-		return payload.TriggerMessageID
-	}
-	if payload, ok := w.initialPayload.(*eventqueue.WorkCompletedPayload); ok {
-		return payload.TriggerMessageID
-	}
-	return 0
+	return "work execution"
 }
 
 // handleChatError handles errors during chat processing by committing

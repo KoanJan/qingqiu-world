@@ -30,7 +30,7 @@ interface UseMessagesResult {
   ) => Promise<{
     shouldConnect: boolean;
     sessionId: number;
-    triggerMessageId: number;
+    messageId: number;
   } | null>;
 }
 
@@ -94,7 +94,7 @@ export function useMessages(
           const newSessionId = res.data.session_id;
 
           const userMsg: Message = {
-            id: res.data.trigger_message_id,
+            id: res.data.message_id,
             session_id: newSessionId,
             person_id: userId,
             content: input,
@@ -107,13 +107,13 @@ export function useMessages(
           return {
             shouldConnect: true,
             sessionId: newSessionId,
-            triggerMessageId: userMsg.id,
+            messageId: userMsg.id,
           };
         }
 
         const res = await messageApi.send(session.id, input);
         const userMsg: Message = {
-          id: res.data.trigger_message_id,
+          id: res.data.message_id,
           session_id: session.id,
           person_id: userId,
           content: input,
@@ -126,7 +126,7 @@ export function useMessages(
         return {
           shouldConnect: true,
           sessionId: session.id,
-          triggerMessageId: userMsg.id,
+          messageId: userMsg.id,
         };
       } catch (err) {
         logger.error('Failed to send message:', err);

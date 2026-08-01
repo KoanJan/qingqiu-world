@@ -34,6 +34,7 @@ type AgentEvent struct {
 	Payload   any // Type depends on the event type
 	Type      AgentEventType
 	SessionID int64
+	EventID   int64 // Memory system event record ID (0 if no memory event)
 }
 
 // FormatDescription formats the event as natural language for LLM consumption.
@@ -84,8 +85,6 @@ type NewMessagePayload struct {
 //
 // Scheduled events are transient triggers — they carry business context but
 // do NOT persist records in the messages table. Instead:
-//   - TriggerMessageID points to the original user message that caused the
-//     alarm, preserving the causal chain
 //   - Message carries the agent's note to its future self, injected as
 //     supplementary context in the pipeline
 //   - Action determines whether the runtime takes the fast path (direct
@@ -93,7 +92,6 @@ type NewMessagePayload struct {
 //   - ActionContent carries the pre-computed message for the fast path
 type ScheduledEventPayload struct {
 	ScheduledEventID int64                      // ID of the ScheduledEvent record
-	TriggerMessageID int64                      // The user message that caused this alarm (causal chain)
 	Message          string                     // Agent's note to its future self when the alarm fires
 	Action           model.ScheduledEventAction // model.ScheduledEventAction* constant
 	ActionContent    string                     // Pre-computed message content for fast path (ActionSendMessage)
@@ -107,13 +105,13 @@ type ScheduledEventPayload struct {
 // The agent processes it through the same Comprehend→Decide pipeline as
 // external events, ensuring consistent cognitive handling.
 type WorkCompletedPayload struct {
-	WorkID           int64  // ID of the completed work
-	WorkType         int    // model.WorkTypeChat or model.WorkTypeTask
-	Guidance         string // The original guidance (execution intent) of the work
-	Status           string // "success" or "failure"
-	TaskOutput       string // Task execution output (for TaskWork success)
-	TaskError        string // Task execution error (for TaskWork failure)
-	TriggerMessageID int64  // The user message that originally triggered this work
+	WorkID     int64  // ID of the completed work
+	WorkType   int    // model.WorkTypeChat or model.WorkTypeTask
+	Guidance   string // The original guidance (execution intent) of the work
+	Status     string // "success" or "failure"
+	TaskOutput string // Task execution output (for TaskWork success)
+	TaskError  string // Task execution error (for TaskWork failure)
+	Trigger    string // Semantic description of the completed work's cause
 }
 
 // AlarmCreatedPayload is the payload type for EventTypeAlarmCreated events.

@@ -12,7 +12,7 @@ import (
 )
 
 // createEvent creates an event record and returns the event_id.
-func createEvent(ctx context.Context, eventType int, refID int64) (int64, error) {
+func createEvent(eventType int, refID int64) (int64, error) {
 	event := &model.Event{
 		EventType: eventType,
 		RefID:     refID,
@@ -27,26 +27,6 @@ func createEvent(ctx context.Context, eventType int, refID int64) (int64, error)
 		"ref_id", refID,
 	)
 	return event.ID, nil
-}
-
-// createEventWithEmbedding creates an event record and generates/stores its
-// embedding in a single operation.
-//
-// If embeddingSvc is nil, the vector storage step is skipped silently.
-func createEventWithEmbedding(ctx context.Context, eventType int, refID int64, content string) (int64, error) {
-	eventID, err := createEvent(ctx, eventType, refID)
-	if err != nil {
-		return 0, err
-	}
-
-	if embeddingSvc != nil {
-		if err := storeEventEmbedding(ctx, eventID, content); err != nil {
-			applogger.Error("Failed to store event embedding, event created without vector",
-				"event_id", eventID, "error", err)
-		}
-	}
-
-	return eventID, nil
 }
 
 // storeEventEmbedding generates an embedding for the event content and
@@ -73,9 +53,13 @@ func storeEventEmbedding(ctx context.Context, eventID int64, content string) err
 	return nil
 }
 
-// createObservation creates a mechanical observation for an agent.
+// CreateObservation creates a mechanical observation record for an agent.
 // No LLM — content is retrieved on demand via event_id → events.
-func createObservation(ctx context.Context, personID, eventID int64) error {
+//
+// This is the consumption-side entry point. Agent runtimes call this after
+// receiving an event from eventqueue to record that the agent has observed
+// the event.
+func CreateObservation(personID, eventID int64) error {
 	obs := newObservation(personID, eventID)
 
 	if err := database.DB.Create(obs).Error; err != nil {

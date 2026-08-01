@@ -91,12 +91,19 @@ func (r *agentRuntime) commitDraft(req *draftCommitRequest) {
 		"session_id", draft.SessionID,
 	)
 
-	// Submit to the event vectorization service for embedding + observation.
-	memory.SubmitVectorization(memory.VectorizationTask{
-		MessageID: msg.ID,
-		SessionID: msg.SessionID,
-		Content:   msg.Content,
-	})
+	// Memory: produce event record (sync) + consume self-observation.
+	// The agent records its own message as a memory event and creates
+	// an observation for itself — "I produced this message".
+	eventID, err := memory.RecordEvent(msg.ID, msg.Content)
+	if err != nil {
+		applogger.Error("failed to record memory event for agent message",
+			"message_id", msg.ID, "error", err)
+	} else {
+		if err := memory.CreateObservation(r.agentPersonID, eventID); err != nil {
+			applogger.Error("failed to create self-observation",
+				"person_id", r.agentPersonID, "event_id", eventID, "error", err)
+		}
+	}
 
 	// Push message event to SSE clients
 	pushMessageEvent(draft.SessionID, msg.ID, msg.Content)

@@ -94,7 +94,6 @@ func SetupRouter() *gin.Engine {
 
 		messages := api.Group("/messages")
 		{
-			messages.POST("/:id", h.CreateMessage)
 			messages.GET("/:id", h.ListMessages)
 		}
 

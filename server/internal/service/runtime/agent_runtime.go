@@ -13,6 +13,7 @@ import (
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/task"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -108,6 +109,7 @@ func (r *agentRuntime) Run(ctx context.Context) {
 		defer internalWg.Done()
 		r.handleDraftCommits(ctx)
 	}()
+	r.replayBufferedEvents(ctx)
 
 	for {
 		select {
@@ -136,249 +138,17 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			return
 
 		case event := <-r.eventCh:
-			// Reset idle counter on event arrival
+			if event == nil {
+				applogger.Error("agent event channel closed", "agent_config_id", r.agentConfigID)
+				return
+			}
 			r.idleTicks = 0
-
-			// ── Pre-processing: acknowledge the event ──
-			// Mark messages as read so the agent won't re-process them in
-			// subsequent heartbeats. Trigger summary generation for new messages.
-			switch event.Type {
-			// Handle work completion: remove from active works and update status.
-			// This is the agent's self-perception — "I just finished doing X."
-			// It goes through the same Comprehend→Decide pipeline so the agent
-			// can decide whether to inform the user.
-			case eventqueue.EventTypeWorkCompleted:
-				if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok {
-					r.activeWorks = removeWorkByID(r.activeWorks, payload.WorkID)
-					applogger.Info("Work completed event received",
-						"agent_config_id", r.agentConfigID,
-						"work_id", payload.WorkID,
-						"work_type", payload.WorkType,
-						"status", payload.Status,
-						"active_works_remaining", len(r.activeWorks),
-					)
-					// Only set idle if no other works are active in this session
-					if !r.hasActiveWorkInSession(event.SessionID) {
-						r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
-					}
-				}
-			// Mark the message as read immediately upon receiving the event.
-			// "Read" means the agent is aware of the message — this is separate
-			// from "processed" (which happens after the work completes).
-			// - For EventTypeNewMessage: the actual user message.
-			// - For EventTypeScheduled: the original user message that caused
-			//   the alarm (TriggerMessageID), preserving the causal chain.
-			case eventqueue.EventTypeNewPrivateChatMessage:
-				if payload, ok := event.Payload.(*eventqueue.NewMessagePayload); ok && payload.MessageID > 0 {
-					if err := database.DB.Model(&model.ParticipantSession{}).
-						Where("session_id = ? AND participant_id = ?",
-							event.SessionID, r.agentPersonID).
-						Update("last_read_message_id", payload.MessageID).Error; err != nil {
-						applogger.Error("failed to advance last_read_message_id on new message event", "error", err)
-					}
-				}
-
-			case eventqueue.EventTypeScheduled:
-				if payload, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && payload.TriggerMessageID > 0 {
-					if err := database.DB.Model(&model.ParticipantSession{}).
-						Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?",
-							event.SessionID, r.agentPersonID, payload.TriggerMessageID).
-						Update("last_read_message_id", payload.TriggerMessageID).Error; err != nil {
-						applogger.Error("failed to advance last_read_message_id on scheduled event", "error", err)
-					}
-				}
-				// Fast path for scheduled events with action=send_message.
-				// Skip the entire LLM pipeline and directly commit the pre-computed
-				// message. This is the optimization for simple reminders where the
-				// agent already knows exactly what to say when setting the alarm.
-				if payload, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok &&
-					payload.Action == model.ScheduledEventActionSendMessage &&
-					payload.ActionContent != "" {
-					r.handleFastPathSendMessage(event.SessionID, payload)
-					r.resetHeartbeatTimer(heartbeatTimer)
-					continue
-				}
-
-			// Alarm created by a tool (wake_me_when). Register a goroutine
-			// to wait for the trigger time. This is a control event — it does
-			// NOT enter the Comprehend→Decide pipeline.
-			case eventqueue.EventTypeAlarmCreated:
-				if payload, ok := event.Payload.(*eventqueue.AlarmCreatedPayload); ok {
-					r.handleAlarmCreated(payload.ScheduledEventID)
-				}
-				r.resetHeartbeatTimer(heartbeatTimer)
-				continue
-
-			default:
-				applogger.Error("unknown event type", "event_type", event.Type)
-				continue
+			if sleepSince, err := dops.GetAgentSleepSince(r.agentPersonID); err != nil {
+				applogger.Error("failed to read agent sleep state", "person_id", r.agentPersonID, "error", err)
+			} else if sleepSince != "" {
+				r.replayBufferedEvents(ctx)
 			}
-
-			// Decision: how should the agent respond to this event?
-			// After the cognitive order refactoring, we Comprehend first,
-			// then Decide based on the comprehension results.
-			ac, err := dops.Get[model.AgentConfig](r.agentConfigID)
-			if err != nil {
-				applogger.Error("Failed to load agent config in handleEvent", "agent_config_id", r.agentConfigID, "error", err)
-				continue
-			}
-			llmConfig, err := dops.GetLLMConfig(ac.LLMConfigID)
-			if err != nil {
-				applogger.Error("Failed to load LLM config in handleEvent", "agent_config_id", r.agentConfigID, "llm_config_id", ac.LLMConfigID, "error", err)
-				continue
-			}
-
-			// ── Phase 0: Energy ──
-			// Lazy recovery + hard-block pre-check. Must run before any LLM
-			// calls (Comprehend, Decide) to avoid wasting tokens when energy
-			// is depleted. The snapshot stays consistent between RecoverEnergy
-			// and DeductEnergy since the event loop is single-goroutine.
-			agentState, err := energy.RecoverEnergy(r.agentPersonID)
-			if err != nil {
-				applogger.Error("energy recover failed, skipping event",
-					"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID, "error", err)
-				continue
-			}
-			cost := energyCost(TriggerSourceEvent)
-			if agentState.Energy < int(cost) {
-				applogger.Warn("energy insufficient, hard-block event",
-					"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID,
-					"energy", agentState.Energy, "cost", cost,
-					"event_type", event.Type,
-				)
-				continue
-			}
-
-			// ── Phase 1: Comprehend ──
-			// Understand the event in context: who is speaking, what do they mean,
-			// what's the user's state, what knowledge is relevant.
-			activeWorksSummary := buildActiveWorksSummary(r.activeWorks, event.SessionID)
-			comprehension := comprehend.Comprehend(ctx, event, ac, llmConfig, activeWorksSummary)
-
-			// ── Phase 2: Decide ──
-			// Based on comprehension, determine what action(s) to take.
-			// A single decision can produce multiple actions: e.g., cancel an
-			// old task AND create a new one.
-			decision := Decide(ctx, event, ac, llmConfig, comprehension, r.activeWorks,
-				TriggerSourceEvent, agentState)
-
-			// Energy: deduct only when Decide produced actions. A decision with
-			// no actions consumes no energy. Deduct failure is logged but does
-			// NOT block action execution — the decision is already made.
-			if len(decision.Actions) > 0 {
-				if err := energy.DeductEnergy(r.agentPersonID, cost); err != nil {
-					applogger.Error("energy deduct failed (decision already made, action may execute)",
-						"agent_config_id", r.agentConfigID, "person_id", r.agentPersonID,
-						"cost", cost, "error", err)
-				}
-			}
-
-			// ── Phase 3: Execute ──
-			// Carry out all actions from the decision.
-			for _, action := range decision.Actions {
-				switch action.Type {
-				case ActionRoute:
-					// Route the event to an existing active Work.
-					// Only TaskWork supports absorbing new guidance via its ReAct loop.
-					// ChatWork is one-shot (no iteration loop), so route to ChatWork is invalid.
-					wg := action.WorkGuidance
-					target := r.findActiveWorkByID(wg.TargetWorkID)
-					if target == nil {
-						applogger.Error("Target work not found for route, skipping",
-							"agent_config_id", r.agentConfigID,
-							"target_work_id", wg.TargetWorkID,
-						)
-						continue
-					}
-					if target.plan.Type != model.WorkTypeTask {
-						applogger.Error("Route target is not TaskWork, skipping",
-							"agent_config_id", r.agentConfigID,
-							"work_id", target.ID,
-							"work_type", target.plan.Type,
-						)
-						continue
-					}
-					target.FeedGuidance(task.GuidanceDirective{
-						Guidance: wg.Guidance,
-						Reason:   wg.Reason,
-					})
-					applogger.Info("Routed guidance to existing TaskWork",
-						"agent_config_id", r.agentConfigID,
-						"work_id", target.ID,
-						"guidance", wg.Guidance,
-						"reason", wg.Reason,
-					)
-
-				case ActionCancel:
-					// Cancel an existing active Work by sending a cancel directive
-					// through the guidance channel. This is "appealable" cancellation —
-					// the TaskLoop's LLM receives the directive and decides how to wrap up
-					// (save notes, record reasons) before exiting.
-					//
-					// If the guidance channel is full or the TaskLoop is unresponsive,
-					// abandon() is called as a fallback to forcefully mark the work as abandoned.
-					wg := action.WorkGuidance
-					target := r.findActiveWorkByID(wg.TargetWorkID)
-					if target == nil {
-						applogger.Error("Target work not found for cancel, skipping",
-							"agent_config_id", r.agentConfigID,
-							"target_work_id", wg.TargetWorkID,
-						)
-						continue
-					}
-					if target.plan.Type != model.WorkTypeTask {
-						// ChatWork has no iteration loop, so it can't absorb a cancel directive.
-						// Fall back to direct abandon for ChatWork.
-						target.abandon()
-						applogger.Info("Cancelled ChatWork by direct abandon (no iteration loop)",
-							"agent_config_id", r.agentConfigID,
-							"work_id", wg.TargetWorkID,
-						)
-						continue
-					}
-					// Send cancel directive to TaskWork via guidance channel.
-					// The TaskLoop will observe it at the next iteration boundary.
-					target.FeedGuidance(task.GuidanceDirective{
-						Guidance: wg.Guidance,
-						Reason:   wg.Reason,
-					})
-					applogger.Info("Sent cancel directive to TaskWork",
-						"agent_config_id", r.agentConfigID,
-						"work_id", wg.TargetWorkID,
-						"guidance", wg.Guidance,
-						"reason", wg.Reason,
-					)
-
-				case ActionCreate:
-					// Instantiate Work from the Action's WorkPlan
-					if action.WorkPlan == nil {
-						applogger.Error("Create action has no work_plan, skipping",
-							"agent_config_id", r.agentConfigID,
-						)
-						continue
-					}
-					w, success := r.newWork(event, action.WorkPlan, comprehension)
-					if !success {
-						applogger.Error("failed to create work")
-						continue
-					}
-
-					// For WorkCompleted events, pass the task result to the new
-					// ChatWork so it can reference the execution outcome.
-					if event.Type == eventqueue.EventTypeWorkCompleted {
-						if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok {
-							w.taskResult = &task.TaskResult{
-								Status: payload.Status,
-								Output: payload.TaskOutput,
-								Error:  payload.TaskError,
-							}
-						}
-					}
-
-					r.activeWorks = append(r.activeWorks, w)
-					go w.Run(ctx)
-				}
-			}
+			r.handleEvent(ctx, event, false)
 			r.resetHeartbeatTimer(heartbeatTimer)
 
 		case <-heartbeatTimer.C:
@@ -386,6 +156,143 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			r.resetHeartbeatTimer(heartbeatTimer)
 		}
 	}
+}
+
+func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentEvent, isReplay bool) bool {
+	state, err := energy.RecoverEnergy(r.agentPersonID)
+	if err != nil {
+		applogger.Error("energy recovery failed", "error", err)
+		return false
+	}
+	if state.Energy < int(energyCost(TriggerSourceEvent)) {
+		if isReplay {
+			applogger.Info("skipped buffered agent event due to insufficient energy",
+				"person_id", r.agentPersonID,
+				"event_type", event.Type,
+				"session_id", event.SessionID,
+				"event_id", event.EventID,
+				"energy", state.Energy,
+			)
+			return false
+		}
+		if err := r.bufferEvent(event); err != nil {
+			applogger.Error("failed to buffer event", "error", err)
+		}
+		return false
+	}
+	if event.Type == eventqueue.EventTypeAlarmCreated {
+		if p, ok := event.Payload.(*eventqueue.AlarmCreatedPayload); ok {
+			r.handleAlarmCreated(p.ScheduledEventID)
+		}
+		return true
+	}
+	if event.Type == eventqueue.EventTypeWorkCompleted {
+		payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
+		if !ok || payload == nil {
+			applogger.Error("invalid work completed event payload", "agent_config_id", r.agentConfigID)
+			return true
+		}
+		r.activeWorks = removeWorkByID(r.activeWorks, payload.WorkID)
+		if !r.hasActiveWorkInSession(event.SessionID) {
+			r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
+		}
+	}
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
+		if event.EventID > 0 {
+			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
+				applogger.Error("failed to create observation", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+			}
+		}
+		p, ok := event.Payload.(*eventqueue.NewMessagePayload)
+		if !ok {
+			return true
+		}
+		ps, err := dops.GetParticipantSession(event.SessionID, r.agentPersonID)
+		if err != nil {
+			applogger.Error("failed to load participant session for message event",
+				"session_id", event.SessionID,
+				"person_id", r.agentPersonID,
+				"message_id", p.MessageID,
+				"error", err,
+			)
+			return true
+		}
+		if ps.LastReadMessageID >= p.MessageID {
+			applogger.Info("skipped message event because it is already read",
+				"session_id", event.SessionID,
+				"person_id", r.agentPersonID,
+				"message_id", p.MessageID,
+				"last_read_message_id", ps.LastReadMessageID,
+				"event_id", event.EventID,
+			)
+			return true
+		}
+	}
+	if event.Type == eventqueue.EventTypeScheduled {
+		if p, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && p.Action == model.ScheduledEventActionSendMessage && p.ActionContent != "" {
+			r.handleFastPathSendMessage(event.SessionID, p)
+			return true
+		}
+	}
+	ac, err := dops.Get[model.AgentConfig](r.agentConfigID)
+	if err != nil {
+		return true
+	}
+	llmConfig, err := dops.GetLLMConfig(ac.LLMConfigID)
+	if err != nil {
+		return true
+	}
+	c := comprehend.Comprehend(ctx, event, ac, llmConfig, buildActiveWorksSummary(r.activeWorks, event.SessionID))
+	d := Decide(ctx, event, ac, llmConfig, c, r.activeWorks, TriggerSourceEvent, state)
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.ReadMessageRange[1] > c.ReadMessageRange[0] {
+		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.ReadMessageRange[1]); err != nil {
+			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.ReadMessageRange[1], "error", err)
+		}
+	}
+	if len(d.Actions) > 0 {
+		if err := energy.DeductEnergy(r.agentPersonID, energyCost(TriggerSourceEvent)); err != nil {
+			applogger.Error("failed to deduct energy", "person_id", r.agentPersonID, "error", err)
+		}
+	}
+	for _, action := range d.Actions {
+		switch action.Type {
+		case ActionRoute, ActionCancel:
+			if action.WorkGuidance == nil {
+				applogger.Error("work guidance is missing", "agent_config_id", r.agentConfigID, "action_type", action.Type)
+				continue
+			}
+			target := r.findActiveWorkByID(action.WorkGuidance.TargetWorkID)
+			if target == nil {
+				applogger.Error("target work not found", "agent_config_id", r.agentConfigID, "work_id", action.WorkGuidance.TargetWorkID)
+				continue
+			}
+			if action.Type == ActionCancel && target.plan.Type != model.WorkTypeTask {
+				target.abandon()
+				continue
+			}
+			if target.plan.Type != model.WorkTypeTask {
+				applogger.Error("route target is not task work", "agent_config_id", r.agentConfigID, "work_id", target.ID)
+				continue
+			}
+			target.FeedGuidance(task.GuidanceDirective{Guidance: action.WorkGuidance.Guidance, Reason: action.WorkGuidance.Reason})
+		case ActionCreate:
+			if action.WorkPlan == nil {
+				applogger.Error("create action has no work plan", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			w, success := r.newWork(event, action.WorkPlan, c)
+			if !success {
+				applogger.Error("failed to create work", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil {
+				w.taskResult = &task.TaskResult{Status: payload.Status, Output: payload.TaskOutput, Error: payload.TaskError}
+			}
+			r.activeWorks = append(r.activeWorks, w)
+			go w.Run(ctx)
+		}
+	}
+	return true
 }
 
 // ==========================================================================
@@ -499,9 +406,9 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 			return &task.Metadata{
 				SourceType: task.SourceTypeSession,
 				SessionMeta: &task.SessionMeta{
-					SessionID:        event.SessionID,
-					TriggerMessageID: payload.MessageID,
-					SenderName:       payload.SpeakerName,
+					SessionID:  event.SessionID,
+					Trigger:    fmt.Sprintf("%s sent a chat message: %q", payload.SpeakerName, payload.MessageContent),
+					SenderName: payload.SpeakerName,
 				},
 			}
 		}
@@ -514,6 +421,7 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 			SourceType: task.SourceTypeWorkCompleted,
 			SessionMeta: &task.SessionMeta{
 				SessionID: event.SessionID,
+				Trigger:   "a previous work completed",
 			},
 		}
 	}

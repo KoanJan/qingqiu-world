@@ -49,6 +49,11 @@ var migrations = []migration{
 		description: "Add AgentState table and seed energy for existing AI persons",
 		fn:          migrate011,
 	},
+	{
+		version:     "0.1.2",
+		description: "Add persistent agent event buffers and sleep state",
+		fn:          migrate012,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

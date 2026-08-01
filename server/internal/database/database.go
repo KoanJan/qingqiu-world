@@ -135,6 +135,7 @@ func allModels() []any {
 		&model.UploadedSkill{},
 		&model.AgentDelivery{},
 		&model.AgentState{},
+		&model.AgentEventBuffer{},
 	}
 }
 

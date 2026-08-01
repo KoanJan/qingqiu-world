@@ -12,29 +12,20 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 )
 
-// Query type constants for classification
-const queryTypeClear = "clear"         // Query is complete and unambiguous
-const queryTypeAmbiguous = "ambiguous" // Query contains references to previous context
-const queryTypeVague = "vague"         // Query is too vague to understand intent
-const queryTypeNoQuery = "no_query"    // Query doesn't need retrieval (greetings, etc.)
-
-// routingPrompt is the LLM prompt template for query type classification
-// and keyword extraction for history search.
+// routingPrompt is the LLM prompt template for retrieval planning.
 // It takes two parameters: history (formatted conversation) and query (the person's message).
 const routingPrompt = `Analyze the query type and process accordingly.
 
 Conversation history:
 %s
 
-Current query: %s
+Current message batch: %s
 
-Classify the query type and process:
-1. "no_query" - No retrieval needed: greetings, chitchat, emotional expressions, simple responses, etc. that can be answered without retrieving historical information.
-2. "clear" - Clear query: the query is complete and unambiguous, requiring relevant information to answer.
-3. "ambiguous" - Ambiguous reference: the query contains pronouns (like "it", "that", "this") or references to previous content, requiring context to understand. For this type, you MUST rewrite the query into a complete, clear query that can be understood independently without relying on conversation history.
-4. "vague" - Too vague: the query is too brief or ambiguous, making it difficult to determine intent even with context. For this type, explain the reason for vagueness.
+Produce a self-contained knowledge-base search query for this message batch. When the batch does not need knowledge-base retrieval, return an empty query.
 
-In addition, extract a list of keywords from the query (or rewritten query if applicable) suitable for keyword-based search in conversation history. Keywords should capture the core topics, entities, and concepts mentioned.`
+Extract keywords suitable for searching relevant conversation history. Return an empty keyword list when history search is unnecessary.
+
+If the batch is too vague to act on even with the conversation history, set needs_clarification to true and explain why in clarification_reason.`
 
 // clarifyPrompt is the LLM prompt template for generating clarification questions.
 // It takes three parameters: history, query, and reason.
@@ -55,31 +46,18 @@ IMPORTANT: The clarification question MUST be in the SAME LANGUAGE as the origin
 
 Output only the clarification question, without any additional content.`
 
-// QueryRoutingResult represents the structured output of query routing.
-// Defines the expected format when the LLM classifies and processes a user query.
-type QueryRoutingResult struct {
-	Type           string   `json:"type" jsonschema:"description=Query type classification,enum=no_query,enum=clear,enum=ambiguous,enum=vague,required"`
-	RewrittenQuery string   `json:"rewritten_query" jsonschema:"description=Rewritten query that is self-contained and clear (required for ambiguous type)"`
-	Keywords       []string `json:"keywords" jsonschema:"description=Keywords extracted from the query for keyword-based history search,required"`
-	Reason         string   `json:"reason" jsonschema:"description=Reason why the query is vague and needs clarification (required for vague type)"`
-}
-
-// PreprocessingResult represents the full output of query preprocessing,
-// including the processed query, type classification, keywords for retrieval, and clarification if needed.
-type PreprocessingResult struct {
-	OriginalQuery      string   `json:"original_query"`
-	ProcessedQuery     string   `json:"processed_query"`
-	Keywords           []string `json:"keywords"`
-	QueryType          string   `json:"query_type"`
-	NeedsClarification bool     `json:"needs_clarification"`
-	Clarification      string   `json:"clarification"`
-	SkipRetrieval      bool     `json:"skip_retrieval"`
+// QueryPreprocessingOutput contains retrieval and clarification instructions for a message batch.
+type QueryPreprocessingOutput struct {
+	KnowledgeBaseQuery    string   `json:"knowledge_base_query" jsonschema:"description=Self-contained query for knowledge-base vector search; empty when unnecessary,required"`
+	HistorySearchKeywords []string `json:"history_search_keywords" jsonschema:"description=Keywords for conversation history search; empty when unnecessary,required"`
+	NeedsClarification    bool     `json:"needs_clarification" jsonschema:"description=Whether the message batch needs clarification,required"`
+	ClarificationReason   string   `json:"clarification_reason" jsonschema:"description=Reason the message batch needs clarification"`
+	Clarification         string   `json:"clarification" jsonschema:"description=Clarification question when needed"`
 }
 
 // formatHistoryForPreprocessing formats conversation history for preprocessing prompts.
 // Limits to the most recent maxMessages if > 0.
-// userName is the actual name of the other party, agentName is the agent's own name.
-func formatHistoryForPreprocessing(history []llm.Message, maxMessages int, userName, agentName string) string {
+func formatHistoryForPreprocessing(history []ConversationMessage, maxMessages int) string {
 	if len(history) == 0 {
 		return "(No conversation history)"
 	}
@@ -89,62 +67,47 @@ func formatHistoryForPreprocessing(history []llm.Message, maxMessages int, userN
 		recent = history[len(history)-maxMessages:]
 	}
 
-	userRole := userName
-
 	var formatted []string
 	for _, msg := range recent {
-		role := userRole
-		if msg.Role != "user" {
-			role = agentName
-		}
-		formatted = append(formatted, fmt.Sprintf("%s: %s", role, msg.Content))
+		formatted = append(formatted, fmt.Sprintf("%s [%s]: %s", msg.PersonName, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))
 	}
 	return strings.Join(formatted, "\n")
 }
 
-// routeQuery classifies the query type and rewrites if ambiguous.
-// Uses JSON Schema structured output for deterministic classification.
-// Uses TemperatureDeterministic for consistent, deterministic outputs.
-func routeQuery(
+func preprocessQuery(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []llm.Message,
+	history []ConversationMessage,
 	maxMessages int,
-	userName string,
-	agentName string,
-) *QueryRoutingResult {
+) *QueryPreprocessingOutput {
 	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
 
-	historyText := formatHistoryForPreprocessing(history, maxMessages, userName, agentName)
+	historyText := formatHistoryForPreprocessing(history, maxMessages)
 	prompt := fmt.Sprintf(routingPrompt, historyText, query)
 
 	result, err := chatModel.ChatWithJSONSchema(ctx, []llm.Message{
 		{Role: "user", Content: prompt},
 	}, llm.JSONSchemaDefinition{
-		Name:        "QueryRoutingResult",
-		Description: "Classify and process the incoming query",
+		Name:        "QueryPreprocessingOutput",
+		Description: "Prepare retrieval requests for the incoming message batch",
 		Strict:      true,
-		Schema:      llm.GenerateSchema[QueryRoutingResult](),
+		Schema:      llm.GenerateSchema[QueryPreprocessingOutput](),
 	})
 
 	if err != nil {
-		applogger.Error("Query routing failed", "error", err)
-		return &QueryRoutingResult{Type: queryTypeClear}
+		applogger.Error("query preprocessing failed", "error", err)
+		return &QueryPreprocessingOutput{KnowledgeBaseQuery: query}
 	}
 
 	if result != "" {
-		var routing QueryRoutingResult
-		if err := json.Unmarshal([]byte(result), &routing); err == nil {
-			applogger.Info("Query routing result", "type", routing.Type)
-			if routing.Type == queryTypeAmbiguous && routing.RewrittenQuery != "" {
-				applogger.Info("Query rewritten", "original", query[:min(50, len(query))], "rewritten", routing.RewrittenQuery[:min(50, len(routing.RewrittenQuery))])
-			}
-			return &routing
+		var output QueryPreprocessingOutput
+		if err := json.Unmarshal([]byte(result), &output); err == nil {
+			return &output
 		}
 	}
 
-	return &QueryRoutingResult{Type: queryTypeClear}
+	return &QueryPreprocessingOutput{KnowledgeBaseQuery: query}
 }
 
 // generateClarification generates a clarification question for vague queries.
@@ -154,16 +117,14 @@ func generateClarification(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []llm.Message,
+	history []ConversationMessage,
 	reason string,
 	characterSettings string,
 	maxMessages int,
-	userName string,
-	agentName string,
 ) string {
 	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
 
-	historyText := formatHistoryForPreprocessing(history, maxMessages, userName, agentName)
+	historyText := formatHistoryForPreprocessing(history, maxMessages)
 	prompt := fmt.Sprintf(clarifyPrompt, historyText, query, reason)
 
 	if characterSettings != "" {
@@ -182,63 +143,27 @@ func generateClarification(
 	return result
 }
 
-// PreprocessQuery is the main entry point for query preprocessing.
-// It classifies the query type and applies the appropriate transformation:
-//   - no_query: skip retrieval, use original query
-//   - clear: use original query with retrieval
-//   - ambiguous: rewrite query with context for retrieval
-//   - vague: generate clarification question, mark as needs_clarification
+// PreprocessQuery prepares retrieval requests and clarification output for a message batch.
 func PreprocessQuery(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []llm.Message,
+	history []ConversationMessage,
 	characterSettings string,
 	maxMessages int,
-	userName string,
-	agentName string,
-) *PreprocessingResult {
-	result := &PreprocessingResult{
-		OriginalQuery:  query,
-		ProcessedQuery: query,
-		QueryType:      queryTypeClear,
-	}
-
-	routing := routeQuery(ctx, llmConfig, query, history, maxMessages, userName, agentName)
-	result.Keywords = routing.Keywords
-	queryType := routing.Type
-	result.QueryType = queryType
-
-	switch queryType {
-	case queryTypeNoQuery:
-		result.ProcessedQuery = query
-		result.SkipRetrieval = true
-
-	case queryTypeClear:
-		result.ProcessedQuery = query
-		result.SkipRetrieval = false
-
-	case queryTypeAmbiguous:
-		if routing.RewrittenQuery != "" {
-			result.ProcessedQuery = routing.RewrittenQuery
-		} else {
-			result.ProcessedQuery = query
-		}
-
-	case queryTypeVague:
+) *QueryPreprocessingOutput {
+	output := preprocessQuery(ctx, llmConfig, query, history, maxMessages)
+	if output.NeedsClarification {
 		reason := "Query is too vague"
-		if routing.Reason != "" {
-			reason = routing.Reason
+		if output.ClarificationReason != "" {
+			reason = output.ClarificationReason
 		}
-		clarification := generateClarification(ctx, llmConfig, query, history, reason, characterSettings, maxMessages, userName, agentName)
-		result.NeedsClarification = true
-		result.Clarification = clarification
+		output.Clarification = generateClarification(ctx, llmConfig, query, history, reason, characterSettings, maxMessages)
 	}
 
-	applogger.Info("Query preprocessing complete",
-		"type", queryType,
-		"processed", result.ProcessedQuery[:min(50, len(result.ProcessedQuery))],
-		"keywords", result.Keywords,
+	applogger.Info("query preprocessing complete",
+		"knowledge_base_query", output.KnowledgeBaseQuery[:min(50, len(output.KnowledgeBaseQuery))],
+		"history_search_keywords", output.HistorySearchKeywords,
 	)
-	return result
+	return output
 }

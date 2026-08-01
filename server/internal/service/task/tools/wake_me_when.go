@@ -30,19 +30,17 @@ const triggerAtFormat = "2006-01-02 15:04:05"
 // a goroutine. This separation keeps the tool layer thin and avoids circular
 // dependencies (runtime → task → tools).
 type WakeMeWhenTool struct {
-	personID         int64
-	sessionID        int64
-	triggerMessageID int64 // The user message that triggered this tool call
-	CycleDetector          // Embedded: cycle detection on (args, result) pairs
+	personID      int64
+	sessionID     int64
+	CycleDetector // Embedded: cycle detection on (args, result) pairs
 }
 
 // NewWakeMeWhenTool creates a WakeMeWhenTool for the given person, session,
 // and the user message that triggered this tool call.
-func NewWakeMeWhenTool(personID, sessionID, triggerMessageID int64) *WakeMeWhenTool {
+func NewWakeMeWhenTool(personID, sessionID int64) *WakeMeWhenTool {
 	return &WakeMeWhenTool{
-		personID:         personID,
-		sessionID:        sessionID,
-		triggerMessageID: triggerMessageID,
+		personID:  personID,
+		sessionID: sessionID,
 	}
 }
 
@@ -140,14 +138,13 @@ func (w *WakeMeWhenTool) Execute(args map[string]interface{}) (string, error) {
 
 	// Create a DB record for persistence and debugging
 	event := model.ScheduledEvent{
-		PersonID:         w.personID,
-		SessionID:        w.sessionID,
-		TriggerMessageID: w.triggerMessageID,
-		TriggerAt:        triggerAt,
-		Message:          message,
-		Action:           action,
-		ActionContent:    actionContent,
-		Status:           model.ScheduledEventStatusPending,
+		PersonID:      w.personID,
+		SessionID:     w.sessionID,
+		TriggerAt:     triggerAt,
+		Message:       message,
+		Action:        action,
+		ActionContent: actionContent,
+		Status:        model.ScheduledEventStatusPending,
 	}
 	if err := database.DB.Create(&event).Error; err != nil {
 		applogger.Error("Failed to create scheduled event record",

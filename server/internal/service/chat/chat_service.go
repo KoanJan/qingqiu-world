@@ -82,7 +82,7 @@ type pipeline struct {
 	session          *model.Session
 	ac               *model.AgentConfig
 	llmConfig        *model.LLMConfig
-	triggerMessageID int64
+	readMessageRange [2]int64
 	triggerOverride  *TriggerOverride // Non-nil when the trigger is not a persisted message (e.g., scheduled event)
 	draftID          int64            // Draft ID for interaction records
 
@@ -95,11 +95,13 @@ type pipeline struct {
 	userName       string // Human participant's name, empty if not set
 
 	// Results from pipeline stages
-	personStateResult   *comprehend.PersonState
-	preprocessingResult *comprehend.PreprocessingResult
-	kbSegments          []comprehend.Segment
-	taskResult          *chatcontext.TaskResultForAssembly
-	guidance            string // Execution intent from Decide phase
+	personStateResult  *comprehend.PersonState
+	historySegments    []comprehend.Segment
+	kbSegments         []comprehend.Segment
+	needsClarification bool
+	clarification      string
+	taskResult         *chatcontext.TaskResultForAssembly
+	guidance           string // Execution intent from Decide phase
 }
 
 // ExecuteChat handles the chat execution path (WorkTypeChat).
@@ -114,23 +116,25 @@ func ExecuteChat(
 	session *model.Session,
 	ac *model.AgentConfig,
 	llmConfig *model.LLMConfig,
-	triggerMessageID int64,
 	draftID int64,
+	readMessageRange [2]int64,
 	triggerOverride *TriggerOverride,
 	comprehension *ComprehensionInput,
 ) (*ChatResult, error) {
 
 	p := &pipeline{
-		session:             session,
-		ac:                  ac,
-		llmConfig:           llmConfig,
-		triggerMessageID:    triggerMessageID,
-		triggerOverride:     triggerOverride,
-		draftID:             draftID,
-		personStateResult:   comprehension.PersonState,
-		preprocessingResult: comprehension.PreprocessingResult,
-		kbSegments:          comprehension.KBSegments,
-		guidance:            comprehension.Guidance,
+		session:            session,
+		ac:                 ac,
+		llmConfig:          llmConfig,
+		readMessageRange:   readMessageRange,
+		triggerOverride:    triggerOverride,
+		draftID:            draftID,
+		personStateResult:  comprehension.PersonState,
+		historySegments:    comprehension.HistorySegments,
+		kbSegments:         comprehension.KBSegments,
+		needsClarification: comprehension.NeedsClarification,
+		clarification:      comprehension.Clarification,
+		guidance:           comprehension.Guidance,
 	}
 
 	// If a TaskResult is provided (from a completed TaskWork), convert it
@@ -189,11 +193,13 @@ func ExecuteChat(
 // ExecuteChat to skip redundant preprocessing, person state inference,
 // and KB retrieval that were already done before Decide().
 type ComprehensionInput struct {
-	PreprocessingResult *comprehend.PreprocessingResult
-	PersonState         *comprehend.PersonState
-	KBSegments          []comprehend.Segment
-	Guidance            string           // Execution intent from Decide phase: what to say (chat) or what to do (task)
-	TaskResult          *task.TaskResult // Task execution result (only set for ChatWork after TaskWork completion)
+	PersonState        *comprehend.PersonState
+	HistorySegments    []comprehend.Segment
+	KBSegments         []comprehend.Segment
+	NeedsClarification bool
+	Clarification      string
+	Guidance           string           // Execution intent from Decide phase: what to say (chat) or what to do (task)
+	TaskResult         *task.TaskResult // Task execution result (only set for ChatWork after TaskWork completion)
 }
 
 // loadMessages loads the trigger message from the database,
@@ -206,12 +212,12 @@ type ComprehensionInput struct {
 //     This prevents the LLM from misinterpreting the alarm as a new user request
 //     to set another alarm (which would cause an infinite loop).
 func (p *pipeline) loadMessages() error {
-	if p.triggerMessageID <= 0 {
-		return fmt.Errorf("trigger message ID is required")
-	}
-
-	if err := database.DB.First(&p.triggerMessage, p.triggerMessageID).Error; err != nil {
-		return fmt.Errorf("trigger message not found: %w", err)
+	if p.readMessageRange[1] > 0 {
+		if err := database.DB.First(&p.triggerMessage, p.readMessageRange[1]).Error; err != nil {
+			return fmt.Errorf("range endpoint message not found: %w", err)
+		}
+	} else {
+		p.triggerMessage = model.Message{SessionID: p.session.ID}
 	}
 
 	// Inject trigger override based on type.
@@ -247,7 +253,7 @@ func (p *pipeline) loadMessages() error {
 
 	applogger.Info("Starting chat processing",
 		"session_id", p.sessionID,
-		"trigger_message_id", p.triggerMessageID,
+		"read_message_range", p.readMessageRange,
 		"draft_id", p.draftID,
 		"message_count", p.messageCount,
 		"window_size", p.windowSize,
@@ -273,9 +279,7 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 		"V", p.messageCount, "N", p.windowSize,
 	)
 
-	recentMessages := comprehend.GetRecentMessages(
-		p.sessionID, int(p.messageCount),
-	)
+	recentMessages := p.getContextMessages(int(p.messageCount))
 
 	// Signal narrative generation if recent messages have accumulated enough.
 	// The narrative goroutine internally triggers summary generation if needed.
@@ -311,38 +315,36 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 	return messages, "", false
 }
 
+func (p *pipeline) getContextMessages(limit int) []model.Message {
+	query := database.DB.Where("session_id = ?", p.sessionID)
+	if p.readMessageRange[1] > 0 {
+		query = query.Where("id <= ?", p.readMessageRange[1])
+	}
+	var messages []model.Message
+	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
+		applogger.Error("failed to load bounded chat context messages", "session_id", p.sessionID, "error", err)
+		return nil
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages
+}
+
 // assembleEngineeredContext handles the V >= N branch: apply full context
 // engineering pipeline including summary, retrieval, and assembly.
 // Waits for async preprocessing to complete before using the result.
 func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message, string, bool) {
 	// Handle clarification needed case — return clarification as content
 	// without writing to messages table (caller handles draft commit)
-	if p.preprocessingResult != nil && p.preprocessingResult.NeedsClarification {
+	if p.needsClarification {
 		applogger.Info("Query needed clarification", "session_id", p.sessionID)
-		return []llm.Message{}, p.preprocessingResult.Clarification, true
+		return []llm.Message{}, p.clarification, true
 	}
-
-	processedQuery := p.triggerMessage.Content
-	var keywords []string
-	if p.preprocessingResult != nil {
-		processedQuery = p.preprocessingResult.ProcessedQuery
-		keywords = p.preprocessingResult.Keywords
-		applogger.Info("Query type and processed",
-			"type", p.preprocessingResult.QueryType,
-			"processed", processedQuery[:min(50, len(processedQuery))],
-		)
-	}
-
-	// Context retrieval (with or without keyword retrieval)
-	var contextResult *chatcontext.RetrievalResult
-	if p.preprocessingResult != nil && p.preprocessingResult.SkipRetrieval {
-		contextResult = chatcontext.GetContextWithoutRetrieval(p.sessionID, p.ac.PersonID, p.windowSize)
-	} else {
-		contextResult = chatcontext.GetContextForChat(p.sessionID, p.ac.PersonID, keywords, p.windowSize, chatcontext.DefaultKeywordMatchCount)
-	}
+	contextResult := chatcontext.GetContext(p.sessionID, p.ac.PersonID, p.readMessageRange[1], p.windowSize)
 
 	// Merge knowledge base segments with chat history segments
-	relevantSegments := contextResult.RelevantSegments
+	relevantSegments := append([]comprehend.Segment{}, p.historySegments...)
 	if len(p.kbSegments) > 0 {
 		relevantSegments = append(relevantSegments, p.kbSegments...)
 	}
@@ -377,7 +379,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	// that were retrieved count as observation retrieval hits, boosting
 	// importance scores.
 	var ragHitIDs []int64
-	for _, seg := range contextResult.RelevantSegments {
+	for _, seg := range p.historySegments {
 		if seg.Source == comprehend.SourceChatHistory && seg.MessageID > 0 {
 			ragHitIDs = append(ragHitIDs, seg.MessageID)
 		}

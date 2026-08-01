@@ -6,7 +6,6 @@ import (
 	"sync/atomic"
 
 	"qingqiu-world-server/internal/database"
-	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/vectorutils"
@@ -63,45 +62,6 @@ func OnRetrievalHit(personID int64, messageIDs []int64) {
 func CheckProfileDensity(ctx context.Context, personID int64) int {
 	panicIfNotReady()
 	return checkDensity(ctx, personID)
-}
-
-// ingestMessage creates event + embedding + observations for a newly created
-// message. This is the central ingestion hook called from the business layer
-// (API handler for user messages, runtime for agent messages).
-func ingestMessage(ctx context.Context, messageID, sessionID int64, content string) {
-	// Create event + embedding in one step
-	eventID, err := createEventWithEmbedding(ctx, model.EventTypeMessage, messageID, content)
-	if err != nil {
-		applogger.Error("Failed to ingest message event",
-			"message_id", messageID, "error", err)
-		return
-	}
-
-	// Create observations for all agents participating in this session.
-	// Agents are identified by Person type=AI via join with persons table.
-	var participants []model.ParticipantSession
-	var partErr error
-	participants, partErr = dops.GetSessionParticipantsByPersonType(sessionID, model.PersonTypeAI)
-	if partErr != nil {
-		applogger.Error("failed to load participants for observation creation", "session_id", sessionID, "error", partErr)
-		return
-	}
-
-	for _, p := range participants {
-		if err := createObservation(ctx, p.ParticipantID, eventID); err != nil {
-			applogger.Error("Failed to create observation for agent",
-				"agent_config_id", p.ParticipantID,
-				"event_id", eventID,
-				"error", err,
-			)
-		}
-	}
-
-	applogger.Debug("Message ingested into memory system",
-		"message_id", messageID,
-		"event_id", eventID,
-		"agent_count", len(participants),
-	)
 }
 
 // applyRetrievalHits applies a retrieval hit to observations associated with the given

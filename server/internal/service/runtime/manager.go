@@ -16,6 +16,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/memory"
 )
 
 // runtimeManager manages agentRuntime instances for all agents.
@@ -193,4 +194,36 @@ func Start(
 	// Must be called after all agent runtimes have started so that recovered
 	// events can be routed to their subscribed channels.
 	recoverScheduledEvents()
+}
+
+// SendNewMessageEvent records a memory event for a user message and dispatches
+// it to the agent runtime via the event queue. This is the production +
+// distribution entry point for user messages — the handler calls this instead
+// of calling memory or eventqueue directly.
+//
+// Production: creates a memory event record (sync) + enqueues embedding (async).
+// Distribution: sends the event to the agent's event queue channel.
+//
+// The agent runtime event loop is the consumer — it receives the event and
+// calls memory.CreateObservation using the EventID carried in the payload.
+func SendNewMessageEvent(agentConfigID, sessionID, messageID int64, content, speakerName string) {
+	// Production: record memory event before dispatching.
+	eventID, err := memory.RecordEvent(messageID, content)
+	if err != nil {
+		applogger.Error("failed to record memory event for user message",
+			"message_id", messageID, "error", err)
+	}
+
+	// Distribution: notify agent runtime.
+	event := &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeNewPrivateChatMessage,
+		SessionID: sessionID,
+		EventID:   eventID,
+		Payload: &eventqueue.NewMessagePayload{
+			MessageID:      messageID,
+			MessageContent: content,
+			SpeakerName:    speakerName,
+		},
+	}
+	eventqueue.SendEvent(agentConfigID, event)
 }

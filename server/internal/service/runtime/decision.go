@@ -211,7 +211,11 @@ func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentCo
 			}},
 		}
 	case eventqueue.EventTypeNewPrivateChatMessage:
-		// Proceed to LLM-based decision below
+		// Proceed to LLM-based decision
+		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
+
+		// Use LLM to decide — it can create, route, cancel, or produce no actions
+		return decideWithLLM(ctx, event, ac, llmConfig, comprehension, sameSessionWorks, triggerSource, agentState)
 	default:
 		applogger.Error("Unknown event type in Decide",
 			"event_type", event.Type,
@@ -219,11 +223,6 @@ func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentCo
 		)
 		return DecisionResult{}
 	}
-
-	sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
-
-	// Use LLM to decide — it can create, route, cancel, or produce no actions
-	return decideWithLLM(ctx, event, ac, llmConfig, comprehension, sameSessionWorks, triggerSource, agentState)
 }
 
 // decideWorkCompleted handles EventTypeWorkCompleted with a rule-based decision.
@@ -307,7 +306,10 @@ func buildEnergyDynamicSuffix(triggerSource TriggerSource, agentState *model.Age
 // decideWithLLM uses LLM to decide whether to create new work or route to an existing one.
 func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, sameSessionWorks []*work, triggerSource TriggerSource, agentState *model.AgentState) DecisionResult {
 	// Validate event has content before calling LLM
-	eventDescription := event.FormatDescription()
+	eventDescription := comprehension.EventDescription
+	if eventDescription == "" {
+		eventDescription = event.FormatDescription()
+	}
 	if eventDescription == "" {
 		applogger.Error("Decision: event has empty content, ignoring",
 			"agent_config_id", ac.ID,
@@ -550,10 +552,6 @@ func buildComprehensionContext(comprehension *comprehend.ComprehensionResult) st
 	}
 
 	var parts []string
-
-	if comprehension.QueryType != "" {
-		parts = append(parts, fmt.Sprintf("Query type: %s", comprehension.QueryType))
-	}
 
 	if comprehension.PersonState != nil {
 		if comprehension.PersonState.Purpose != "" {

@@ -14,7 +14,6 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
-	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/workspace"
 )
 
@@ -298,45 +297,6 @@ func (h *Handler) GetReceivedFile(c *gin.Context) {
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filepath.Base(filePath)))
 	c.Data(200, "application/octet-stream", data)
-}
-
-// CreateMessage handles creating a new message in a session.
-func (h *Handler) CreateMessage(c *gin.Context) {
-	sessionID := getPathID(c)
-	_, err := dops.GetSession(sessionID)
-	if err != nil {
-		response.NotFound(c, "Session not found")
-		return
-	}
-	var req schema.MessageCreate
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-	userPersonID, err := dops.GetCurrentUserPersonID()
-	if err != nil {
-		applogger.Error("CreateMessage: failed to get current user person ID", "error", err)
-		response.InternalError(c, "Failed to identify current user")
-		return
-	}
-	entity := model.Message{
-		SessionID: sessionID,
-		PersonID:  userPersonID,
-		Content:   req.Content,
-	}
-	if err := dops.CreateMessage(&entity); err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-
-	// Submit to the event vectorization service for embedding + observation.
-	memory.SubmitVectorization(memory.VectorizationTask{
-		MessageID: entity.ID,
-		SessionID: entity.SessionID,
-		Content:   entity.Content,
-	})
-
-	response.Success(c, schema.NewMessageResponse(&entity))
 }
 
 // ListMessages handles listing messages in a session.

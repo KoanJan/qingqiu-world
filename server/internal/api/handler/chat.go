@@ -25,8 +25,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/eventqueue"
-	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/runtime"
 
 	applogger "qingqiu-world-server/internal/logger"
 
@@ -126,7 +125,7 @@ func ShutdownSSE() {
 // accumulation. When the Work completes, the draft is committed to the
 // messages table and pushed via SSE.
 //
-// Returns session_id and trigger_message_id.
+// Returns session_id and message_id.
 func (h *Handler) CreateAndSend(c *gin.Context) {
 	message := c.Query("message")
 	if message == "" {
@@ -190,19 +189,12 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 		return
 	}
 
-	// Submit to the event vectorization service for embedding + observation.
-	memory.SubmitVectorization(memory.VectorizationTask{
-		MessageID: userMsg.ID,
-		SessionID: userMsg.SessionID,
-		Content:   userMsg.Content,
-	})
-
-	// Send event to Agent Runtime instead of creating placeholder AI message
-	h.sendEventToRuntime(agentConfigID, session.ID, userMsg.ID, message)
+	// Produce memory event + dispatch to agent runtime
+	runtime.SendNewMessageEvent(agentConfigID, session.ID, userMsg.ID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
-		"session_id":         session.ID,
-		"trigger_message_id": userMsg.ID,
+		"session_id": session.ID,
+		"message_id": userMsg.ID,
 	})
 }
 
@@ -217,7 +209,7 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 // The Agent Runtime handles the event asynchronously — if an active Work
 // exists in this session, the event is absorbed; otherwise a new Work is created.
 //
-// Returns trigger_message_id.
+// Returns message_id.
 func (h *Handler) SendMessage(c *gin.Context) {
 	sessionID := getPathIDByParam(c, "session_id")
 
@@ -249,23 +241,17 @@ func (h *Handler) SendMessage(c *gin.Context) {
 		return
 	}
 
-	memory.SubmitVectorization(memory.VectorizationTask{
-		MessageID: userMsg.ID,
-		SessionID: userMsg.SessionID,
-		Content:   userMsg.Content,
-	})
-
 	// Update user's last_read_message_id — user has seen all messages up to this point
 	if err := dops.UpdateLastReadMessageID(sessionID, userPersonID, userMsg.ID); err != nil {
 		applogger.Error("failed to update last_read_message_id on continue", "session_id", sessionID, "error", err)
 	}
 
-	// Send event to Agent Runtime — resolve AI participant from participant_sessions.
+	// Produce memory event + dispatch to agent runtime
 	agentConfigID := dops.GetFirstAgentConfigIDBySessionID(sessionID)
-	h.sendEventToRuntime(agentConfigID, sessionID, userMsg.ID, message)
+	runtime.SendNewMessageEvent(agentConfigID, sessionID, userMsg.ID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
-		"trigger_message_id": userMsg.ID,
+		"message_id": userMsg.ID,
 	})
 }
 
@@ -320,22 +306,6 @@ func (h *Handler) StreamMessages(c *gin.Context) {
 			return true
 		}
 	})
-}
-
-// sendEventToRuntime ensures the agent runtime is running and sends a new
-// message event to the agent via the global event queue.
-// This is the only path for user messages to reach the agent.
-func (h *Handler) sendEventToRuntime(agentConfigID, sessionID, messageID int64, messageContent string) {
-	event := &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeNewPrivateChatMessage,
-		SessionID: sessionID,
-		Payload: &eventqueue.NewMessagePayload{
-			MessageID:      messageID,
-			MessageContent: messageContent,
-			SpeakerName:    dops.GetUserName(),
-		},
-	}
-	eventqueue.SendEvent(agentConfigID, event)
 }
 
 // sessionAgentStatus represents an agent's status within a session.

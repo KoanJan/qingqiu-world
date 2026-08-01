@@ -80,6 +80,23 @@ func UpdateLastReadMessageID(sessionID, personID, messageID int64) error {
 		Update("last_read_message_id", messageID).Error
 }
 
+// GetParticipantSession returns a person's participation record for a session.
+func GetParticipantSession(sessionID, personID int64) (*model.ParticipantSession, error) {
+	var participantSession model.ParticipantSession
+	if err := database.DB.Where("session_id = ? AND participant_id = ?", sessionID, personID).
+		First(&participantSession).Error; err != nil {
+		return nil, err
+	}
+	return &participantSession, nil
+}
+
+// AdvanceLastReadMessageID advances the read marker without moving it backward.
+func AdvanceLastReadMessageID(sessionID, personID, messageID int64) error {
+	return database.DB.Model(&model.ParticipantSession{}).
+		Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?", sessionID, personID, messageID).
+		Update("last_read_message_id", messageID).Error
+}
+
 // ListAIParticipants returns all AIParticipants in the session
 func ListAIParticipants(sessionID int64) (participants []model.ParticipantSession, err error) {
 	err = database.DB.

@@ -8,9 +8,6 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 )
 
-// DefaultKeywordMatchCount is the default number of keyword-matched segments retrieved from chat history.
-const DefaultKeywordMatchCount = 5
-
 // RetrievalResult holds all context components retrieved for chat processing.
 type RetrievalResult struct {
 	RecentMessages   []model.Message      `json:"recent_messages"`
@@ -57,55 +54,32 @@ func getLatestNarrativeByIDs(sessionID, personID int64) *model.AgentNarrative {
 	return &n
 }
 
-// GetContextWithoutRetrieval retrieves context without keyword retrieval.
-// Used for queries that don't need retrieval (e.g., greetings, chitchat).
-// Retrieves recent messages, latest summary, and cached narrative.
-func GetContextWithoutRetrieval(sessionID, personID int64, recentCount int) *RetrievalResult {
+// GetContext assembles bounded recent messages with summary and narrative context.
+func GetContext(sessionID, personID, maxMessageID int64, recentCount int) *RetrievalResult {
 	result := &RetrievalResult{
 		RecentMessages:   []model.Message{},
 		RelevantSegments: []comprehend.Segment{},
 	}
 
-	result.RecentMessages = comprehend.GetRecentMessages(sessionID, recentCount)
+	result.RecentMessages = getRecentMessagesBefore(sessionID, maxMessageID, recentCount)
 
 	result.SummaryVersion, result.Narrative = buildSummaryAndNarrative(sessionID, personID)
 
 	return result
 }
 
-// GetContextForChat retrieves context for chat response generation using
-// keyword-based search on session history messages.
-// Returns:
-//  1. Recent messages from the session
-//  2. Keyword-matched segments from session history
-//  3. Latest summary (if available)
-//  4. Cached narrative from agent_narratives (if available)
-func GetContextForChat(sessionID, personID int64, keywords []string, recentCount int, keywordMatchCount int) *RetrievalResult {
-	result := &RetrievalResult{
-		RecentMessages:   []model.Message{},
-		RelevantSegments: []comprehend.Segment{},
+func getRecentMessagesBefore(sessionID, maxMessageID int64, limit int) []model.Message {
+	query := database.DB.Where("session_id = ?", sessionID)
+	if maxMessageID > 0 {
+		query = query.Where("id <= ?", maxMessageID)
 	}
-
-	result.RecentMessages = comprehend.GetRecentMessages(sessionID, recentCount)
-
-	// Keyword-based retrieval: search messages in this session
-	if len(keywords) > 0 {
-		result.RelevantSegments = SearchMessagesByKeywords([]int64{sessionID}, keywords, keywordMatchCount)
-		applogger.Info("Keyword retrieval completed",
-			"session_id", sessionID,
-			"keywords", keywords,
-			"segment_count", len(result.RelevantSegments),
-		)
+	var messages []model.Message
+	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
+		applogger.Error("failed to load bounded recent messages", "session_id", sessionID, "max_message_id", maxMessageID, "error", err)
+		return nil
 	}
-
-	latestSummary := getLatestSummaryBySessionID(sessionID)
-	if latestSummary != nil {
-		result.SummaryVersion = latestSummary.Version
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
 	}
-	latestNarrative := getLatestNarrativeByIDs(sessionID, personID)
-	if latestNarrative != nil {
-		result.Narrative = latestNarrative.Content
-	}
-
-	return result
+	return messages
 }

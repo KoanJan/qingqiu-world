@@ -3,7 +3,10 @@ package comprehend
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"sync"
+	"time"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -11,7 +14,6 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/kb"
-	"qingqiu-world-server/internal/service/llm"
 )
 
 // ComprehensionResult holds the outcome of the comprehension phase.
@@ -23,13 +25,10 @@ import (
 // ("does this message involve tools/external data?"), not a decision
 // on how to respond.
 type ComprehensionResult struct {
-	// ProcessedQuery is the rewritten query for better retrieval.
-	// Empty if preprocessing was skipped.
-	ProcessedQuery string
-
-	// QueryType is the classified query type from preprocessing
-	// (clear, ambiguous, vague, no_query).
-	QueryType string
+	ReadMessageRange [2]int64
+	EventDescription string
+	HistorySearch    *HistorySearch
+	KBRetrieval      *KBRetrieval
 
 	// NeedsWorldInteraction indicates whether the message requires
 	// interaction with the external world (tools, real-time data,
@@ -45,18 +44,6 @@ type ComprehensionResult struct {
 	// when NeedsClarification is true.
 	Clarification string
 
-	// SkipRetrieval indicates that RAG retrieval should be skipped
-	// (e.g., for greetings, chitchat).
-	SkipRetrieval bool
-
-	// PreprocessingResult holds the original preprocessing output,
-	// preserved for downstream consumers (e.g., chat execution)
-	// that need the full structured result.
-	PreprocessingResult *PreprocessingResult
-
-	// KBSegments holds knowledge base retrieval results.
-	KBSegments []Segment
-
 	// PersonState holds the inferred state of the other party
 	// (emotion, purpose, situation).
 	PersonState *PersonState
@@ -66,6 +53,26 @@ type ComprehensionResult struct {
 	// when the user says "change the approach" or "stop", the agent knows
 	// what it is currently doing and can understand the reference.
 	ActiveWorksSummary string
+}
+
+// HistorySearch describes a completed keyword search over conversation history.
+type HistorySearch struct {
+	Keywords []string
+	Segments []Segment
+}
+
+// KBRetrieval describes a completed vector retrieval from configured knowledge bases.
+type KBRetrieval struct {
+	Query    string
+	Segments []Segment
+}
+
+// ConversationMessage is a domain-level message used during comprehension.
+type ConversationMessage struct {
+	PersonID   int64
+	PersonName string
+	Content    string
+	CreatedAt  time.Time
 }
 
 // SessionInfo holds session-level parameters needed for comprehension.
@@ -110,6 +117,25 @@ func Comprehend(
 	}
 
 	eventDescription := event.FormatDescription()
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
+		participantSession, err := dops.GetParticipantSession(event.SessionID, ac.PersonID)
+		if err != nil {
+			applogger.Error("Comprehend: failed to load participant session", "session_id", event.SessionID, "person_id", ac.PersonID, "error", err)
+			return result
+		}
+		maxMessageID, err := dops.GetMaxMessageID(event.SessionID)
+		if err != nil {
+			applogger.Error("Comprehend: failed to load maximum message ID", "session_id", event.SessionID, "error", err)
+			return result
+		}
+		result.ReadMessageRange = [2]int64{participantSession.LastReadMessageID, maxMessageID}
+		messages, err := dops.ListMessagesInRange(event.SessionID, result.ReadMessageRange[0], result.ReadMessageRange[1])
+		if err != nil {
+			applogger.Error("Comprehend: failed to load message range", "session_id", event.SessionID, "error", err)
+			return result
+		}
+		eventDescription = formatMessageRange(messages)
+	}
 	if eventDescription == "" {
 		applogger.Info("Comprehend: empty event, skipping",
 			"person_id", ac.PersonID,
@@ -118,9 +144,7 @@ func Comprehend(
 		return result
 	}
 
-	// default set
-	result.ProcessedQuery = eventDescription
-	result.QueryType = "clear"
+	result.EventDescription = eventDescription
 
 	// For non-message events (work completed, scheduled, session joined/left),
 	// skip the full comprehension pipeline — there is no "other party" to
@@ -151,26 +175,25 @@ func Comprehend(
 				preprocessingHistory,
 				ac.CharacterSettings,
 				sessionInfo.WindowSize,
-				sessionInfo.UserName,
-				dops.GetAgentConfigName(ac.ID),
 			)
-			// Extract preprocessing results
-			result.ProcessedQuery = preprocessingResult.ProcessedQuery
-			result.QueryType = preprocessingResult.QueryType
 			result.NeedsClarification = preprocessingResult.NeedsClarification
 			result.Clarification = preprocessingResult.Clarification
-			result.SkipRetrieval = preprocessingResult.SkipRetrieval
-			result.PreprocessingResult = preprocessingResult
-
-			// Step 3: Knowledge base retrieval (conditional — same as before)
-			if len(sessionInfo.KBIDs) > 0 {
-				// Wait for preprocessing to complete before using the processed query
-				query := eventDescription
-				if result.ProcessedQuery != "" {
-					query = result.ProcessedQuery
+			if len(preprocessingResult.HistorySearchKeywords) > 0 {
+				result.HistorySearch = &HistorySearch{
+					Keywords: preprocessingResult.HistorySearchKeywords,
+					Segments: SearchMessagesByKeywordsBefore(
+						[]int64{event.SessionID},
+						result.ReadMessageRange[1],
+						preprocessingResult.HistorySearchKeywords,
+						defaultHistorySearchLimit,
+					),
 				}
+			}
 
-				kbResults, err := kb.SearchMultiKB(ctx, sessionInfo.KBIDs, query, kb.DefaultSearchTopK)
+			// Step 3: Knowledge base retrieval
+			if len(sessionInfo.KBIDs) > 0 && preprocessingResult.KnowledgeBaseQuery != "" {
+				result.KBRetrieval = &KBRetrieval{Query: preprocessingResult.KnowledgeBaseQuery}
+				kbResults, err := kb.SearchMultiKB(ctx, sessionInfo.KBIDs, result.KBRetrieval.Query, kb.DefaultSearchTopK)
 				if err != nil {
 					applogger.Error("Comprehend: KB retrieval failed",
 						"session_id", sessionInfo.SessionID,
@@ -178,7 +201,7 @@ func Comprehend(
 					)
 				} else {
 					for _, kr := range kbResults {
-						result.KBSegments = append(result.KBSegments, Segment{
+						result.KBRetrieval.Segments = append(result.KBRetrieval.Segments, Segment{
 							Content: kr.Content,
 							Source:  SourceKnowledgeBase,
 						})
@@ -194,8 +217,9 @@ func Comprehend(
 
 	// Step 2: Person state inference (always runs — same as before)
 	wg.Go(func() {
-		recentMessagesForState := GetRecentMessages(
+		recentMessagesForState := getRecentMessagesBefore(
 			sessionInfo.SessionID,
+			result.ReadMessageRange[1],
 			min(int(sessionInfo.MessageCount), sessionInfo.WindowSize),
 		)
 		result.PersonState = InferPersonState(
@@ -221,18 +245,77 @@ func Comprehend(
 		"agent_config_id", ac.ID,
 		"session_id", sessionInfo.SessionID,
 		"needs_world_interaction", result.NeedsWorldInteraction,
-		"query_type", result.QueryType,
 		"needs_clarification", result.NeedsClarification,
-		"kb_segments", len(result.KBSegments),
+		"history_segments", historySegmentCount(result.HistorySearch),
+		"kb_segments", kbSegmentCount(result.KBRetrieval),
 	)
 
 	return result
 }
 
+func getRecentMessagesBefore(sessionID, maxMessageID int64, limit int) []model.Message {
+	query := database.DB.Where("session_id = ?", sessionID)
+	if maxMessageID > 0 {
+		query = query.Where("id <= ?", maxMessageID)
+	}
+	var messages []model.Message
+	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
+		applogger.Error("Comprehend: failed to load bounded recent messages", "session_id", sessionID, "max_message_id", maxMessageID, "error", err)
+		return nil
+	}
+	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
+		messages[left], messages[right] = messages[right], messages[left]
+	}
+	return messages
+}
+
+func historySegmentCount(search *HistorySearch) int {
+	if search == nil {
+		return 0
+	}
+	return len(search.Segments)
+}
+
+func kbSegmentCount(retrieval *KBRetrieval) int {
+	if retrieval == nil {
+		return 0
+	}
+	return len(retrieval.Segments)
+}
+
+func formatMessageRange(messages []model.Message) string {
+	if len(messages) == 0 {
+		return ""
+	}
+	personIDs := make([]int64, 0, len(messages))
+	seenPersonIDs := make(map[int64]struct{}, len(messages))
+	for _, message := range messages {
+		if _, exists := seenPersonIDs[message.PersonID]; !exists {
+			seenPersonIDs[message.PersonID] = struct{}{}
+			personIDs = append(personIDs, message.PersonID)
+		}
+	}
+	names, err := dops.GetPersonNames(personIDs)
+	if err != nil {
+		applogger.Error("Comprehend: failed to load message sender names", "error", err)
+		names = map[int64]string{}
+	}
+	lines := make([]string, 0, len(messages)+1)
+	lines = append(lines, "[Private chat]")
+	for _, message := range messages {
+		name := names[message.PersonID]
+		if name == "" {
+			name = fmt.Sprintf("person_%d", message.PersonID)
+		}
+		lines = append(lines, fmt.Sprintf("%s [%s]: %s", name, message.CreatedAt.Format("2006-01-02 15:04:05"), message.Content))
+	}
+	return strings.Join(lines, "\n")
+}
+
 // getPreprocessingHistory retrieves recent messages for preprocessing context.
 // Returns messages as llm.Message slice in chronological order.
 // This is the same logic that was in chat.getPreprocessingHistory.
-func getPreprocessingHistory(sessionID int64, limit int) []llm.Message {
+func getPreprocessingHistory(sessionID int64, limit int) []ConversationMessage {
 	var messages []model.Message
 	if err := database.DB.Where("session_id = ?", sessionID).
 		Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
@@ -247,20 +330,31 @@ func getPreprocessingHistory(sessionID int64, limit int) []llm.Message {
 		messages[i], messages[j] = messages[j], messages[i]
 	}
 
-	userPersonID, err := dops.GetCurrentUserPersonID()
+	personIDs := make([]int64, 0, len(messages))
+	seenPersonIDs := make(map[int64]struct{}, len(messages))
+	for _, message := range messages {
+		if _, exists := seenPersonIDs[message.PersonID]; !exists {
+			seenPersonIDs[message.PersonID] = struct{}{}
+			personIDs = append(personIDs, message.PersonID)
+		}
+	}
+	names, err := dops.GetPersonNames(personIDs)
 	if err != nil {
-		applogger.Error("getPreprocessingHistory: failed to get current user person ID", "error", err)
+		applogger.Error("getPreprocessingHistory: failed to load person names", "error", err)
+		names = map[int64]string{}
 	}
 
-	history := make([]llm.Message, 0, len(messages))
-	for _, msg := range messages {
-		role := "user"
-		if userPersonID != 0 && msg.PersonID != userPersonID {
-			role = "assistant"
+	history := make([]ConversationMessage, 0, len(messages))
+	for _, message := range messages {
+		personName := names[message.PersonID]
+		if personName == "" {
+			personName = fmt.Sprintf("person_%d", message.PersonID)
 		}
-		history = append(history, llm.Message{
-			Role:    role,
-			Content: msg.Content,
+		history = append(history, ConversationMessage{
+			PersonID:   message.PersonID,
+			PersonName: personName,
+			Content:    message.Content,
+			CreatedAt:  message.CreatedAt,
 		})
 	}
 	return history

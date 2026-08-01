@@ -67,7 +67,6 @@ type RunTaskParams struct {
 	LLMConfig  *model.LLMConfig
 	SessionID  int64
 	PersonID   int64 // Person ID of the executing agent
-	UserMsgID  int64
 	WorkID     int64
 	Guidance   string    // Execution intent from Decide phase (replaces Rewrite)
 	Background string    // Full context from Decide phase: trigger event, participants, comprehension
@@ -118,7 +117,6 @@ func RunTask(params RunTaskParams) *TaskResult {
 		MaxIterations:   0,
 		SessionID:       params.SessionID,
 		PersonID:        params.PersonID,
-		UserMsgID:       params.UserMsgID,
 		WorkID:          params.WorkID,
 		SearchConfig:    &searchConfig,
 		Ctx:             params.Ctx,
@@ -136,7 +134,6 @@ type TaskParams struct {
 	MaxIterations   int                      // Override for max loop iterations (0 = use default)
 	SessionID       int64                    // Session ID for interaction records and workspace
 	PersonID        int64                    // Person ID for tools that need person context (e.g., wake_me_when)
-	UserMsgID       int64                    // User message ID that triggered execution
 	WorkID          int64                    // Work ID for interaction record association
 	SearchConfig    *model.SearchConfig      // Search configuration for web search tool
 	Ctx             context.Context          // Cancellation context from the caller
@@ -169,7 +166,7 @@ func Execute(params TaskParams) *TaskResult {
 	writeNotesTool := tools.NewWriteNotesTool(params.PersonID, params.SessionID, notesMaxChars)
 	notesContent := writeNotesTool.ReadNotes()
 
-	toolList := buildToolList(params.SessionID, params.PersonID, params.UserMsgID, params.SearchConfig, notesMaxChars)
+	toolList := buildToolList(params.SessionID, params.PersonID, params.SearchConfig, notesMaxChars)
 
 	// Build tool descriptions string (moved to last user message for cache optimization).
 	toolDescLines := []string{"Available tools:"}
@@ -213,7 +210,7 @@ func Execute(params TaskParams) *TaskResult {
 		contextManager,
 		maxIterations,
 		params.SessionID,
-		params.UserMsgID,
+		0,
 		params.WorkID,
 		writeNotesTool,
 		params.GuidanceCh,
@@ -362,14 +359,14 @@ func buildSystemPrompt(background string, metadata *Metadata) string {
 // Always includes read_text_file, write_text_file, edit_text_file, bash,
 // write_notes, wake_me_when, scan_my_experience, and recall_my_experience;
 // adds web_search if search config is available.
-func buildToolList(sessionID, personID, triggerMessageID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
+func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
 	toolList := []tools.Tool{
 		tools.NewReadTextFileTool(personID, sessionID),
 		tools.NewWriteTextFileTool(personID, sessionID),
 		tools.NewEditTextFileTool(personID, sessionID),
 		tools.NewBashTool(personID, sessionID),
 		tools.NewWriteNotesTool(personID, sessionID, notesMaxChars),
-		tools.NewWakeMeWhenTool(personID, sessionID, triggerMessageID),
+		tools.NewWakeMeWhenTool(personID, sessionID),
 		tools.NewScanExperienceTool(personID),
 		tools.NewRecallExperienceTool(personID),
 		tools.NewDeliverToTool(personID, sessionID),
