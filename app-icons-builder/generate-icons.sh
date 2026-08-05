@@ -71,7 +71,7 @@ if [[ "$EXT_LOWER" == "png" ]]; then
     SIZES_CSV=$(IFS=, ; echo "${SIZES[*]}")
 
     python3 -c "
-from PIL import Image, ImageDraw
+from PIL import Image
 
 src = Image.open('${INPUT}').convert('RGBA')
 canvas = ${CANVAS}
@@ -80,49 +80,30 @@ content_size = round(canvas * content_scale)
 offset = (canvas - content_size) // 2
 sizes = [${SIZES_CSV}]
 
-# Source corner radius at original (1254px), scaled to content_size.
-# The original favicon_v3.png has rounded corners ~220px at 1254px.
-src_corner_r = round(220 * content_size / src.height)
+# Separate alpha channel from source — it already contains the correct
+# rounded-corner shape.  We preserve it through resize instead of
+# synthesising a new mask that would never match exactly.
+r, g, b, a = src.split()
 
-# Composite onto white background to prevent dark fringing during RGBA resize.
-# Pillow's LANCZOS corrupts transparent RGB values — compositing first
-# ensures all pixels have proper RGB, then our own mask handles transparency.
-bg_white = Image.new('RGBA', (src.width, src.height), (255, 255, 255, 255))
-bg_white.paste(src, (0, 0), src)
-src = bg_white
+# Composite RGB onto white using the original alpha as mask.
+# This prevents dark fringing in transparent areas after LANCZOS resize.
+rgb_white = Image.merge('RGB', [r, g, b])
+bg = Image.new('RGB', src.size, (255, 255, 255))
+bg.paste(rgb_white, (0, 0), a)
 
-# Scale source to content_size for visual padding
-src = src.resize((content_size, content_size), Image.LANCZOS)
+# Resize RGB (clean colours) and alpha (original shape) separately,
+# then recombine so the rounded corners stay pixel-accurate.
+bg_resized = bg.resize((content_size, content_size), Image.LANCZOS)
+a_resized = a.resize((content_size, content_size), Image.LANCZOS)
+src_final = bg_resized.convert('RGBA')
+src_final.putalpha(a_resized)
 
 # Paste centred onto transparent canvas
 canvas_img = Image.new('RGBA', (canvas, canvas), (255, 255, 255, 0))
-canvas_img.paste(src, (offset, offset))
-
-# Build mask positioned at source content area, not full canvas.
-# This ensures areas outside the source content stay transparent.
-mask = Image.new('L', (canvas, canvas), 0)
-draw = ImageDraw.Draw(mask)
-draw.rounded_rectangle(
-    [(offset, offset), (offset + content_size - 1, offset + content_size - 1)],
-    radius=src_corner_r,
-    fill=255
-)
-canvas_img.putalpha(mask)
+canvas_img.paste(src_final, (offset, offset))
 
 for size in sizes:
     icon = canvas_img.resize((size, size), Image.LANCZOS)
-    # Scale mask parameters to target size
-    s_off = round(offset * size / canvas)
-    s_cs = round(content_size * size / canvas)
-    s_r = round(src_corner_r * size / canvas)
-    m = Image.new('L', (size, size), 0)
-    draw = ImageDraw.Draw(m)
-    draw.rounded_rectangle(
-        [(s_off, s_off), (s_off + s_cs - 1, s_off + s_cs - 1)],
-        radius=s_r,
-        fill=255
-    )
-    icon.putalpha(m)
     out_path = '${BUILD_DIR}/icon-' + str(size) + '.png'
     icon.save(out_path, 'PNG')
     print(f'    {size}×{size} → {out_path}')
