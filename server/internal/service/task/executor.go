@@ -357,8 +357,12 @@ func buildSystemPrompt(background string, metadata *Metadata) string {
 
 // buildToolList creates the list of available tools for the task loop.
 // Always includes read_text_file, write_text_file, edit_text_file, bash,
-// write_notes, wake_me_when, scan_my_experience, and recall_my_experience;
+// write_notes, scan_my_experience, and recall_my_experience;
 // adds web_search if search config is available.
+//
+// Note: wake_me_when was promoted to a top-level Action (ActionCreateAlarm)
+// in 0.1.3 — setting an alarm is a world action, not a workspace operation.
+// It is no longer registered as a TaskLoop tool.
 func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
 	toolList := []tools.Tool{
 		tools.NewReadTextFileTool(personID, sessionID),
@@ -366,7 +370,6 @@ func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, 
 		tools.NewEditTextFileTool(personID, sessionID),
 		tools.NewBashTool(personID, sessionID),
 		tools.NewWriteNotesTool(personID, sessionID, notesMaxChars),
-		tools.NewWakeMeWhenTool(personID, sessionID),
 		tools.NewScanExperienceTool(personID),
 		tools.NewRecallExperienceTool(personID),
 		tools.NewDeliverToTool(personID, sessionID),

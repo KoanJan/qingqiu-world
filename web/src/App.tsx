@@ -219,6 +219,8 @@ function App() {
       agent_id: agentId,
       agent_name: '',
       agent_avatar: '',
+      participants: [],
+      is_participant: true,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };

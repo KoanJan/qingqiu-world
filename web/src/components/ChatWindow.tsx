@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef, useCallback } from 'react';
+import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Input, Button, Spin, message } from 'antd';
 import { RobotOutlined } from '@ant-design/icons';
 import { Send, Copy, ChevronsUpDown, ChevronsDownUp } from 'lucide-react';
@@ -45,12 +45,29 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const isTempSession = session?.id === TEMP_SESSION_ID;
   const isStreaming = agentStatus !== PARTICIPANT_STATUS_IDLE;
 
+  // agentLookup maps person_id → SessionAgentStatus so each message renders
+  // its actual sender's avatar/name. Without this, A2A sessions (where both
+  // participants are agents) would show the same agent for every message,
+  // because currentAgent only reflects the session's first AI participant.
+  const agentLookup = useMemo(() => {
+    const m = new Map<number, SessionAgentStatus>();
+    for (const a of sessionAgents) m.set(a.agent_id, a);
+    return m;
+  }, [sessionAgents]);
+
+  // A session is read-only when the user is not a participant — they can view
+  // the chat history but cannot send messages. This reflects a relationship
+  // fact (the user is not in that conversation), not a permission restriction.
+  // Temp sessions are always writable (the user is creating them).
+  const isReadOnly = !isTempSession && session?.is_participant === false;
+
   // ---- Hooks: SSE connection ----
 
   const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
     onMessage: (msg: Message) => {
-      // Fill in agent's id from currentAgent before appending
-      if (currentAgent?.id) {
+      // person_id now comes from the backend SSE push. Only fall back to
+      // currentAgent.id if the backend didn't provide it (backward compat).
+      if (!msg.person_id && currentAgent?.id) {
         msg.person_id = currentAgent.id;
       }
       setMessages(prev => [...prev, msg]);
@@ -149,6 +166,15 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   useEffect(() => {
     return () => sseDisconnect();
   }, []);
+
+  // Connect SSE when a real session is selected — not just when the user
+  // sends a message. This ensures read-only A2A sessions (where the user is
+  // not a participant) also receive real-time message pushes.
+  // Temp sessions (id < 0) are skipped; they connect on first send.
+  useEffect(() => {
+    if (!session || isTempSession) return;
+    sseConnect(session.id);
+  }, [session?.id, isTempSession, sseConnect]);
 
   // Tab indicator position
   useEffect(() => {
@@ -271,10 +297,19 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
               </div>
             ) : (
               <>
-                {messages.map(msg => (
-                  <div key={msg.id} className={`message-item ${msg.person_id === currentUserPersonId ? 'user' : 'assistant'}`}>
+                {messages.map(msg => {
+                  const isMe = msg.person_id === currentUserPersonId;
+                  // Resolve the actual sender for non-user messages. In A2A
+                  // sessions both sides are agents, so each needs its own
+                  // avatar/name from agentLookup. currentAgent is the fallback
+                  // for ordinary 1v1 user-agent sessions.
+                  const sender = !isMe ? agentLookup.get(msg.person_id) : undefined;
+                  const senderAvatar = sender?.avatar ?? currentAgent?.avatar ?? '';
+                  const senderName = sender?.name ?? currentAgent?.name ?? 'AI';
+                  return (
+                  <div key={msg.id} className={`message-item ${isMe ? 'user' : 'assistant'}`}>
                     <div className="message-header">
-                      {msg.person_id === currentUserPersonId ? (
+                      {isMe ? (
                         <>
                           <span className="message-time">{formatMessageTime(new Date(msg.updated_at || msg.created_at))}</span>
                           <span className="message-role">{t('chat.me')}</span>
@@ -282,14 +317,14 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
                       ) : (
                         <>
                           <span className="message-role">
-                            <AgentAvatar avatar={currentAgent?.avatar || ''} size={32} iconSize={16} borderRadius="8px" />
-                            {currentAgent?.name || 'AI'}
+                            <AgentAvatar avatar={senderAvatar} size={32} iconSize={16} borderRadius="8px" />
+                            {senderName}
                           </span>
                           <span className="message-time">{formatMessageTime(new Date(msg.updated_at || msg.created_at))}</span>
                         </>
                       )}
                     </div>
-                    {msg.person_id !== currentUserPersonId && msg.content === '' && isStreaming ? (
+                    {!isMe && msg.content === '' && isStreaming ? (
                       <div style={{ textAlign: 'center', padding: '8px' }}>
                         <Spin size="small" />
                       </div>
@@ -301,7 +336,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
 
                         return (
                           <div className={`message-content${collapsed ? ' collapsed' : ''}`}>
-                            {msg.person_id !== currentUserPersonId ? (
+                            {!isMe ? (
                               <MarkdownRenderer source={msg.content} />
                             ) : (
                               msg.content
@@ -335,60 +370,67 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
                       </div>
                     )}
                   </div>
-                ))}
+                  );
+                })}
                 <div ref={messagesEndRef} />
               </>
             )}
           </div>
 
-          <div className="chat-input">
-            <div className="input-container-wrapper">
-              <div className="placeholder-text">{t('app.askAnything')}</div>
-              <div className="input-container">
-                <div className="input-area">
-                  <Input.TextArea
-                    placeholder=""
-                    value={inputValue}
-                    onChange={e => setInputValue(e.target.value)}
-                    onPressEnter={e => {
-                      if (!e.shiftKey) {
-                        e.preventDefault();
-                        handleSend();
-                      }
-                    }}
-                    autoSize={{ minRows: 1, maxRows: 4 }}
-                    bordered={false}
-                    style={{
-                      width: '100%',
-                      fontSize: '14px',
-                      resize: 'none',
-                      backgroundColor: 'transparent',
-                    }}
-                  />
-                </div>
-                <div className="toolbar-area">
-                  <Button
-                    type="primary"
-                    icon={<Send size={14} />}
-                    onClick={handleSend}
-                    disabled={isSendDisabled}
-                    style={{
-                      borderRadius: '50%',
-                      width: '28px',
-                      height: '28px',
-                      padding: 0,
-                      backgroundColor: isSendDisabled ? '#d1d5db' : '#1890ff',
-                      borderColor: isSendDisabled ? '#d1d5db' : '#1890ff',
-                      color: isSendDisabled ? 'var(--color-text-placeholder)' : '#ffffff',
-                      display: 'flex',
-                      alignItems: 'center',
-                      justifyContent: 'center',
-                    }}
-                  />
+          {/* Input is only rendered when the user is a participant in this
+              session. When isReadOnly is true (user is not in the session),
+              the input area is not rendered — this is a relationship fact,
+              not a permission restriction. */}
+          {!isReadOnly && (
+            <div className="chat-input">
+              <div className="input-container-wrapper">
+                <div className="placeholder-text">{t('app.askAnything')}</div>
+                <div className="input-container">
+                  <div className="input-area">
+                    <Input.TextArea
+                      placeholder=""
+                      value={inputValue}
+                      onChange={e => setInputValue(e.target.value)}
+                      onPressEnter={e => {
+                        if (!e.shiftKey) {
+                          e.preventDefault();
+                          handleSend();
+                        }
+                      }}
+                      autoSize={{ minRows: 1, maxRows: 4 }}
+                      bordered={false}
+                      style={{
+                        width: '100%',
+                        fontSize: '14px',
+                        resize: 'none',
+                        backgroundColor: 'transparent',
+                      }}
+                    />
+                  </div>
+                  <div className="toolbar-area">
+                    <Button
+                      type="primary"
+                      icon={<Send size={14} />}
+                      onClick={handleSend}
+                      disabled={isSendDisabled}
+                      style={{
+                        borderRadius: '50%',
+                        width: '28px',
+                        height: '28px',
+                        padding: 0,
+                        backgroundColor: isSendDisabled ? '#d1d5db' : '#1890ff',
+                        borderColor: isSendDisabled ? '#d1d5db' : '#1890ff',
+                        color: isSendDisabled ? 'var(--color-text-placeholder)' : '#ffffff',
+                        display: 'flex',
+                        alignItems: 'center',
+                        justifyContent: 'center',
+                      }}
+                    />
+                  </div>
                 </div>
               </div>
             </div>
-          </div>
+          )}
         </>
       )}
     </>

@@ -147,6 +147,60 @@ func CreateSession(session *model.Session, firstMessage *model.Message, fromPers
 	})
 }
 
+// CreateDirectSession creates a new 1v1 Session between two Persons without
+// a first message. Used by the runtime when an Agent decides to start a new
+// conversation (create_and_send). The first message is composed separately by
+// ComposeMessageWork and submitted through the draft commit channel.
+//
+// The initiator is recorded as the session owner (ParticipantRoleOwner); the
+// recipient is a regular member. Both start in idle status with no messages
+// read (last_read_message_id = 0).
+//
+// Unlike CreateSession (which is the HTTP path for human-initiated sessions
+// and carries the human's first message), this function:
+//   - Does NOT create a first message — the agent's ComposeMessageWork will
+//     produce the first message via the draft → commit channel.
+//   - Does NOT advance last_read_message_id — there are no messages yet.
+//
+// Returns the newly created session's ID. The caller is responsible for
+// composing and committing the first message.
+func CreateDirectSession(initiatorPersonID, recipientPersonID int64) (int64, error) {
+	var sessionID int64
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		session := model.Session{
+			Title: "",
+		}
+		if err := tx.Create(&session).Error; err != nil {
+			return fmt.Errorf("create session: %w", err)
+		}
+		sessionID = session.ID
+
+		if err := tx.Create(&model.ParticipantSession{
+			SessionID:     session.ID,
+			ParticipantID: initiatorPersonID,
+			Role:          model.ParticipantRoleOwner,
+			Status:        model.ParticipantStatusIdle,
+		}).Error; err != nil {
+			return fmt.Errorf("create initiator participant: %w", err)
+		}
+
+		if err := tx.Create(&model.ParticipantSession{
+			SessionID:     session.ID,
+			ParticipantID: recipientPersonID,
+			Role:          model.ParticipantRoleMember,
+			Status:        model.ParticipantStatusIdle,
+		}).Error; err != nil {
+			return fmt.Errorf("create recipient participant: %w", err)
+		}
+
+		return nil
+	})
+	if err != nil {
+		return 0, err
+	}
+	return sessionID, nil
+}
+
 // DeleteSessionCascade deletes a session and all associated data in a transaction.
 // Returns the first AI agent's PersonID for caller's workspace cleanup, and 0 for
 // the legacy agentConfigID (caller ignores it).
@@ -198,4 +252,60 @@ func GetFirstAIParticipantID(sessionID int64) int64 {
 		WHERE ps.session_id = ?
 		LIMIT 1`, sessionID).Scan(&personID)
 	return personID
+}
+
+// IsParticipant returns true if the given person is a participant in the session.
+func IsParticipant(sessionID, personID int64) (bool, error) {
+	var count int64
+	err := database.DB.Model(&model.ParticipantSession{}).
+		Where("session_id = ? AND participant_id = ?", sessionID, personID).
+		Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
+}
+
+// GetSessionOtherParticipant returns the conversation partner of selfPersonID
+// in a 1v1 session — the participant other than selfPersonID. This resolves
+// "the person you are talking to" from the session's actual participants
+// rather than a hardcoded human user, so A2A sessions correctly identify the
+// other agent as the partner.
+//
+// In a 1v1 session there is exactly one other participant. If the session has
+// multiple other participants (future group chat), the first is returned;
+// 0.1.3 does not support group chat. When no other participant exists,
+// PersonID is 0 and Name is "" — callers should treat this as "no partner".
+func GetSessionOtherParticipant(sessionID, selfPersonID int64) (*SessionMember, error) {
+	var sm SessionMember
+	err := database.DB.Raw(`SELECT ps.participant_id AS person_id, p.name, p.avatar
+		FROM participant_sessions ps
+		JOIN persons p ON p.id = ps.participant_id
+		WHERE ps.session_id = ? AND ps.participant_id != ?
+		LIMIT 1`, sessionID, selfPersonID).Scan(&sm).Error
+	if err != nil {
+		return nil, err
+	}
+	return &sm, nil
+}
+
+// GetParticipatedSessions returns a set of session IDs (as map keys) that the
+// given person participates in, from the provided candidate session IDs.
+// Used by the session list API to mark which sessions the current user is in.
+func GetParticipatedSessions(personID int64, sessionIDs []int64) (map[int64]bool, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	var ids []int64
+	err := database.DB.Model(&model.ParticipantSession{}).
+		Where("participant_id = ? AND session_id IN ?", personID, sessionIDs).
+		Pluck("session_id", &ids).Error
+	if err != nil {
+		return nil, err
+	}
+	result := make(map[int64]bool, len(ids))
+	for _, id := range ids {
+		result[id] = true
+	}
+	return result, nil
 }

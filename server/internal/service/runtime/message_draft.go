@@ -5,8 +5,10 @@ import (
 	"time"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 )
 
@@ -80,6 +82,25 @@ func (r *agentRuntime) commitDraft(req *draftCommitRequest) {
 		return
 	}
 
+	// Fill empty session title with the first message content.
+	// This mirrors the human-AI CreateAndSend path (chat.go), which sets the
+	// title from the first message. A2A sessions created via CreateDirectSession
+	// start with Title="" — the first committed message fills it here.
+	// The WHERE title = '' clause makes this idempotent: once filled, it won't
+	// be overwritten by later messages.
+	titleRunes := []rune(req.content)
+	title := string(titleRunes)
+	if len(titleRunes) > 15 {
+		title = string(titleRunes[:15]) + "..."
+	}
+	if err := tx.Model(&model.Session{}).
+		Where("id = ? AND title = ?", draft.SessionID, "").
+		Update("title", title).Error; err != nil {
+		applogger.Error("commitDraft: failed to fill empty session title",
+			"session_id", draft.SessionID, "error", err)
+		// Non-fatal: the message is already committed; title is cosmetic.
+	}
+
 	if err := tx.Commit().Error; err != nil {
 		applogger.Error("commitDraft: failed to commit tx", "draft_id", draft.ID, "error", err)
 		return
@@ -105,6 +126,80 @@ func (r *agentRuntime) commitDraft(req *draftCommitRequest) {
 		}
 	}
 
+	// Notify other AI participants in the session. This is the agent-to-agent
+	// communication path: when an agent commits a message, other agents in the
+	// same session receive it as an event in their own eventqueue, processed
+	// through their own Comprehend→Decide→Work pipeline. Without this, a
+	// message from Agent A to Agent B would sit unread forever.
+	r.notifyOtherAIParticipants(draft.SessionID, msg.ID, req.content, eventID)
+
 	// Push message event to SSE clients
-	pushMessageEvent(draft.SessionID, msg.ID, msg.Content)
+	pushMessageEvent(draft.SessionID, msg.ID, msg.PersonID, msg.Content)
+}
+
+// notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to
+// all other AI participants in the session. This is the agent-to-agent
+// communication path: when an agent commits a message, other agents in the
+// same session receive it as an event in their own eventqueue, processed
+// through their own Comprehend→Decide→Work pipeline.
+//
+// The sending agent's name is resolved from its Person record and used as
+// SpeakerName in the event payload. The eventID from the memory system is
+// passed along so each receiving agent can create its own observation.
+//
+// Human participants are NOT notified here — they receive messages via SSE
+// (pushMessageEvent). Only AI participants need eventqueue events because
+// they have their own cognitive pipelines.
+func (r *agentRuntime) notifyOtherAIParticipants(sessionID, messageID int64, content string, eventID int64) {
+	aiPersonIDs, err := dops.GetSessionAIParticipantIDs(sessionID)
+	if err != nil {
+		applogger.Error("notifyOtherAIParticipants: failed to get AI participants",
+			"session_id", sessionID, "error", err)
+		return
+	}
+
+	// Filter out the sender
+	var recipientIDs []int64
+	for _, id := range aiPersonIDs {
+		if id != r.agentPersonID {
+			recipientIDs = append(recipientIDs, id)
+		}
+	}
+	if len(recipientIDs) == 0 {
+		return
+	}
+
+	// Resolve sender's name for the SpeakerName field
+	sender, err := dops.GetPerson(r.agentPersonID)
+	if err != nil {
+		applogger.Error("notifyOtherAIParticipants: failed to get sender name",
+			"person_id", r.agentPersonID, "error", err)
+		return
+	}
+
+	for _, recipientPersonID := range recipientIDs {
+		ac, err := dops.GetAgentConfigByPersonID(recipientPersonID)
+		if err != nil {
+			applogger.Error("notifyOtherAIParticipants: failed to resolve agent config",
+				"person_id", recipientPersonID, "error", err)
+			continue
+		}
+		eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
+			Type:      eventqueue.EventTypeNewPrivateChatMessage,
+			SessionID: sessionID,
+			EventID:   eventID,
+			Payload: &eventqueue.NewMessagePayload{
+				MessageID:      messageID,
+				MessageContent: content,
+				SpeakerName:    sender.Name,
+			},
+		})
+		applogger.Info("Notified AI participant of new message",
+			"session_id", sessionID,
+			"message_id", messageID,
+			"sender_person_id", r.agentPersonID,
+			"recipient_person_id", recipientPersonID,
+			"recipient_agent_config_id", ac.ID,
+		)
+	}
 }

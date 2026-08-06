@@ -56,7 +56,7 @@ export function useSSE(callbacks: UseSSECallbacks) {
             const newMsg: Message = {
               id: data.message_id,
               session_id: data.session_id || 0,
-              person_id: 0, // caller fills this in
+              person_id: data.person_id || 0, // From backend; 0 if not provided
               content: data.content,
               status: MESSAGE_STATUS_COMPLETED,
               created_at: new Date().toISOString(),
@@ -75,8 +75,11 @@ export function useSSE(callbacks: UseSSECallbacks) {
       };
 
       es.onerror = (err) => {
-        logger.error('SSE: connection error', err);
-        disconnect();
+        // EventSource has built-in auto-reconnect — do NOT close the
+        // connection here. Closing (disconnect) would permanently break
+        // SSE for this session, requiring a manual page refresh.
+        // Just log; the browser will reconnect automatically.
+        logger.error('SSE: connection error (will auto-reconnect)', err);
       };
     },
     [disconnect, t],

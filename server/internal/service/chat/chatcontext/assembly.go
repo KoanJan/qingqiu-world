@@ -9,7 +9,6 @@ import (
 	"fmt"
 	"strings"
 
-	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/llm"
@@ -188,7 +187,8 @@ func AssembleContext(
 	summaryVersion int,
 	personStateDescription string,
 	taskResult *TaskResultForAssembly,
-	userName string,
+	partnerName string,
+	selfPersonID int64,
 	guidance string,
 ) []llm.Message {
 	characterSection := formatCharacterSection(characterSettings)
@@ -196,17 +196,15 @@ func AssembleContext(
 	taskResultSection := formatTaskResultSection(taskResult)
 	guidanceSection := formatGuidanceSection(guidance)
 
-	userRole := userName
-
-	userPersonID, err := dops.GetCurrentUserPersonID()
-	if err != nil {
-		applogger.Error("AssembleContext: failed to get current user person ID", "error", err)
-	}
-
+	// Role labeling is keyed on the agent's own person ID (selfPersonID), not
+	// on a hardcoded human user: the agent's own messages are "You", every
+	// other participant's messages are labeled with partnerName. This keeps
+	// A2A sessions correct, where neither party is the human user (the former
+	// binary human/"You" split collapsed there, labeling both sides as "You").
 	var dialogLines []string
 	for _, msg := range recentMessages {
-		role := userRole
-		if userPersonID != 0 && msg.PersonID != userPersonID {
+		role := partnerName
+		if msg.PersonID == selfPersonID {
 			role = "You"
 		}
 		dialogLines = append(dialogLines, fmt.Sprintf("%s [%s]: %s", role, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))

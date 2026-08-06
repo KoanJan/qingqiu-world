@@ -161,7 +161,7 @@ func StartRuntime(agentConfigID int64) {
 //   - onPushSSE: raw SSE events (notifications, etc.)
 func Start(
 	onStatusChange func(agentConfigID, personID, sessionID int64, status int),
-	onPushMessage func(sessionID, messageID int64, content string),
+	onPushMessage func(sessionID, messageID, personID int64, content string),
 	onPushSSE func(sessionID int64, data string),
 ) {
 	pushMessageEvent = onPushMessage

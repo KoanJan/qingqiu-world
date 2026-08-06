@@ -92,7 +92,13 @@ type pipeline struct {
 	messageCount   int64
 	windowSize     int
 	kbIDs          []int64
-	userName       string // Human participant's name, empty if not set
+	// partnerName is the conversation partner's name — the other participant
+	// in this session (human in user-agent sessions, another agent in A2A
+	// sessions). partnerPersonID is that partner's person ID, used to scope
+	// entity profile lookups. Both replace a former hardcoded human-user
+	// assumption that broke A2A addressing.
+	partnerName     string
+	partnerPersonID int64
 
 	// Results from pipeline stages
 	personStateResult  *comprehend.PersonState
@@ -157,8 +163,6 @@ func ExecuteChat(
 	if err := p.loadMessages(); err != nil {
 		return &ChatResult{Content: userFriendlyErrorMessage}, err
 	}
-
-	p.userName = dops.GetUserName()
 
 	// Skip preprocessing, inference, KB retrieval, and agent execution —
 	// all of these were done in the Comprehend phase.
@@ -251,6 +255,18 @@ func (p *pipeline) loadMessages() error {
 	p.windowSize = config.Get().SummaryWindowSize
 	p.kbIDs = getKnowledgeBaseIDs(p.ac)
 
+	// Resolve the conversation partner — the other participant in this
+	// session — so context assembly and person-state description refer to the
+	// actual partner (human in user-agent sessions, another agent in A2A
+	// sessions) instead of a hardcoded human user.
+	if partner, err := dops.GetSessionOtherParticipant(p.sessionID, p.ac.PersonID); err != nil {
+		applogger.Error("loadMessages: failed to resolve session partner",
+			"session_id", p.sessionID, "self_person_id", p.ac.PersonID, "error", err)
+	} else if partner != nil {
+		p.partnerName = partner.Name
+		p.partnerPersonID = partner.PersonID
+	}
+
 	applogger.Info("Starting chat processing",
 		"session_id", p.sessionID,
 		"read_message_range", p.readMessageRange,
@@ -290,14 +306,14 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 	characterSettings := p.ac.CharacterSettings
 
 	entityProfileSection := chatcontext.FormatEntityProfileSection(
-		memory.LoadProfileForEntity(p.ac.PersonID, model.EntityTypePerson, 1),
-		p.userName,
+		memory.LoadProfileForEntity(p.ac.PersonID, model.EntityTypePerson, p.partnerPersonID),
+		p.partnerName,
 	)
 
 	// Convert person state to natural language description for prompt injection
 	var personStateDescription string
 	if p.personStateResult != nil {
-		personStateDescription = p.personStateResult.ToNaturalLanguage(p.userName)
+		personStateDescription = p.personStateResult.ToNaturalLanguage(p.partnerName)
 	}
 
 	messages := chatcontext.AssembleContext(
@@ -309,7 +325,8 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 		-1,
 		personStateDescription,
 		p.taskResult,
-		p.userName,
+		p.partnerName,
+		p.ac.PersonID,
 		p.guidance,
 	)
 	return messages, "", false
@@ -358,7 +375,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	// Convert person state to natural language description for prompt injection
 	var personStateDescription string
 	if p.personStateResult != nil {
-		personStateDescription = p.personStateResult.ToNaturalLanguage(p.userName)
+		personStateDescription = p.personStateResult.ToNaturalLanguage(p.partnerName)
 	}
 
 	// Signal narrative generation if recent messages have accumulated enough.
@@ -389,8 +406,8 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	}
 
 	entityProfileSection := chatcontext.FormatEntityProfileSection(
-		memory.LoadProfileForEntity(p.ac.PersonID, model.EntityTypePerson, 1),
-		p.userName,
+		memory.LoadProfileForEntity(p.ac.PersonID, model.EntityTypePerson, p.partnerPersonID),
+		p.partnerName,
 	)
 
 	messages := chatcontext.AssembleContext(
@@ -402,7 +419,8 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 		summaryVersion,
 		personStateDescription,
 		p.taskResult,
-		p.userName,
+		p.partnerName,
+		p.ac.PersonID,
 		p.guidance,
 	)
 	return messages, "", false

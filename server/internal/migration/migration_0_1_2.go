@@ -5,7 +5,7 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
-func migrate012() {
+func migrate_0_1_2() {
 	if err := database.DB.AutoMigrate(&model.AgentEventBuffer{}); err != nil {
 		panic(err)
 	}

@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"crypto/md5"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -13,6 +14,8 @@ import (
 	"qingqiu-world-server/internal/service/llm"
 
 	applogger "qingqiu-world-server/internal/logger"
+
+	"gorm.io/gorm"
 )
 
 // Profile generation constants.
@@ -305,8 +308,16 @@ Key observations:
 	var existingProfile model.EntityProfile
 	if err := database.DB.Where("person_id = ? AND entity_type = ? AND entity_id = ?",
 		personID, entityType, entityID).First(&existingProfile).Error; err != nil {
-		applogger.Error("EntityProfile: failed to check existing profile before generation",
-			"person_id", personID, "entity_type", entityType, "entity_id", entityID, "error", err)
+		// record not found is the normal "first-time generation" case —
+		// log as WARN (not ERROR) so logs aren't polluted by expected flow.
+		// Any other error is a real problem and stays at ERROR level.
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			applogger.Warn("EntityProfile: no existing profile found, first-time generation",
+				"person_id", personID, "entity_type", entityType, "entity_id", entityID)
+		} else {
+			applogger.Error("EntityProfile: failed to check existing profile before generation",
+				"person_id", personID, "entity_type", entityType, "entity_id", entityID, "error", err)
+		}
 	}
 
 	if existingProfile.ID != 0 && existingProfile.InputMD5 == inputHash && existingProfile.InputMD5 != "" {

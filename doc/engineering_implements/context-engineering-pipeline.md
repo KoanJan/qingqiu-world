@@ -9,7 +9,7 @@ graph TB
     subgraph "Comprehend Phase (comprehend/)"
         Range["ReadMessageRange<br/>=[prev_last_read, max_message_id]<br/>fixed at entry"]
         Preproc["Preprocessing<br/>→ HistorySearchKeywords<br/>→ KnowledgeBaseQuery<br/>→ Clarification"]
-        PersonState["Person State Inference<br/>emotion, purpose, situation<br/>→ NeedsWorldInteraction"]
+        PersonState["Person State Inference<br/>emotion, purpose, situation"]
         HistorySearch["History Search<br/>keyword match over past sessions<br/>bounded by ReadMessageRange[1]"]
         KBRetrieval["KB Retrieval<br/>vector search across linked KBs<br/>bounded by ReadMessageRange[1]"]
     end
@@ -115,12 +115,12 @@ Runs independently to infer the other person's current state:
 ```mermaid
 flowchart TD
     Input["Recent messages<br/>bounded by ReadMessageRange[1]<br/>(up to WindowSize messages)"] --> LLM["LLM inference<br/>TemperatureDeterministic<br/>JSON Schema strict"]
-    LLM --> Output["Output:<br/>emotion, purpose, situation<br/>→ NeedsWorldInteraction (bool)"]
+    LLM --> Output["Output:<br/>emotion, purpose, situation"]
 ```
 
 - Temperature is deterministic (0) because this is a classification task, not creative generation
-- `NeedsWorldInteraction` is the key signal: when the user is asking for help, making plans, expressing needs — this boolean is `true` and influences the Decide phase toward creating a TaskWork
-- When the user is just chatting, sharing feelings, or making small talk, `NeedsWorldInteraction` is false and the agent stays in chat mode
+- Inferred emotion, purpose, and situation are injected into the Decide prompt as natural-language context, helping the LLM choose an appropriate response strategy
+- The former NeedsWorldInteraction boolean has been removed — Decide now judges whether a task is needed directly from the event content, avoiding a redundant cross-layer signal
 - Recent messages for inference are loaded with `id <= ReadMessageRange[1]` as the upper bound, so person-state inference sees the same boundary as preprocessing.
 
 ### 3. History Search
@@ -192,7 +192,6 @@ type ComprehensionResult struct {
     EventDescription      string           // Batch description (multiple messages) or single-event description
     HistorySearch         *HistorySearch   // nil = not executed; non-nil empty = no hits
     KBRetrieval           *KBRetrieval     // nil = not executed; non-nil empty = no hits
-    NeedsWorldInteraction bool             // From PersonState; objective property of the message
     NeedsClarification    bool             // From preprocessing; query too vague
     Clarification         string           // Generated clarification question
     PersonState           *PersonState     // Inferred emotion, purpose, situation
@@ -211,6 +210,15 @@ type KBRetrieval struct {
 ```
 
 The legacy fields `QueryType`, `ProcessedQuery`, `SkipRetrieval`, and the cross-layer `PreprocessingResult` have been removed. Preprocessing now produces retrieval directives directly (keywords + KB query), and downstream code acts on the resulting `HistorySearch` / `KBRetrieval` without re-interpreting intermediate classification state.
+
+### A2A session partner resolution (0.1.3)
+
+In agent-to-agent sessions, the "other party" is another agent, not the human user. The comprehension and chat pipelines resolve the conversation partner dynamically via `GetSessionOtherParticipant(sessionID, selfPersonID)`, which returns the participant other than `selfPersonID`. This replaces the former hardcoded human-user assumption (`GetCurrentUserPersonID`) that broke A2A dialogs — both participants would have been labeled as the human user.
+
+The resolved partner name flows through:
+- **Comprehend**: `InferPersonState` and `formatRecentMessages` use the partner name for role labeling
+- **Chat**: `AssembleContext` uses the partner name for dialog formatting
+- **Summary**: `formatMessagesForSummaryGeneric` resolves each sender's actual name from the persons table, avoiding the former "Assistant" label for all non-human messages
 
 ## Chat Phase — Consumes ComprehensionResult
 

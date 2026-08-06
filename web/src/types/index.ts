@@ -1,9 +1,27 @@
+export interface SessionParticipant {
+  person_id: number;
+  name: string;
+  avatar: string;
+}
+
 export interface Session {
   id: number;
   title: string;
   agent_id: number;
   agent_name: string;
   agent_avatar: string;
+  /**
+   * ALL AI participants in this session. Used to render a multi-avatar
+   * grid (up to 9, 九宫格) for A2A sessions and future group chats.
+   * For 1v1 human-AI sessions this has exactly one entry.
+   */
+  participants: SessionParticipant[];
+  /**
+   * Whether the current user is a participant in this session.
+   * When false, the session is read-only (user can view history but not send messages).
+   * This reflects a relationship fact, not a permission restriction.
+   */
+  is_participant: boolean;
   created_at: string;
   updated_at: string | null;
 }

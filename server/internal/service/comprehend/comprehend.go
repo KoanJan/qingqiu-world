@@ -21,20 +21,11 @@ import (
 // including what the other party means and what information is relevant.
 //
 // Comprehend only collects information — it does not make judgments.
-// NeedsWorldInteraction is an objective property of the message
-// ("does this message involve tools/external data?"), not a decision
-// on how to respond.
 type ComprehensionResult struct {
 	ReadMessageRange [2]int64
 	EventDescription string
 	HistorySearch    *HistorySearch
 	KBRetrieval      *KBRetrieval
-
-	// NeedsWorldInteraction indicates whether the message requires
-	// interaction with the external world (tools, real-time data,
-	// file operations). This is an objective property of the message,
-	// not a decision on how to respond.
-	NeedsWorldInteraction bool
 
 	// NeedsClarification indicates the query is too vague and needs
 	// a clarification question before proceeding.
@@ -83,7 +74,12 @@ type SessionInfo struct {
 	MessageCount int64
 	WindowSize   int
 	KBIDs        []int64
-	UserName     string
+	// PartnerName is the name of the conversation partner — the other
+	// participant in this session, resolved from participant_sessions.
+	// This is the actual person the agent is talking to (human in user-agent
+	// sessions, another agent in A2A sessions), replacing a former hardcoded
+	// human-user assumption that broke A2A addressing.
+	PartnerName string
 }
 
 // Comprehend performs the comprehension phase: understanding what the
@@ -226,16 +222,12 @@ func Comprehend(
 			ctx,
 			llmConfig,
 			recentMessagesForState,
-			sessionInfo.UserName,
+			sessionInfo.PartnerName,
 			dops.GetAgentConfigName(ac.ID),
+			ac.PersonID,
 			ac.CharacterSettings,
 			result.ActiveWorksSummary,
 		)
-		// Extract PersonState results
-		if result.PersonState != nil {
-			result.NeedsWorldInteraction = result.PersonState.NeedsWorldInteraction
-		}
-
 	})
 
 	// waiting for 3 steps finish
@@ -244,7 +236,6 @@ func Comprehend(
 	applogger.Info("Comprehend completed",
 		"agent_config_id", ac.ID,
 		"session_id", sessionInfo.SessionID,
-		"needs_world_interaction", result.NeedsWorldInteraction,
 		"needs_clarification", result.NeedsClarification,
 		"history_segments", historySegmentCount(result.HistorySearch),
 		"kb_segments", kbSegmentCount(result.KBRetrieval),
@@ -366,7 +357,17 @@ func buildSessionInfo(sessionID int64, ac *model.AgentConfig) *SessionInfo {
 	info := &SessionInfo{
 		SessionID:  sessionID,
 		WindowSize: 50, // Default window size
-		UserName:   dops.GetUserName(),
+	}
+
+	// Resolve the conversation partner — the other participant in this
+	// session — so person-state inference describes the actual partner
+	// (human in user-agent sessions, another agent in A2A sessions) rather
+	// than a hardcoded human user.
+	if partner, err := dops.GetSessionOtherParticipant(sessionID, ac.PersonID); err != nil {
+		applogger.Error("buildSessionInfo: failed to resolve session partner",
+			"session_id", sessionID, "self_person_id", ac.PersonID, "error", err)
+	} else if partner != nil {
+		info.PartnerName = partner.Name
 	}
 
 	// Get message count for this session

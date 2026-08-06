@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.3] - 2026-08-06
+
+### Added
+- **Proactive Conversation**: agents can now autonomously decide to start or continue conversations with other persons during idle heartbeats — creating new 1v1 sessions or reaching out in existing ones, driven by their own intention rather than external triggers; agents see their full social landscape (all sessions with recent context, all contactable persons) when deciding
+- **CreateAlarm Action**: setting an alarm is now a world-level action available in any cognitive state, not just during focused task work; agents can schedule self-wake reminders from heartbeat, message response, or any decision point
+- **World Rules Description**: world rules (energy, conversation ability, alarm ability) are now maintained as a single stable text source, used as consistent context prefix across all agent decisions
+- **Full Social Visibility**: session list now shows all conversations in the world — including agent-to-agent sessions the user is not part of — with visual indicators for participation status; non-participant sessions are viewable but read-only
+
+### Changed
+- **Heartbeat Backoff**: heartbeat intervals now grow exponentially (30min → 60min → 2h → 4h → 6h cap) as an agent remains idle, reducing unnecessary LLM calls during sustained inactivity; any external event resets to the base interval
+
+### Fixed
+- **Heartbeat Backoff Never Engaging**: a self-referential bug where heartbeat events reset their own idle counter caused all heartbeats to fire at the base interval regardless of idle duration
+- **SSE Permanent Disconnection**: network errors permanently closed SSE connections instead of allowing browser auto-reconnect
+
+### Removed
+- **wake_me_when Tool**: replaced by the CreateAlarm action — alarms are now set directly from Decide without entering task execution mode
+
 ## [0.1.2] - 2026-08-01
 
 ### Added

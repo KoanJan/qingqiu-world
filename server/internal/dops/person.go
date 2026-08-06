@@ -244,20 +244,25 @@ type SessionMember struct {
 	Avatar   string
 }
 
-// GetAIPersonInSession returns the brief of the AI person in the session
-func GetAIPersonInSession(sessionID int64) (*SessionMember, error) {
-	var sm SessionMember
+// GetAIPersonInSession returns ALL AI persons participating in the session.
+// For 1v1 human-AI sessions this returns one entry; for A2A sessions it
+// returns both AI participants. Used by the session API to render the
+// participant avatar grid on the frontend.
+func GetAIPersonInSession(sessionID int64) ([]SessionMember, error) {
+	var members []SessionMember
 	err := database.DB.Raw(`SELECT ps.participant_id AS person_id, p.name, p.avatar
 		FROM participant_sessions ps
 		JOIN persons p ON p.id = ps.participant_id AND p.type = ?
 		WHERE ps.session_id = ?
-		LIMIT 1`, model.PersonTypeAI, sessionID).Scan(&sm).Error
-	return &sm, err
+		ORDER BY ps.participant_id ASC`, model.PersonTypeAI, sessionID).Scan(&members).Error
+	return members, err
 }
 
-// GetAIPersonsInSessions returns a map of sessionID → SessionMember for
-// the given session IDs. Each session maps to its first AI participant.
-func GetAIPersonsInSessions(sessionIDs []int64) (map[int64]*SessionMember, error) {
+// GetAIPersonsInSessions returns a map of sessionID → []SessionMember for
+// the given session IDs. Each session maps to ALL its AI participants
+// (not just the first), so the frontend can render a multi-avatar grid
+// for A2A sessions and future group chats.
+func GetAIPersonsInSessions(sessionIDs []int64) (map[int64][]SessionMember, error) {
 	if len(sessionIDs) == 0 {
 		return nil, nil
 	}
@@ -273,20 +278,18 @@ func GetAIPersonsInSessions(sessionIDs []int64) (map[int64]*SessionMember, error
 		FROM participant_sessions ps
 		JOIN persons p ON p.id = ps.participant_id AND p.type = ?
 		WHERE ps.session_id IN ?
-		GROUP BY ps.session_id`, model.PersonTypeAI, sessionIDs).Scan(&rows).Error
+		ORDER BY ps.session_id ASC, ps.participant_id ASC`, model.PersonTypeAI, sessionIDs).Scan(&rows).Error
 	if err != nil {
 		return nil, err
 	}
 
-	result := make(map[int64]*SessionMember, len(rows))
+	result := make(map[int64][]SessionMember, len(rows))
 	for _, r := range rows {
-		if _, ok := result[r.SessionID]; !ok {
-			result[r.SessionID] = &SessionMember{
-				PersonID: r.PersonID,
-				Name:     r.Name,
-				Avatar:   r.Avatar,
-			}
-		}
+		result[r.SessionID] = append(result[r.SessionID], SessionMember{
+			PersonID: r.PersonID,
+			Name:     r.Name,
+			Avatar:   r.Avatar,
+		})
 	}
 	return result, nil
 }

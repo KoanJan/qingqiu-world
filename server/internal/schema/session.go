@@ -23,42 +23,82 @@ type SessionUpdate struct {
 	Title *string `json:"title"`
 }
 
+// SessionParticipantResponse represents a single AI participant in a session.
+// Used by the frontend to render a multi-avatar grid for A2A sessions
+// and future group chats.
+type SessionParticipantResponse struct {
+	PersonID int64  `json:"person_id"`
+	Name     string `json:"name"`
+	Avatar   string `json:"avatar"`
+}
+
 // SessionResponse represents the API response for a session.
 // AgentID is the person ID of the first AI participant,
 // resolved from participant_sessions.
+//
+// Participants (0.1.3) lists ALL AI participants in the session, so the
+// frontend can render a multi-avatar grid (up to 9, 九宫格) for A2A
+// sessions and future group chats. For 1v1 human-AI sessions this has
+// exactly one entry.
+//
+// IsParticipant (0.1.3) indicates whether the current human user is a
+// participant in this session. When false, the session is read-only for the
+// user — they can view the chat history but cannot send messages (the
+// frontend hides the input component). This reflects a relationship fact
+// (the user is not in that conversation), not a permission restriction.
 type SessionResponse struct {
-	ID          int64     `json:"id"`
-	Title       string    `json:"title"`
-	AgentID     int64     `json:"agent_id"`
-	AgentName   string    `json:"agent_name"`   // Resolved from persons table
-	AgentAvatar string    `json:"agent_avatar"` // Resolved from persons table
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID            int64                        `json:"id"`
+	Title         string                       `json:"title"`
+	AgentID       int64                        `json:"agent_id"`
+	AgentName     string                       `json:"agent_name"`   // Resolved from persons table
+	AgentAvatar   string                       `json:"agent_avatar"` // Resolved from persons table
+	Participants  []SessionParticipantResponse `json:"participants"`
+	IsParticipant bool                         `json:"is_participant"`
+	CreatedAt     time.Time                    `json:"created_at"`
+	UpdatedAt     time.Time                    `json:"updated_at"`
 }
 
 // NewSessionResponse converts a model.Session to a SessionResponse.
-// agent is resolved from participant_sessions by the caller.
-func NewSessionResponse(m *model.Session, aiMember *dops.SessionMember) *SessionResponse {
-	return &SessionResponse{
-		ID:          m.ID,
-		Title:       m.Title,
-		AgentID:     aiMember.PersonID,
-		AgentName:   aiMember.Name,
-		AgentAvatar: aiMember.Avatar,
-		CreatedAt:   m.CreatedAt,
-		UpdatedAt:   m.UpdatedAt,
+// aiMembers is the full list of AI participants, resolved by the caller.
+// The first entry (if any) populates AgentID/AgentName/AgentAvatar for
+// backward compatibility; all entries populate Participants.
+// isParticipant indicates whether the current user is in this session.
+func NewSessionResponse(m *model.Session, aiMembers []dops.SessionMember, isParticipant bool) *SessionResponse {
+	resp := &SessionResponse{
+		ID:            m.ID,
+		Title:         m.Title,
+		IsParticipant: isParticipant,
+		CreatedAt:     m.CreatedAt,
+		UpdatedAt:     m.UpdatedAt,
 	}
+	for _, mem := range aiMembers {
+		resp.Participants = append(resp.Participants, SessionParticipantResponse{
+			PersonID: mem.PersonID,
+			Name:     mem.Name,
+			Avatar:   mem.Avatar,
+		})
+	}
+	// First participant (if any) populates the legacy single-agent fields.
+	if len(aiMembers) > 0 {
+		resp.AgentID = aiMembers[0].PersonID
+		resp.AgentName = aiMembers[0].Name
+		resp.AgentAvatar = aiMembers[0].Avatar
+	}
+	return resp
 }
 
 // NewSessionResponseList converts a list of model.Session to SessionResponse list.
-// personMap maps sessionID → AI participant info, pre-resolved by dops.GetAIPersonsInSessions.
-func NewSessionResponseList(entities []model.Session, personMap map[int64]*dops.SessionMember) []*SessionResponse {
+// membersMap maps sessionID → []SessionMember (all AI participants), pre-resolved
+// by dops.GetAIPersonsInSessions.
+// participationMap maps sessionID → true for sessions the current user participates in.
+func NewSessionResponseList(entities []model.Session, membersMap map[int64][]dops.SessionMember, participationMap map[int64]bool) []*SessionResponse {
 	if len(entities) == 0 {
 		return nil
 	}
 	result := make([]*SessionResponse, 0, len(entities))
 	for i := range entities {
-		result = append(result, NewSessionResponse(&entities[i], personMap[entities[i].ID]))
+		isParticipant := participationMap[entities[i].ID]
+		result = append(result, NewSessionResponse(&entities[i], membersMap[entities[i].ID], isParticipant))
 	}
 	return result
 }

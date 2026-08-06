@@ -31,16 +31,20 @@ type draftCommitRequest struct {
 	sessionID int64
 }
 
-// Heartbeat interval constants for the tickless three-phase model.
-// Active: agent just completed interaction, context is fresh.
-// Steady: session has ongoing activity but agent doesn't participate.
-// Dormant: session has been idle for a long time.
+// Heartbeat interval constants for exponential backoff.
+//
+// After an external event, heartbeats back off exponentially starting from
+// heartbeatBase (30min). Each subsequent idle heartbeat doubles the interval,
+// capped at heartbeatMax (6h):
+//
+//	tick 1 → 30min, tick 2 → 60min, tick 3 → 120min, tick 4 → 240min,
+//	tick 5+ → 360min (capped at heartbeatMax)
+//
+// Formula: t(n) = min(heartbeatMax, heartbeatBase * 2^(n-1))
+// Any external event resets idleTicks to 0, restarting the cycle.
 const (
-	heartbeatActive  = 5 * time.Minute
-	heartbeatSteady  = 30 * time.Minute
-	heartbeatDormant = 2 * time.Hour
-	ticksToSteady    = 3 // Consecutive none → transition to steady
-	ticksToDormant   = 6 // Consecutive none → transition to dormant
+	heartbeatBase = 30 * time.Minute // Base interval (also the first heartbeat after an external event)
+	heartbeatMax  = 6 * time.Hour    // Maximum heartbeat interval
 )
 
 // agentRuntime is the event-driven execution engine for an agent.
@@ -142,7 +146,12 @@ func (r *agentRuntime) Run(ctx context.Context) {
 				applogger.Error("agent event channel closed", "agent_config_id", r.agentConfigID)
 				return
 			}
-			r.idleTicks = 0
+			// Only external events (user messages, A2A messages, alarms, etc.)
+			// reset idleTicks — heartbeat events must NOT, otherwise the
+			// adaptive backoff (Active→Steady→Dormant) never takes effect.
+			if event.Type != eventqueue.EventTypeHeartbeat {
+				r.idleTicks = 0
+			}
 			if sleepSince, err := dops.GetAgentSleepSince(r.agentPersonID); err != nil {
 				applogger.Error("failed to read agent sleep state", "person_id", r.agentPersonID, "error", err)
 			} else if sleepSince != "" {
@@ -159,12 +168,20 @@ func (r *agentRuntime) Run(ctx context.Context) {
 }
 
 func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentEvent, isReplay bool) bool {
+	// Determine the trigger source from the event type. Heartbeat events use
+	// the active-behavior path (CostActive); all other events use the passive
+	// response path (CostPassive).
+	triggerSource := TriggerSourceEvent
+	if event.Type == eventqueue.EventTypeHeartbeat {
+		triggerSource = TriggerSourceHeartbeat
+	}
+
 	state, err := energy.RecoverEnergy(r.agentPersonID)
 	if err != nil {
 		applogger.Error("energy recovery failed", "error", err)
 		return false
 	}
-	if state.Energy < int(energyCost(TriggerSourceEvent)) {
+	if state.Energy < int(energyCost(triggerSource)) {
 		if isReplay {
 			applogger.Info("skipped buffered agent event due to insufficient energy",
 				"person_id", r.agentPersonID,
@@ -172,6 +189,18 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 				"session_id", event.SessionID,
 				"event_id", event.EventID,
 				"energy", state.Energy,
+			)
+			return false
+		}
+		// Heartbeat events are never buffered — they are transient "time has
+		// passed" signals. If the agent lacks Energy for active behavior, it
+		// simply does not get an autonomous opportunity this tick. Buffering
+		// would create a backlog of stale heartbeat intents.
+		if event.Type == eventqueue.EventTypeHeartbeat {
+			applogger.Info("skipped heartbeat event due to insufficient energy for active behavior",
+				"person_id", r.agentPersonID,
+				"energy", state.Energy,
+				"required", int(energyCost(triggerSource)),
 			)
 			return false
 		}
@@ -243,14 +272,14 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		return true
 	}
 	c := comprehend.Comprehend(ctx, event, ac, llmConfig, buildActiveWorksSummary(r.activeWorks, event.SessionID))
-	d := Decide(ctx, event, ac, llmConfig, c, r.activeWorks, TriggerSourceEvent, state)
+	d := Decide(ctx, event, ac, llmConfig, c, r.activeWorks, triggerSource, state)
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.ReadMessageRange[1] > c.ReadMessageRange[0] {
 		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.ReadMessageRange[1]); err != nil {
 			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.ReadMessageRange[1], "error", err)
 		}
 	}
 	if len(d.Actions) > 0 {
-		if err := energy.DeductEnergy(r.agentPersonID, energyCost(TriggerSourceEvent)); err != nil {
+		if err := energy.DeductEnergy(r.agentPersonID, energyCost(triggerSource)); err != nil {
 			applogger.Error("failed to deduct energy", "person_id", r.agentPersonID, "error", err)
 		}
 	}
@@ -290,6 +319,16 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			}
 			r.activeWorks = append(r.activeWorks, w)
 			go w.Run(ctx)
+		case ActionCreateAlarm:
+			// CreateAlarm is a top-level world action (0.1.3). It does not
+			// enter TaskLoop — setting an alarm is a one-step action: create
+			// a ScheduledEvent record and notify the runtime to register a
+			// waiting goroutine.
+			if action.AlarmPlan == nil {
+				applogger.Error("create_alarm action has no alarm_plan", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			r.handleCreateAlarmAction(action.AlarmPlan, event)
 		}
 	}
 	return true
@@ -321,6 +360,112 @@ func (r *agentRuntime) newWork(event *eventqueue.AgentEvent, plan *WorkPlan, com
 
 	plan.Metadata = buildMetadata(event)
 
+	// Resolve the target session for chat works based on delivery_target.
+	// For task works, always use the event's session — tasks don't have
+	// delivery_target semantics and always execute in the triggering session.
+	//
+	// delivery_target controls where a ComposeMessageWork delivers its message:
+	//   - "" / "reply": respond in the current event's session (event.SessionID)
+	//   - "send_to_session": send to an existing session (plan.SessionID)
+	//   - "create_and_send": create a new 1v1 session with plan.RecipientPersonID
+	//
+	// For heartbeat-triggered works, event.SessionID is 0, so "reply" is not
+	// valid (validated by isValidCreateAction). The agent must choose
+	// "send_to_session" or "create_and_send".
+	//
+	// createdSessionID tracks a session newly created via create_and_send.
+	// If the subsequent transaction (draft + work record) fails, this session
+	// must be cleaned up to avoid orphaned empty sessions. The persistence
+	// boundary is: either the session AND its first work exist, or neither.
+	targetSessionID := event.SessionID
+	var createdSessionID int64 // 0 if no new session was created
+	if plan.Type == model.WorkTypeChat {
+		switch plan.DeliveryTarget {
+		case "send_to_session":
+			// Validate the agent is actually a participant in the target
+			// session. The LLM could hallucinate a session_id it saw in the
+			// context list but does not belong to. Sending to a session the
+			// agent is not part of would violate the relationship boundary.
+			ok, err := dops.IsParticipant(plan.SessionID, r.agentPersonID)
+			if err != nil {
+				applogger.Error("send_to_session: failed to verify participation",
+					"agent_config_id", r.agentConfigID,
+					"session_id", plan.SessionID,
+					"error", err,
+				)
+				return nil, false
+			}
+			if !ok {
+				applogger.Error("send_to_session: agent is not a participant in target session, skipping",
+					"agent_config_id", r.agentConfigID,
+					"session_id", plan.SessionID,
+					"person_id", r.agentPersonID,
+				)
+				return nil, false
+			}
+			targetSessionID = plan.SessionID
+		case "create_and_send":
+			// Validate the recipient exists and is not the agent itself.
+			// The LLM's contactable-persons list already excludes self, but
+			// LLMs can hallucinate — application-layer validation is required.
+			if plan.RecipientPersonID == r.agentPersonID {
+				applogger.Error("create_and_send: recipient is self, skipping",
+					"agent_config_id", r.agentConfigID,
+					"person_id", r.agentPersonID,
+				)
+				return nil, false
+			}
+			if _, err := dops.Get[model.Person](plan.RecipientPersonID); err != nil {
+				applogger.Error("create_and_send: recipient person does not exist, skipping",
+					"agent_config_id", r.agentConfigID,
+					"recipient_person_id", plan.RecipientPersonID,
+					"error", err,
+				)
+				return nil, false
+			}
+			newSessionID, err := dops.CreateDirectSession(r.agentPersonID, plan.RecipientPersonID)
+			if err != nil {
+				applogger.Error("Failed to create direct session for create_and_send",
+					"agent_config_id", r.agentConfigID,
+					"recipient_person_id", plan.RecipientPersonID,
+					"error", err,
+				)
+				return nil, false
+			}
+			targetSessionID = newSessionID
+			createdSessionID = newSessionID
+			applogger.Info("Created new session for create_and_send",
+				"agent_config_id", r.agentConfigID,
+				"session_id", targetSessionID,
+				"recipient_person_id", plan.RecipientPersonID,
+			)
+		case "", "reply":
+			// Use event.SessionID (already set as targetSessionID default)
+		default:
+			applogger.Error("Unknown delivery_target, falling back to event session",
+				"agent_config_id", r.agentConfigID,
+				"delivery_target", plan.DeliveryTarget,
+			)
+		}
+	}
+
+	// Cross-session chat works (send_to_session / create_and_send) target a
+	// different session than the triggering event. The comprehension carried
+	// into this work was computed against the EVENT's session — its
+	// ReadMessageRange, PersonState, and history all refer to that session's
+	// partner and messages. Carrying them into a different session would
+	// contaminate the target session's context: replying to a message that
+	// doesn't exist there, describing a partner who isn't in it, and labeling
+	// the dialog with the wrong roles. Retain only session-independent
+	// self-awareness (ActiveWorksSummary); the plan's guidance + background
+	// drive the first message, and the target session's own history is loaded
+	// fresh by ExecuteChat (ReadMessageRange[1] == 0 loads all of it).
+	if plan.Type == model.WorkTypeChat && targetSessionID != event.SessionID && comprehension != nil {
+		comprehension = &comprehend.ComprehensionResult{
+			ActiveWorksSummary: comprehension.ActiveWorksSummary,
+		}
+	}
+
 	// Create draft for this work, snapshotting the agent's current read position
 	// as the context boundary. Messages up to this ID were visible when the
 	// work started, ensuring preprocessing and context assembly have the
@@ -335,21 +480,31 @@ func (r *agentRuntime) newWork(event *eventqueue.AgentEvent, plan *WorkPlan, com
 	tx := database.DB.Begin()
 	defer tx.Rollback()
 
+	// If the transaction fails after a new session was created (create_and_send),
+	// clean up the orphaned session to maintain the persistence boundary:
+	// either the session AND its first work exist, or neither.
+	workCreated := false
+	defer func() {
+		if !workCreated && createdSessionID != 0 {
+			r.cleanupOrphanedSession(createdSessionID)
+		}
+	}()
+
 	if plan.Type == model.WorkTypeChat {
 		// create MessageDraft only creating chat work
 		if err := tx.Where("session_id = ? AND participant_id = ?",
-			event.SessionID, r.agentPersonID).First(ps).Error; err == nil {
+			targetSessionID, r.agentPersonID).First(ps).Error; err == nil {
 			agentLastReadID = ps.LastReadMessageID
 		}
 
 		draft = &model.MessageDraft{
 			PersonID:          r.agentPersonID,
-			SessionID:         event.SessionID,
+			SessionID:         targetSessionID,
 			Status:            model.DraftStatusBuilding,
 			LastReadMessageID: agentLastReadID,
 		}
 		if err := tx.Create(draft).Error; err != nil {
-			applogger.Error("Failed to create draft", "agent_config_id", r.agentConfigID, "session_id", event.SessionID, "error", err)
+			applogger.Error("Failed to create draft", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 			return nil, false
 		}
 	}
@@ -357,7 +512,7 @@ func (r *agentRuntime) newWork(event *eventqueue.AgentEvent, plan *WorkPlan, com
 	// Persist work to database
 	workRecord := &model.Work{
 		PersonID:    r.agentPersonID,
-		SessionID:   event.SessionID,
+		SessionID:   targetSessionID,
 		Type:        plan.Type,
 		Description: event.FormatDescription(),
 		Status:      model.WorkStatusRunning,
@@ -366,14 +521,14 @@ func (r *agentRuntime) newWork(event *eventqueue.AgentEvent, plan *WorkPlan, com
 		workRecord.DraftID = draft.ID
 	}
 	if err := tx.Create(workRecord).Error; err != nil {
-		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", event.SessionID, "error", err)
+		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 		return nil, false
 	}
 
 	w := &work{
 		ID:             workRecord.ID,
 		agent:          r,
-		sessionID:      event.SessionID,
+		sessionID:      targetSessionID,
 		plan:           plan,
 		initialPayload: event.Payload,
 		comprehension:  comprehension,
@@ -388,12 +543,35 @@ func (r *agentRuntime) newWork(event *eventqueue.AgentEvent, plan *WorkPlan, com
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", event.SessionID, "error", err)
+		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 		return nil, false
 	}
 
-	r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusWorking)
+	workCreated = true
+	r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusWorking)
 	return w, true
+}
+
+// cleanupOrphanedSession deletes a session that was created for create_and_send
+// but whose subsequent work creation failed. This maintains the persistence
+// boundary: an empty session with no work and no messages should not persist.
+// Best-effort — if cleanup itself fails, the error is logged but not propagated
+// (the caller is already on an error path).
+func (r *agentRuntime) cleanupOrphanedSession(sessionID int64) {
+	if err := database.DB.Where("session_id = ?", sessionID).
+		Delete(&model.ParticipantSession{}).Error; err != nil {
+		applogger.Error("cleanupOrphanedSession: failed to delete participant_sessions",
+			"session_id", sessionID, "error", err)
+	}
+	if err := database.DB.Delete(&model.Session{}, sessionID).Error; err != nil {
+		applogger.Error("cleanupOrphanedSession: failed to delete session",
+			"session_id", sessionID, "error", err)
+		return
+	}
+	applogger.Info("Cleaned up orphaned session after work creation failure",
+		"agent_config_id", r.agentConfigID,
+		"session_id", sessionID,
+	)
 }
 
 // buildMetadata constructs system-generated Metadata from the triggering event.
@@ -496,6 +674,89 @@ func (r *agentRuntime) handleFastPathSendMessage(sessionID int64, payload *event
 	)
 }
 
+// alarmTriggerAtFormat is the only accepted time format for AlarmPlan.TriggerAt.
+// Uses server local time without timezone — the agent and server share the
+// same timezone context.
+const alarmTriggerAtFormat = "2006-01-02 15:04:05"
+
+// handleCreateAlarmAction executes a CreateAlarm action (0.1.3).
+//
+// This is the top-level Action form of the former wake_me_when tool — setting
+// an alarm is a world action, not a workspace operation. The logic mirrors the
+// tool exactly: create a ScheduledEvent DB record (status=Pending), then send
+// an EventTypeAlarmCreated event so the runtime registers a waiting goroutine.
+//
+// The session_id of the ScheduledEvent is set to the triggering event's
+// SessionID when available (e.g., a private chat message), or 0 when the
+// action was produced from a heartbeat (no specific session context). This
+// matches the spec: "ScheduledEvent 的 session_id 字段在 Action 路径下可为空
+// 或指向 Agent 的某个已有会话，不强制绑定到触发 TaskLoop 的 session."
+func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, event *eventqueue.AgentEvent) {
+	triggerAt, err := time.ParseInLocation(alarmTriggerAtFormat, plan.TriggerAt, time.Local)
+	if err != nil {
+		applogger.Error("CreateAlarm: invalid trigger_at format, skipping",
+			"agent_config_id", r.agentConfigID,
+			"trigger_at", plan.TriggerAt,
+			"error", err,
+		)
+		return
+	}
+	if triggerAt.Before(time.Now()) {
+		applogger.Error("CreateAlarm: trigger_at is in the past, skipping",
+			"agent_config_id", r.agentConfigID,
+			"trigger_at", plan.TriggerAt,
+		)
+		return
+	}
+
+	action := model.ScheduledEventActionFullPipeline
+	if plan.Action == "send_message" {
+		action = model.ScheduledEventActionSendMessage
+	}
+	if action == model.ScheduledEventActionSendMessage && plan.ActionContent == "" {
+		applogger.Error("CreateAlarm: 'send_message' action requires action_content, skipping",
+			"agent_config_id", r.agentConfigID,
+		)
+		return
+	}
+
+	record := model.ScheduledEvent{
+		PersonID:      r.agentPersonID,
+		SessionID:     event.SessionID, // 0 for heartbeat-triggered alarms
+		TriggerAt:     triggerAt,
+		Message:       plan.Message,
+		Action:        action,
+		ActionContent: plan.ActionContent,
+		Status:        model.ScheduledEventStatusPending,
+	}
+	if err := database.DB.Create(&record).Error; err != nil {
+		applogger.Error("CreateAlarm: failed to create scheduled event record",
+			"agent_config_id", r.agentConfigID,
+			"person_id", r.agentPersonID,
+			"error", err,
+		)
+		return
+	}
+
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeAlarmCreated,
+		SessionID: event.SessionID,
+		Payload: &eventqueue.AlarmCreatedPayload{
+			ScheduledEventID: record.ID,
+		},
+	})
+
+	until := time.Until(triggerAt).Round(time.Minute)
+	applogger.Info("CreateAlarm: alarm set",
+		"agent_config_id", r.agentConfigID,
+		"person_id", r.agentPersonID,
+		"scheduled_event_id", record.ID,
+		"trigger_at", triggerAt.Format("2006-01-02 15:04 MST"),
+		"in", until,
+		"action", action,
+	)
+}
+
 // ==========================================================================
 // Status Management
 // ==========================================================================
@@ -552,16 +813,15 @@ func (r *agentRuntime) hasActiveWorkInSession(sessionID int64) bool {
 // Heartbeat Timer
 // ==========================================================================
 
-// resetHeartbeatTimer resets the heartbeat timer with tickless adaptive intervals.
+// resetHeartbeatTimer resets the heartbeat timer with exponential backoff.
 //
-// Three-phase model (inspired by Linux NOHZ):
-//   - Active (5min): agent just interacted, context is fresh
-//   - Steady (30min): session has activity but agent doesn't participate
-//   - Dormant (2h): session has been idle for a long time
+// Heartbeats start at heartbeatBase (30min) after any external event, then
+// double each idle tick, capped at heartbeatMax (6h):
 //
-// Events reset idleTicks to 0, naturally returning to the active phase.
-// Consecutive "none" self-reflections increment idleTicks, transitioning
-// through steady to dormant.
+//	tick 1 → 30min, tick 2 → 60min, tick 3 → 120min, tick 4 → 240min, ...
+//
+// Any external event (user message, A2A message, alarm) resets idleTicks
+// to 0, restarting the cycle from heartbeatBase.
 func (r *agentRuntime) resetHeartbeatTimer(timer *time.Timer) {
 	if !timer.Stop() {
 		select {
@@ -574,19 +834,28 @@ func (r *agentRuntime) resetHeartbeatTimer(timer *time.Timer) {
 	timer.Reset(interval)
 }
 
-// adjustHeartbeatInterval computes the current heartbeat interval based on
-// the idle tick counter. The interval grows as the agent stays idle longer.
+// adjustHeartbeatInterval computes the current heartbeat interval using
+// exponential backoff: t(n) = min(heartbeatMax, heartbeatBase * 2^(n-1)).
+//
+// idleTicks == 0 means an external event just occurred — use heartbeatBase.
+// idleTicks >= 1 means the agent has been idle and chose "do nothing" —
+// back off exponentially.
 func (r *agentRuntime) adjustHeartbeatInterval() time.Duration {
-	switch {
-	case r.idleTicks == 0:
-		return heartbeatActive
-	case r.idleTicks <= ticksToSteady:
-		return heartbeatActive
-	case r.idleTicks <= ticksToDormant:
-		return heartbeatSteady
-	default:
-		return heartbeatDormant
+	if r.idleTicks == 0 {
+		return heartbeatBase
 	}
+	// Exponential backoff: 30min, 60min, 120min, 240min, 360min (capped).
+	// Cap the shift to avoid overflow for very large idleTicks values;
+	// 30min << 8 = 128h >> 6h, so anything beyond 8 is already capped.
+	shift := r.idleTicks - 1
+	if shift > 8 {
+		shift = 8
+	}
+	interval := heartbeatBase * time.Duration(1<<shift)
+	if interval > heartbeatMax {
+		return heartbeatMax
+	}
+	return interval
 }
 
 // createAgentRuntime creates and initializes an agentRuntime struct without starting

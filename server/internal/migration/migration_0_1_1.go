@@ -9,7 +9,7 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
-// migrate011 handles the 0.1.1 data migration: ensures every existing AI person
+// migrate_0_1_1 handles the 0.1.1 data migration: ensures every existing AI person
 // has a corresponding agent_states row with default energy (100).
 //
 // GORM AutoMigrate already creates the table, so this only seeds rows for
@@ -17,7 +17,7 @@ import (
 //
 // Note: LastRecoveredDate is set to UTC today as a placeholder. The next
 // RecoverEnergy call will correct it to the global fixed timezone date.
-func migrate011() {
+func migrate_0_1_1() {
 	var personIDs []int64
 	err := database.DB.Model(&model.Person{}).
 		Where("type = ?", 1).

@@ -1,6 +1,6 @@
 {
   "name": "qingqiu-world",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "Qingqiu World - A world where agents are born, grow, interact, and evolve",
   "main": "electron/dist/main.js",
   "scripts": {

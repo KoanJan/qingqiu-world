@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"strings"
 
-	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
 
@@ -20,17 +19,6 @@ import (
 const personStateInferencePrompt = `You are %s, %s. You are inferring the current state of the person you are talking to.
 
 Analyze their emotional tone, conversational purpose, and any clues about their physical situation.
-
-Also determine if their request requires interaction with the external world:
-- Set needs_world_interaction=true if the request requires performing actions beyond conversation: 
-  using tools, accessing real-time information (news, weather, stock prices), 
-  file operations (create, modify, delete files), code execution, web searches, 
-  or any operation that affects the external world.
-- Set needs_world_interaction=false if the request can be fulfilled by conversation alone: 
-  answering questions, giving advice, explaining concepts, casual chat, 
-  expressing opinions, or any response that only requires reasoning and language.
-
-IMPORTANT: You are the person named above(%s). Questions directed at you (e.g., "Are you asleep?", "How are you?", "What do you think?") are casual chat and do NOT require world interaction. Only set needs_world_interaction=true when the person explicitly asks you to perform actions that require tools or external data.
 
 Recent conversation:
 %s`
@@ -48,10 +36,9 @@ Recent conversation:
 //  1. Guide LLM structured output generation
 //  2. Provide natural language fragments for prompt template assembly
 type PersonState struct {
-	Emotion               string `json:"emotion" jsonschema:"description=The person's current emotional state: calm for relaxed or neutral, anxious for worried or uneasy, frustrated for annoyed or impatient (e.g. repeated failed attempts), urgent for time-pressured or emergency, curious for inquisitive or exploratory,enum=calm,enum=anxious,enum=frustrated,enum=urgent,enum=curious,required"`
-	Purpose               string `json:"purpose" jsonschema:"description=The person's current conversational goal: seek_help for needing a solution or fix, seek_advice for wanting recommendations or guidance, seek_confirmation for validating a decision or understanding, express_feeling for sharing emotions without expecting solutions, casual_chat for social or non-goal-oriented conversation,enum=seek_help,enum=seek_advice,enum=seek_confirmation,enum=express_feeling,enum=casual_chat,required"`
-	Situation             string `json:"situation" jsonschema:"description=Brief natural language description of the person's physical context if inferable from the conversation, such as time of day, device, environment, or activity. Use unknown if not inferable. Examples: at work on desktop, late evening on mobile, in a meeting, commuting,required"`
-	NeedsWorldInteraction bool   `json:"needs_world_interaction" jsonschema:"description=Whether the request requires actions beyond conversation: true if it needs tools, real-time information, file operations, or any operation affecting the external world; false if it can be fulfilled by conversation alone (reasoning, advice, explanations, casual chat),required"`
+	Emotion   string `json:"emotion" jsonschema:"description=The person's current emotional state: calm for relaxed or neutral, anxious for worried or uneasy, frustrated for annoyed or impatient (e.g. repeated failed attempts), urgent for time-pressured or emergency, curious for inquisitive or exploratory,enum=calm,enum=anxious,enum=frustrated,enum=urgent,enum=curious,required"`
+	Purpose   string `json:"purpose" jsonschema:"description=The person's current conversational goal: seek_help for needing a solution or fix, seek_advice for wanting recommendations or guidance, seek_confirmation for validating a decision or understanding, express_feeling for sharing emotions without expecting solutions, casual_chat for social or non-goal-oriented conversation,enum=seek_help,enum=seek_advice,enum=seek_confirmation,enum=express_feeling,enum=casual_chat,required"`
+	Situation string `json:"situation" jsonschema:"description=Brief natural language description of the person's physical context if inferable from the conversation, such as time of day, device, environment, or activity. Use unknown if not inferable. Examples: at work on desktop, late evening on mobile, in a meeting, commuting,required"`
 }
 
 // emotionDescriptions maps emotion codes to natural language descriptions.
@@ -94,25 +81,23 @@ func (ps *PersonState) ToNaturalLanguage(personName string) string {
 	if ps.Situation != "" && ps.Situation != "unknown" {
 		parts = append(parts, fmt.Sprintf("and is likely %s", ps.Situation))
 	}
-	if ps.NeedsWorldInteraction {
-		parts = append(parts, "and needs to interact with the external world (tools, real-time data, or file operations)")
-	}
 
 	return strings.Join(parts, ", ") + "."
 }
 
 // formatRecentMessages formats recent messages into text for the inference prompt.
-// personName is the actual name of the other party, agentName is the agent's own name.
-func formatRecentMessages(recentMessages []model.Message, personName, agentName string) string {
-	userPersonID, err := dops.GetCurrentUserPersonID()
-	if err != nil {
-		applogger.Error("formatRecentMessages: failed to get current user person ID", "error", err)
-	}
-	personRole := personName
+// personName is the actual name of the other party (the partner being inferred),
+// agentName is the agent's own name, selfPersonID is the agent's own person ID.
+//
+// Role labeling is keyed on the agent's own person ID (self), not on a hardcoded
+// human user: the agent's own messages are labeled with agentName, every other
+// participant's messages with personName. This keeps A2A sessions correct, where
+// neither party is the human user.
+func formatRecentMessages(recentMessages []model.Message, personName, agentName string, selfPersonID int64) string {
 	var lines []string
 	for _, msg := range recentMessages {
-		role := personRole
-		if userPersonID != 0 && msg.PersonID != userPersonID {
+		role := personName
+		if msg.PersonID == selfPersonID {
 			role = agentName
 		}
 		lines = append(lines, fmt.Sprintf("%s [%s]: %s", role, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))
@@ -122,7 +107,9 @@ func formatRecentMessages(recentMessages []model.Message, personName, agentName 
 
 // InferPersonState infers the pserson's current state from recent conversation messages.
 // Uses TemperatureDeterministic for consistent, deterministic outputs.
-// userName is the actual name of the person being talked to, agentName is the agent's own name.
+// personName is the actual name of the person being talked to (the partner),
+// agentName is the agent's own name, selfPersonID is the agent's own person ID
+// (used to label the agent's own messages in the dialog).
 // characterSettings provides the agent's role context to prevent misinterpretation of casual questions.
 // activeWorksSummary describes the agent's currently running works, enabling self-awareness
 // (e.g., understanding "change the approach" refers to an ongoing task).
@@ -133,6 +120,7 @@ func InferPersonState(
 	recentMessages []model.Message,
 	personName string,
 	agentName string,
+	selfPersonID int64,
 	characterSettings string,
 	activeWorksSummary string,
 ) *PersonState {
@@ -142,8 +130,8 @@ func InferPersonState(
 
 	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
 
-	dialogText := formatRecentMessages(recentMessages, personName, agentName)
-	prompt := fmt.Sprintf(personStateInferencePrompt, agentName, characterSettings, agentName, dialogText)
+	dialogText := formatRecentMessages(recentMessages, personName, agentName, selfPersonID)
+	prompt := fmt.Sprintf(personStateInferencePrompt, agentName, characterSettings, dialogText)
 
 	// Inject active works context for self-awareness.
 	// When the agent knows what it is currently doing, it can correctly
@@ -173,7 +161,6 @@ func InferPersonState(
 				"emotion", state.Emotion,
 				"purpose", state.Purpose,
 				"situation", state.Situation,
-				"needs_world_interaction", state.NeedsWorldInteraction,
 			)
 			return &state
 		}

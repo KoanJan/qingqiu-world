@@ -11,7 +11,6 @@
 //   - EditTextFileTool: Make precise text replacements in existing files
 //   - BashTool: Execute shell commands within a workspace
 //   - WriteNotesTool: Append structured entries to agent's notes
-//   - WakeMeWhenTool: Set a future alarm for self-wake
 //   - WebSearchTool: Search the web for information (Tavily provider)
 //   - ScanExperienceTool: Search private experiences by keyword (progressive disclosure step 1)
 //   - RecallExperienceTool: Read the full content of a specific experience (progressive disclosure step 2)
@@ -30,7 +29,6 @@ const (
 	ToolNameWriteTextFile                      // write_text_file
 	ToolNameEditTextFile                       // edit_text_file
 	ToolNameWriteNotes                         // write_notes
-	ToolNameWakeMeWhen                         // wake_me_when
 	ToolNameWebSearch                          // web_search
 	ToolNameDeliverTo                          // deliver_to
 	ToolNameScanMyExperience                   // scan_my_experience
@@ -45,7 +43,6 @@ var nameStrings = map[ToolName]string{
 	ToolNameWriteTextFile:       "write_text_file",
 	ToolNameEditTextFile:        "edit_text_file",
 	ToolNameWriteNotes:          "write_notes",
-	ToolNameWakeMeWhen:          "wake_me_when",
 	ToolNameWebSearch:           "web_search",
 	ToolNameDeliverTo:           "deliver_to",
 	ToolNameScanMyExperience:    "scan_my_experience",

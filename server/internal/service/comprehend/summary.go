@@ -274,21 +274,28 @@ func formatMessagesForSummary(messages []model.Message, personName, agentName st
 	return result
 }
 
-// formatMessagesForSummaryGeneric formats messages using role-based labels
-// (User/Assistant) suitable for a session-level factual summary.
+// formatMessagesForSummaryGeneric formats messages using each sender's actual
+// name, suitable for a session-level factual summary. Labeling by real
+// participant names (resolved from persons) avoids the former hardcoded
+// human-user assumption that collapsed A2A sessions, where both participants
+// are agents and would have been labeled "Assistant".
 func formatMessagesForSummaryGeneric(messages []*model.Message) string {
-	userPersonID, err := dops.GetCurrentUserPersonID()
-	if err != nil {
-		applogger.Error("formatMessagesForSummaryGeneric: failed to get current user person ID", "error", err)
-	}
-	userName := dops.GetUserName()
+	nameCache := make(map[int64]string)
 	var formatted []string
 	for _, msg := range messages {
-		role := userName
-		if userPersonID != 0 && msg.PersonID != userPersonID {
-			role = "Assistant"
+		name, ok := nameCache[msg.PersonID]
+		if !ok {
+			person, err := dops.GetPerson(msg.PersonID)
+			if err != nil {
+				applogger.Error("formatMessagesForSummaryGeneric: failed to resolve sender",
+					"person_id", msg.PersonID, "error", err)
+				name = fmt.Sprintf("person_%d", msg.PersonID)
+			} else {
+				name = person.Name
+			}
+			nameCache[msg.PersonID] = name
 		}
-		formatted = append(formatted, fmt.Sprintf("%s: %s", role, msg.Content))
+		formatted = append(formatted, fmt.Sprintf("%s: %s", name, msg.Content))
 	}
 	result := ""
 	for i, s := range formatted {

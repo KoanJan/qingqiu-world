@@ -15,7 +15,6 @@ var argumentKeys = map[tools.ToolName][]string{
 	tools.ToolNameBash:               {"command"},
 	tools.ToolNameWebSearch:          {"query"},
 	tools.ToolNameWriteNotes:         {"content", "entry_type"},
-	tools.ToolNameWakeMeWhen:         {},
 	tools.ToolNameScanMyExperience:   {"task_description"},
 	tools.ToolNameRecallMyExperience: {"query"},
 	tools.ToolNameReadTextFile:       {"file_path"},

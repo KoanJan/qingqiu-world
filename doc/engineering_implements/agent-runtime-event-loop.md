@@ -8,7 +8,7 @@ This document describes how the agent runtime processes incoming events, transit
 graph TB
     subgraph "External Producers"
         Handler["HTTP Handler<br/>user messages, events"]
-        TaskTools["Task Tools<br/>wake_me_when, etc."]
+        TaskTools["Task Tools<br/>(task-internal tools)"]
         Scheduler["Scheduler<br/>timed alarms"]
     end
 
@@ -147,7 +147,7 @@ flowchart TD
 | `NewPrivateChatMessage` | User sends a message | Energy check → Create observation → Batch-skip check → Comprehend → Decide → Advance last_read → DeductEnergy → Execute |
 | `WorkCompleted` | Work finishes (task loop or chat) | Energy check → Remove from activeWorks → Rule-based Decide → DeductEnergy → Execute |
 | `Scheduled` | Alarm fires (heartbeat + alarm goroutine) | Energy check → Fast-path check → Comprehend → Rule-based Decide → DeductEnergy → Execute |
-| `AlarmCreated` | `wake_me_when` tool result | Energy check → AlarmRegistry registers goroutine → return |
+| `AlarmCreated` | `ActionCreateAlarm` from Decide | Energy check → AlarmRegistry registers goroutine → return |
 | `GroupChatJoined` / `GroupChatLeft` / `SystemNotification` | System events | Direct return (no action) |
 
 Note: fast-path (`Scheduled` + `ActionSendMessage`) bypasses Comprehend/Decide entirely and writes the pre-computed message directly. Per "Decide-phase-only" energy rule, fast-path and `AlarmCreated` do not deduct energy.
@@ -176,7 +176,7 @@ No foreign keys (per project rules) — relational integrity is enforced at the 
 | `MaxEnergy` | 200 | Energy cap at any moment |
 | `DailyRecovery` | 100 | Energy granted per day |
 | `CostPassive` | 1 | Cost per Decide triggered by an eventqueue event |
-| `CostActive` | 5 | Cost per Decide triggered by a heartbeat (reserved for future active-behavior paths; no callers yet in 0.1.1) |
+| `CostActive` | 5 | Cost per Decide triggered by a heartbeat (active behavior path) |
 
 ### Global fixed timezone
 
@@ -228,8 +228,8 @@ Energy info is injected into the Decide user prompt (no `system` role is used):
 
 | Source | Cost | When |
 |---|---|---|
-| `TriggerSourceEvent` | 1 | Decide triggered by an eventqueue event (all current callers in 0.1.1) |
-| `TriggerSourceHeartbeat` | 5 | Decide triggered by a heartbeat (reserved; no callers yet) |
+| `TriggerSourceEvent` | 1 | Decide triggered by an eventqueue event |
+| `TriggerSourceHeartbeat` | 5 | Decide triggered by a heartbeat autonomous-decide path |
 
 ## Event Buffer & Wake-up Recovery
 
@@ -305,7 +305,7 @@ flowchart LR
     end
     subgraph "Parallel Tasks"
         A["Preprocessing<br/>→ HistorySearch + KBRetrieval<br/>(bounded by ReadMessageRange[1])"]
-        B["Person State Inference<br/>emotion, purpose, situation<br/>→ NeedsWorldInteraction"]
+        B["Person State Inference<br/>emotion, purpose, situation"]
     end
     Range --> A
     Range --> B
@@ -354,6 +354,30 @@ The LLM output is validated defensively:
 - Route/Cancel without a matching active TaskWork are dropped
 - Route/Cancel targeting a ChatWork are dropped (ChatWork has no loop to absorb directives)
 - If all actions are filtered out, the agent takes no action (silent no-op, not an error)
+
+### Delivery target (0.1.3)
+
+Chat works (WorkTypeChat) carry a `delivery_target` that controls where the message is delivered:
+
+| Target | Semantics | Validation |
+|---|---|---|
+| `reply` (default) | Respond in the current event's session | Only valid for NewPrivateChatMessage events |
+| `send_to_session` | Send to an existing session the agent participates in | Validates the agent is a participant via `IsParticipant` |
+| `create_and_send` | Create a new 1v1 session and send the first message | Validates recipient exists and is not self; creates session via `CreateDirectSession` |
+
+`reply` is for direct responses. `send_to_session` and `create_and_send` are for cross-session communication — e.g., "go ask B about X" triggers a `create_and_send` to B, optionally alongside a `reply` to acknowledge the requester.
+
+### Cross-session comprehension stripping (0.1.3)
+
+When a chat work targets a different session than the triggering event (`send_to_session` / `create_and_send`), the comprehension result is stripped to only `ActiveWorksSummary`. The original comprehension was computed against the event's session — its `ReadMessageRange`, `PersonState`, and partner identity refer to that session. Carrying them into a different session would contaminate the target session's context. The plan's `background` + `guidance` fields (written by the LLM during Decide) carry the necessary intent; the target session's own history is loaded fresh by `ExecuteChat`.
+
+### Sessions context injection (0.1.3)
+
+The Decide prompt includes the agent's full social picture via `buildSessionsContext`:
+- All sessions the agent participates in (most recently active first)
+- For each session: session ID, other participant names, EntityProfile narrative, and recent messages (up to N, each truncated to 200 chars)
+
+This lets the LLM choose between `reply`, `send_to_session`, and `create_and_send` based on the agent's full social situation. No pre-filtering is applied — the agent sees everything and decides for itself which sessions are worth acting on. A companion section, `buildContactablePersonsContext`, lists all persons in the world (excluding self) with their IDs and names, enabling `create_and_send` to persons the agent has no existing session with.
 
 ### `trigger` field — causal semantic description
 
@@ -422,7 +446,7 @@ flowchart LR
     ChatWorkDone["ChatWork completes<br/>with response text"] --> DraftCh["draftCommitCh<br/>(buffer=16, one per agent)"]
     DraftCh --> CommitGoroutine["commit goroutine<br/>(one per agent)"]
     CommitGoroutine --> WriteMsg["Write messages table<br/>(draft_id on message)"]
-    WriteMsg --> PushSSE["Push SSE to session<br/>(connectionManager)"]
+    WriteMsg --> PushSSE["Push SSE to session<br/>(connectionManager, includes person_id)"]
     WriteMsg --> Ingest["Submit for memory ingestion<br/>(event + observations)"]
 ```
 
@@ -460,15 +484,15 @@ flowchart TD
 
 The check functions are lightweight — they enqueue work asynchronously and return immediately. The heartbeat tick itself is fast, ensuring the event loop is never blocked by long-running reflection.
 
-Note: heartbeat currently does **not** invoke Decide, so the `TriggerSourceHeartbeat` / `CostActive=5` path is forward-compatible only — active behavior triggering is reserved for future versions.
+Heartbeat invokes Decide when the agent is idle and has Energy — this is the "autonomous-decide" path. The heartbeat grants the agent an opportunity to form an intention and act on it (e.g., start a conversation, set an alarm). If the agent decides to take no action (empty Actions list), no energy is deducted. The Decide prompt for heartbeat includes the agent's full session list (buildSessionsContext) and contactable persons (buildContactablePersonsContext), enabling proactive cross-session communication.
 
 ## Alarm System
 
-Alarms implement the `wake_me_when` tool contract — the agent asks to be woken at a specific time:
+Alarms implement the ActionCreateAlarm contract — the agent asks to be woken at a specific time. Formerly a TaskTool (wake_me_when), alarms are now a top-level Action decided in the Decide phase, reflecting that setting an alarm is a world action, not a workspace operation:
 
 ```mermaid
 flowchart TD
-    AgentCall["Agent calls wake_me_when<br/>with trigger_at + message"] --> Persist["Persist to scheduled_events<br/>status=pending"]
+    AgentCall["Decide produces ActionCreateAlarm<br/>with trigger_at + message"] --> Persist["Persist to scheduled_events<br/>status=pending"]
     Persist --> FireEvent["Fire AlarmCreated event<br/>→ eventCh"]
     FireEvent --> Runtime["Runtime creates alarm goroutine"]
     Runtime --> Wait["Goroutine sleeps until trigger_at"]
@@ -521,7 +545,7 @@ Works are not resumable after a crash. The design assumes:
 | `energy.MaxEnergy` | Energy cap at any moment | 200 |
 | `energy.DailyRecovery` | Energy granted per day | 100 |
 | `energy.CostPassive` | Cost per eventqueue-triggered Decide | 1 |
-| `energy.CostActive` | Cost per heartbeat-triggered Decide (reserved) | 5 |
+| `energy.CostActive` | Cost per heartbeat-triggered Decide | 5 |
 
 ## Shutdown
 

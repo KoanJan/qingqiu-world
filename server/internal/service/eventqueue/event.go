@@ -27,6 +27,12 @@ const (
 	EventTypeWorkCompleted
 	// EventTypeAlarmCreated represents a new scheduled alarm being created (by tool or recovery).
 	EventTypeAlarmCreated
+	// EventTypeHeartbeat represents a heartbeat tick that grants the agent an
+	// autonomous cognitive opportunity. This is not a fake external message —
+	// it is the world itself signaling "time has passed, you are idle, you may
+	// now form an intention if you wish." The agent may decide to act (begin
+	// a conversation, set an alarm) or decide to do nothing.
+	EventTypeHeartbeat
 )
 
 // AgentEvent represents an event that should be processed by an agent.
@@ -63,6 +69,10 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Work completed]"
 		}
 		return fmt.Sprintf("[Work completed] %s (status: %s)", p.Guidance, p.Status)
+	case EventTypeHeartbeat:
+		// Heartbeat is the world signaling "time has passed, you are idle."
+		// It carries no payload — the agent's situation is the context.
+		return "[Heartbeat] Time has passed. You are idle and may form an intention."
 	default:
 		return ""
 	}

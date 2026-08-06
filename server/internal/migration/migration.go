@@ -47,12 +47,12 @@ var migrations = []migration{
 	{
 		version:     "0.1.1",
 		description: "Add AgentState table and seed energy for existing AI persons",
-		fn:          migrate011,
+		fn:          migrate_0_1_1,
 	},
 	{
 		version:     "0.1.2",
 		description: "Add persistent agent event buffers and sleep state",
-		fn:          migrate012,
+		fn:          migrate_0_1_2,
 	},
 }
 
@@ -86,7 +86,16 @@ func Run() {
 	}
 
 	if len(pending) == 0 {
-		applogger.Info("DB schema is up to date", "version", currentVersion)
+		// No migration scripts to run, but the DB version may still be behind
+		// the app version (e.g., a release with no data changes). Advance the
+		// recorded version so future migrations start from the right point.
+		if semverLess(currentVersion, config.AppVersion) {
+			applogger.Info("No data migration needed, advancing DB version",
+				"from", currentVersion, "to", config.AppVersion)
+			recordVersion(config.AppVersion, "No-op version bump (no data changes)")
+		} else {
+			applogger.Info("DB schema is up to date", "version", currentVersion)
+		}
 		return
 	}
 

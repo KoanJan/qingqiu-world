@@ -3,6 +3,8 @@ package runtime
 import (
 	"context"
 
+	"qingqiu-world-server/internal/service/energy"
+	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/experience"
 	"qingqiu-world-server/internal/service/memory"
 
@@ -22,6 +24,13 @@ const (
 // Responsiveness is guaranteed by the eventqueue — user messages, scheduled
 // events, etc. all trigger agent actions via interrupts. Heartbeat does not
 // need to poll for unread messages or drive proactive messaging.
+//
+// 0.1.3: After maintenance, when the agent is idle and has enough Energy for
+// an active action (CostActive), the heartbeat sends an EventTypeHeartbeat
+// event to grant the agent an autonomous cognitive opportunity. The agent
+// may form an intention (begin a conversation, set an alarm) or choose to do
+// nothing. This is the world signaling "time has passed, you are idle" — not
+// a system command to act.
 func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 	if len(r.activeWorks) > 0 {
 		// Agent is busy — no heartbeat processing needed
@@ -45,6 +54,38 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 	if r.heartbeatTick%learningCheckInterval == 0 {
 		r.checkLearning(ctx)
 	}
+
+	// Autonomous Decide opportunity (0.1.3).
+	// Only when the agent has enough Energy for an active action — the world
+	// rule says: without Energy, the agent cannot perceive, decide or act.
+	// Energy is recovered lazily here; RecoverEnergy is idempotent and
+	// handles daily reset internally.
+	state, err := energy.RecoverEnergy(r.agentPersonID)
+	if err != nil {
+		applogger.Error("energy recovery failed during heartbeat",
+			"agent_config_id", r.agentConfigID,
+			"person_id", r.agentPersonID,
+			"error", err,
+		)
+		return
+	}
+	if state.Energy < int(energyCost(TriggerSourceHeartbeat)) {
+		applogger.Debug("heartbeat: skip autonomous Decide (insufficient energy)",
+			"agent_config_id", r.agentConfigID,
+			"person_id", r.agentPersonID,
+			"energy", state.Energy,
+			"required", int(energyCost(TriggerSourceHeartbeat)),
+		)
+		return
+	}
+
+	// Send the heartbeat event to the agent's own event queue. The event
+	// loop will pick it up and route it through Comprehend→Decide. SessionID
+	// is 0 because the heartbeat is not bound to any specific session.
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeHeartbeat,
+		SessionID: 0,
+	})
 }
 
 // checkMemoryDensity runs memory density check: detects when enough long-term
