@@ -13,8 +13,9 @@ const (
 type WorkType int
 
 const (
-	// WorkTypeChat represents a single LLM call (streaming response) work type.
-	WorkTypeChat WorkType = 1 // Single LLM call (streaming response)
+	// WorkTypeChat is retired as of 0.1.4 — Chat actions no longer create Work records.
+	// Kept for backward compatibility with existing database rows.
+	WorkTypeChat WorkType = 1 // Retired since 0.1.4
 	// WorkTypeTask represents a ReAct loop (multi-iteration with tool calls) work type.
 	WorkTypeTask WorkType = 2 // ReAct loop (multi-iteration with tool calls)
 )
@@ -30,7 +31,6 @@ type Work struct {
 	ID          int64     `gorm:"primaryKey;autoIncrement" json:"id"`
 	PersonID    int64     `gorm:"not null;index:idx_person_status" json:"person_id"`
 	SessionID   int64     `gorm:"not null" json:"session_id"`
-	DraftID     int64     `gorm:"column:draft_id;not null;default:0" json:"draft_id"`
 	Type        WorkType  `gorm:"not null" json:"type"`                                    // 1=chat, 2=task
 	Description string    `gorm:"type:text;not null" json:"description"`                   // Natural language description for semantic routing and recovery
 	Status      int       `gorm:"not null;default:0;index:idx_agent_status" json:"status"` // 0=running, 1=completed, -1=abandoned

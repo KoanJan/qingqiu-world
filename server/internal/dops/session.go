@@ -225,7 +225,7 @@ func DeleteSessionCascade(sessionID int64) (personID int64, agentConfigID int64,
 		personID = aiPersonID
 
 		tables := []interface{}{
-			&model.Work{}, &model.MessageDraft{}, &model.Interaction{},
+			&model.Work{}, &model.Interaction{},
 			&model.AgentNarrative{}, &model.Summary{},
 			&model.ParticipantSession{}, &model.Message{},
 		}

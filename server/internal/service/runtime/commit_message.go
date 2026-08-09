@@ -12,109 +12,89 @@ import (
 	"qingqiu-world-server/internal/service/memory"
 )
 
-// handleDraftCommits processes draft commit requests from the commitCh.
+// handleMessageCommits processes message commit requests from commitCh.
 // Runs in a separate goroutine to serialize message writes.
-func (r *agentRuntime) handleDraftCommits(ctx context.Context) {
+func (r *agentRuntime) handleMessageCommits(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case req := <-r.draftCommitCh:
-			r.commitDraft(req)
+		case req := <-r.messageCommitCh:
+			r.commitMessage(req)
 		}
 	}
 }
 
-// commitDraft atomically commits a draft to the messages table.
-// This is the only path through which agent messages enter the messages table.
-func (r *agentRuntime) commitDraft(req *draftCommitRequest) {
+// commitRequest carries the data needed to commit a message.
+type commitRequest struct {
+	sessionID int64
+	content   string
+}
+
+// commitMessage atomically creates a message record and performs all
+// post-commit side effects: participant session update, session title
+// fill, memory event recording, A2A notification, and SSE push.
+func (r *agentRuntime) commitMessage(req *commitRequest) {
 	if req == nil {
-		applogger.Error("commitDraft called with nil commitRequest")
+		applogger.Error("commitMessage called with nil commitRequest")
 		return
 	}
 
-	draft := req.draft
-	if draft == nil {
-		applogger.Error("commitDraft called with nil draft")
-		return
-	}
-
-	// tx
 	tx := database.DB.Begin()
 	defer tx.Rollback()
 
-	// Create the message from the draft content
-	msg := model.Message{
-		SessionID: draft.SessionID,
+	msg := &model.Message{
+		SessionID: req.sessionID,
 		PersonID:  r.agentPersonID,
 		Content:   req.content,
-		DraftID:   &draft.ID,
 	}
-	if err := tx.Create(&msg).Error; err != nil {
-		applogger.Error("Failed to commit draft to messages",
-			"draft_id", draft.ID,
-			"session_id", draft.SessionID,
+	if err := tx.Create(msg).Error; err != nil {
+		applogger.Error("commitMessage: failed to create message",
+			"session_id", req.sessionID,
 			"error", err,
 		)
 		return
 	}
 
-	// Update draft status and content
-	if err := tx.Model(&model.MessageDraft{}).Where("id = ?", draft.ID).Updates(map[string]interface{}{
-		"status":  model.DraftStatusCommitted,
-		"content": req.content,
-	}).Error; err != nil {
-		applogger.Error("commitDraft: failed to update draft", "draft_id", draft.ID, "error", err)
-		return
-	}
-
-	// Update agent's last_active_at and last_read_message_id in the participant session.
-	// The agent has "read" everything up to and including its own message,
-	// since it produced it based on all prior context.
+	// Update agent's last_active_at and last_read_message_id.
 	if err := tx.Model(&model.ParticipantSession{}).
 		Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?",
-			draft.SessionID, r.agentPersonID, msg.ID).
+			req.sessionID, r.agentPersonID, msg.ID).
 		Updates(map[string]interface{}{
 			"last_active_at":       time.Now(),
 			"last_read_message_id": msg.ID,
 		}).Error; err != nil {
-		applogger.Error("commitDraft: failed to update participant session", "draft_id", draft.ID, "error", err)
+		applogger.Error("commitMessage: failed to update participant session",
+			"session_id", req.sessionID, "error", err)
 		return
 	}
 
 	// Fill empty session title with the first message content.
-	// This mirrors the human-AI CreateAndSend path (chat.go), which sets the
-	// title from the first message. A2A sessions created via CreateDirectSession
-	// start with Title="" — the first committed message fills it here.
-	// The WHERE title = '' clause makes this idempotent: once filled, it won't
-	// be overwritten by later messages.
 	titleRunes := []rune(req.content)
 	title := string(titleRunes)
 	if len(titleRunes) > 15 {
 		title = string(titleRunes[:15]) + "..."
 	}
 	if err := tx.Model(&model.Session{}).
-		Where("id = ? AND title = ?", draft.SessionID, "").
+		Where("id = ? AND title = ?", req.sessionID, "").
 		Update("title", title).Error; err != nil {
-		applogger.Error("commitDraft: failed to fill empty session title",
-			"session_id", draft.SessionID, "error", err)
+		applogger.Error("commitMessage: failed to fill empty session title",
+			"session_id", req.sessionID, "error", err)
 		// Non-fatal: the message is already committed; title is cosmetic.
 	}
 
 	if err := tx.Commit().Error; err != nil {
-		applogger.Error("commitDraft: failed to commit tx", "draft_id", draft.ID, "error", err)
+		applogger.Error("commitMessage: failed to commit tx",
+			"session_id", req.sessionID, "error", err)
 		return
 	}
 
-	applogger.Info("Draft committed to messages",
-		"draft_id", draft.ID,
+	applogger.Info("Message committed",
 		"message_id", msg.ID,
-		"session_id", draft.SessionID,
+		"session_id", req.sessionID,
 	)
 
 	// Memory: produce event record (sync) + consume self-observation.
-	// The agent records its own message as a memory event and creates
-	// an observation for itself — "I produced this message".
 	eventID, err := memory.RecordEvent(msg.ID, msg.Content)
 	if err != nil {
 		applogger.Error("failed to record memory event for agent message",
@@ -126,30 +106,21 @@ func (r *agentRuntime) commitDraft(req *draftCommitRequest) {
 		}
 	}
 
-	// Notify other AI participants in the session. This is the agent-to-agent
-	// communication path: when an agent commits a message, other agents in the
-	// same session receive it as an event in their own eventqueue, processed
-	// through their own Comprehend→Decide→Work pipeline. Without this, a
-	// message from Agent A to Agent B would sit unread forever.
-	r.notifyOtherAIParticipants(draft.SessionID, msg.ID, req.content, eventID)
+	// Notify other AI participants in the session.
+	r.notifyOtherAIParticipants(req.sessionID, msg.ID, req.content, eventID)
 
-	// Push message event to SSE clients
-	pushMessageEvent(draft.SessionID, msg.ID, msg.PersonID, msg.Content)
+	// Push message event to SSE clients.
+	pushMessageEvent(req.sessionID, msg.ID, msg.PersonID, msg.Content)
 }
 
 // notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to
 // all other AI participants in the session. This is the agent-to-agent
 // communication path: when an agent commits a message, other agents in the
-// same session receive it as an event in their own eventqueue, processed
-// through their own Comprehend→Decide→Work pipeline.
+// same session receive it as an event in their own eventqueue.
 //
 // The sending agent's name is resolved from its Person record and used as
 // SpeakerName in the event payload. The eventID from the memory system is
 // passed along so each receiving agent can create its own observation.
-//
-// Human participants are NOT notified here — they receive messages via SSE
-// (pushMessageEvent). Only AI participants need eventqueue events because
-// they have their own cognitive pipelines.
 func (r *agentRuntime) notifyOtherAIParticipants(sessionID, messageID int64, content string, eventID int64) {
 	aiPersonIDs, err := dops.GetSessionAIParticipantIDs(sessionID)
 	if err != nil {
@@ -158,7 +129,6 @@ func (r *agentRuntime) notifyOtherAIParticipants(sessionID, messageID int64, con
 		return
 	}
 
-	// Filter out the sender
 	var recipientIDs []int64
 	for _, id := range aiPersonIDs {
 		if id != r.agentPersonID {
@@ -169,7 +139,6 @@ func (r *agentRuntime) notifyOtherAIParticipants(sessionID, messageID int64, con
 		return
 	}
 
-	// Resolve sender's name for the SpeakerName field
 	sender, err := dops.GetPerson(r.agentPersonID)
 	if err != nil {
 		applogger.Error("notifyOtherAIParticipants: failed to get sender name",

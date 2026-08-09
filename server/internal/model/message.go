@@ -11,7 +11,6 @@ type Message struct {
 	SessionID int64     `gorm:"not null;index;column:session_id" json:"session_id"`
 	PersonID  int64     `gorm:"not null;index;column:person_id;default:0" json:"person_id"`
 	Content   string    `gorm:"type:text;not null" json:"content"`
-	DraftID   *int64    `gorm:"column:draft_id" json:"draft_id"` // References message_drafts.id, NULL for user messages
 	CreatedAt time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
 	UpdatedAt time.Time `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }

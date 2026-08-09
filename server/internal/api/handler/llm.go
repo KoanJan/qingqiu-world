@@ -6,6 +6,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/agent"
 	"strconv"
 	"strings"
 
@@ -71,6 +72,12 @@ func (h *Handler) UpdateLLMConfig(c *gin.Context) {
 	updates := req.BuildUpdates()
 	if len(updates) > 0 {
 		dops.Update(entity, updates)
+		// Invalidate cached agents that reference this LLM config.
+		if refs, err := dops.ListAgentConfigsByLLMConfigID(id); err == nil {
+			for _, ac := range refs {
+				agent.Refresh(ac.PersonID)
+			}
+		}
 		if entity, err = dops.GetLLMConfig(id); err != nil {
 			applogger.Error("failed to refresh LLM config after update", "id", id, "error", err)
 		}

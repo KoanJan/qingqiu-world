@@ -119,7 +119,6 @@ func allModels() []any {
 		&model.Document{},
 		&model.DocumentChunk{},
 		&model.Work{},
-		&model.MessageDraft{},
 		&model.ParticipantSession{},
 		&model.ScheduledEvent{},
 		&model.Event{},

@@ -37,7 +37,7 @@ type SessionParticipantResponse struct {
 // resolved from participant_sessions.
 //
 // Participants (0.1.3) lists ALL AI participants in the session, so the
-// frontend can render a multi-avatar grid (up to 9, 九宫格) for A2A
+// frontend can render a multi-avatar grid (up to 9) for A2A
 // sessions and future group chats. For 1v1 human-AI sessions this has
 // exactly one entry.
 //

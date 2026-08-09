@@ -11,7 +11,7 @@
 import { ChildProcess, spawn } from 'child_process';
 import { getServerExecutable, getServerCwd, isDev, SERVER_HOST, getServerPort, setServerPort, findFreePort, getDataRoot, getLogRoot, getLogLevel } from './config';
 import http from 'http';
-import { existsSync } from 'fs';
+import { existsSync, appendFileSync, mkdirSync } from 'fs';
 
 let serverProcess: ChildProcess | null = null;
 
@@ -101,7 +101,18 @@ export async function startServer(): Promise<void> {
     });
 
     serverProcess.stderr?.on('data', (data: Buffer) => {
-      console.error(`[Server] stderr: ${data.toString().trim()}`);
+      const text = data.toString().trim();
+      console.error(`[Server] stderr: ${text}`);
+
+      // Persist stderr to a file so crash diagnostics are available even
+      // when the Electron console is not visible (e.g., packaged app mode).
+      try {
+        const logDir = getLogRoot();
+        mkdirSync(logDir, { recursive: true });
+        appendFileSync(`${logDir}/server_stderr.log`, `${new Date().toISOString()} ${text}\n`);
+      } catch (_) {
+        // Best-effort; don't break the pipe handler on filesystem errors.
+      }
     });
 
     serverProcess.on('error', (err) => {
@@ -111,7 +122,13 @@ export async function startServer(): Promise<void> {
 
     serverProcess.on('exit', (code, signal) => {
       if (code !== null && code !== 0) {
-        console.error(`[Server] exited with code ${code}, signal ${signal}`);
+        const exitMsg = `[Server] exited with code ${code}, signal ${signal}`;
+        console.error(exitMsg);
+        try {
+          const logDir = getLogRoot();
+          mkdirSync(logDir, { recursive: true });
+          appendFileSync(`${logDir}/server_stderr.log`, `${new Date().toISOString()} ${exitMsg}\n`);
+        } catch (_) {}
       }
       serverProcess = null;
     });

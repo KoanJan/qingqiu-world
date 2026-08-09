@@ -7,6 +7,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/runtime"
 	"qingqiu-world-server/internal/service/workspace"
 	"strings"
@@ -37,6 +38,7 @@ func (h *Handler) CreateAgent(c *gin.Context) {
 
 	// Register and start the agent's runtime so it can receive events immediately.
 	runtime.StartRuntime(entity.ID)
+	agent.Refresh(person.ID)
 
 	response.Success(c, schema.NewAgentResponse(entity, person))
 }
@@ -101,6 +103,7 @@ func (h *Handler) UpdateAgent(c *gin.Context) {
 		response.InternalError(c, "Failed to update ai person")
 		return
 	}
+	agent.Refresh(personID)
 
 	// Reload for response
 	ac, err := dops.GetAgentConfigByPersonID(personID)
@@ -139,6 +142,7 @@ func (h *Handler) DeleteAgent(c *gin.Context) {
 		response.InternalError(c, "Failed to delete agent config")
 		return
 	}
+	agent.Refresh(personID)
 
 	// Filesystem cleanup (not transactional)
 	for _, sid := range sessionIDs {

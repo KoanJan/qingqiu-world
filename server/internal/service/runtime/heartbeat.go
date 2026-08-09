@@ -4,7 +4,6 @@ import (
 	"context"
 
 	"qingqiu-world-server/internal/service/energy"
-	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/experience"
 	"qingqiu-world-server/internal/service/memory"
 
@@ -18,19 +17,19 @@ const (
 	learningCheckInterval      = 1 // Every 30 heartbeat ticks (low frequency — learning is a long-term decision)
 )
 
-// handleHeartbeat processes a heartbeat tick for periodic maintenance.
+// handleHeartbeat processes a heartbeat tick for periodic maintenance and
+// autonomous cognitive opportunity.
 //
-// The heartbeat handles periodic checks (obligations, memory density).
-// Responsiveness is guaranteed by the eventqueue — user messages, scheduled
-// events, etc. all trigger agent actions via interrupts. Heartbeat does not
-// need to poll for unread messages or drive proactive messaging.
+// 0.1.4: The heartbeat no longer sends an EventTypeHeartbeat through the
+// event queue. Instead, it builds a Situation directly and calls Decide.
+// This separates internal autonomy (heartbeat → Situation → Decide) from
+// external input (event → Comprehend → Situation → Decide), as the two
+// paths have different semantic origins.
 //
-// 0.1.3: After maintenance, when the agent is idle and has enough Energy for
-// an active action (CostActive), the heartbeat sends an EventTypeHeartbeat
-// event to grant the agent an autonomous cognitive opportunity. The agent
-// may form an intention (begin a conversation, set an alarm) or choose to do
-// nothing. This is the world signaling "time has passed, you are idle" — not
-// a system command to act.
+// Maintenance checks (memory density, reflection, learning) still run on
+// their tick schedules. After maintenance, when the agent is idle and has
+// enough Energy for an active action (CostActive), the heartbeat builds a
+// self-observation Description and calls Decide.
 func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 	if len(r.activeWorks) > 0 {
 		// Agent is busy — no heartbeat processing needed
@@ -55,7 +54,7 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 		r.checkLearning(ctx)
 	}
 
-	// Autonomous Decide opportunity (0.1.3).
+	// Autonomous Decide opportunity.
 	// Only when the agent has enough Energy for an active action — the world
 	// rule says: without Energy, the agent cannot perceive, decide or act.
 	// Energy is recovered lazily here; RecoverEnergy is idempotent and
@@ -69,23 +68,28 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 		)
 		return
 	}
-	if state.Energy < int(energyCost(TriggerSourceHeartbeat)) {
+	if state.Energy < int(energyCost(SituationSourceInternal)) {
 		applogger.Debug("heartbeat: skip autonomous Decide (insufficient energy)",
 			"agent_config_id", r.agentConfigID,
 			"person_id", r.agentPersonID,
 			"energy", state.Energy,
-			"required", int(energyCost(TriggerSourceHeartbeat)),
+			"required", int(energyCost(SituationSourceInternal)),
 		)
 		return
 	}
 
-	// Send the heartbeat event to the agent's own event queue. The event
-	// loop will pick it up and route it through Comprehend→Decide. SessionID
-	// is 0 because the heartbeat is not bound to any specific session.
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeHeartbeat,
-		SessionID: 0,
-	})
+	// Build the heartbeat Situation directly — no event, no Comprehend.
+	description := buildHeartbeatDescription(r.agentPersonID)
+	situation := buildHeartbeatSituation(description, state.Energy, "")
+
+	// Decide will fetch agent info via agent.GetAgent when it needs it.
+	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
+	if len(d.Actions) > 0 {
+		if err := energy.DeductEnergy(r.agentPersonID, energyCost(situation.Source)); err != nil {
+			applogger.Error("failed to deduct energy", "person_id", r.agentPersonID, "error", err)
+		}
+	}
+	r.executeActions(ctx, situation, d.Actions)
 }
 
 // checkMemoryDensity runs memory density check: detects when enough long-term

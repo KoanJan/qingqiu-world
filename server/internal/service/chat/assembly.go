@@ -3,7 +3,7 @@
 // This package provides the context assembly services that build the LLM message
 // sequence from various context sources: summaries, narratives, retrieval results,
 // person state, and task results. It matches Python's chat/context module.
-package chatcontext
+package chat
 
 import (
 	"fmt"
@@ -35,7 +35,7 @@ Recent conversation:
 
 ---
 
-%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
+%s%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
 
 // Template for simple context without background story (V < N case).
 // Used when there are not enough messages to generate a summary.
@@ -46,7 +46,7 @@ const oneBigMessageNoStoryTemplate = `%s%sConversation record:
 
 ---
 
-%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
+%s%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
 
 // TaskResultForAssembly represents the task execution result for context assembly.
 // Mirrors Python's TaskResult DTO used in context assembly.
@@ -67,10 +67,10 @@ func formatCharacterSection(characterSettings string) string {
 	return fmt.Sprintf("[Your Character]\n%s\n\n---\n\n", characterSettings)
 }
 
-// FormatEntityProfileSection formats an EntityProfile narrative for context injection.
+// formatEntityProfileSection formats an EntityProfile narrative for context injection.
 // The narrative describes the agent's impression of a specific entity (user/agent/session).
 // Returns a natural-language section or empty string if narrative is empty.
-func FormatEntityProfileSection(narrative string, entityName string) string {
+func formatEntityProfileSection(narrative string, entityName string) string {
 	if narrative == "" {
 		return ""
 	}
@@ -121,6 +121,20 @@ func formatGuidanceSection(guidance string) string {
 	return fmt.Sprintf("[Your Intention]\n%s\n\n", guidance)
 }
 
+// formatAlarmTriggerSection formats the alarm notification as a system-level
+// section. Unlike dialog messages (which are attributed to a participant), the
+// alarm notification is an independent system event that informs the agent
+// "your alarm went off — act now" without being mislabeled as someone's message.
+// Injected in the instruction area, before guidance, so the agent understands
+// the alarm context before executing its intention.
+// Returns the formatted section or empty string.
+func formatAlarmTriggerSection(alarmNotification string) string {
+	if alarmNotification == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s\n\n", alarmNotification)
+}
+
 // formatTaskResultSection formats agent delivery section for the prompt.
 // Provides execution status and results for LLM to formulate response:
 //   - success: includes result content and delivery guidance
@@ -151,7 +165,7 @@ func formatTaskResultSection(taskResult *TaskResultForAssembly) string {
 	return fmt.Sprintf("[Task Execution Interrupted]\nThe task could not be completed.\n\nReason: %s%s\n\n---\n\n", reason, notesSection)
 }
 
-// AssembleContext assembles context into one big message for LLM processing.
+// assembleContext assembles context into one big message for LLM processing.
 //
 // This method combines character settings, relevant memories, background story
 // (cached narrative), relevant segments, and recent messages into a unified
@@ -178,7 +192,9 @@ func formatTaskResultSection(taskResult *TaskResultForAssembly) string {
 //     provides execution status and results for LLM to formulate response
 //   - guidance: execution intent from the Decide phase, placed as self-instruction
 //     after person state and before the response directive
-func AssembleContext(
+//   - alarmNotification: pre-formatted alarm trigger text from the chat package;
+//     injected as an independent system section before guidance
+func assembleContext(
 	characterSettings string,
 	entityProfiles string,
 	backgroundStory string,
@@ -190,8 +206,10 @@ func AssembleContext(
 	partnerName string,
 	selfPersonID int64,
 	guidance string,
+	alarmNotification string,
 ) []llm.Message {
 	characterSection := formatCharacterSection(characterSettings)
+	alarmTriggerSection := formatAlarmTriggerSection(alarmNotification)
 	personStateInstruction := formatPersonStateInstruction(personStateDescription)
 	taskResultSection := formatTaskResultSection(taskResult)
 	guidanceSection := formatGuidanceSection(guidance)
@@ -222,6 +240,7 @@ func AssembleContext(
 			segmentsSection,
 			taskResultSection,
 			personStateInstruction,
+			alarmTriggerSection,
 			guidanceSection,
 		)
 	} else {
@@ -232,6 +251,7 @@ func AssembleContext(
 			segmentsSection,
 			taskResultSection,
 			personStateInstruction,
+			alarmTriggerSection,
 			guidanceSection,
 		)
 	}

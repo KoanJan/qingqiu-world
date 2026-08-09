@@ -10,6 +10,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
@@ -21,33 +22,29 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 )
 
-// WorkPlan describes a single unit of work to be created by the runtime.
-// Decide produces one or more WorkPlans, each carrying the execution intent
-// (Guidance) and the full contextual background (Background) so the Work
-// knows what to do and why without re-interpreting the event.
-//
-// This design ensures the cognitive order is preserved:
-// Comprehend (understand) → Decide (judge + plan) → Work (execute the plan).
-//
-// DeliveryTarget (0.1.3) controls where a ComposeMessageWork (WorkTypeChat)
-// delivers its message:
-//   - "" / "reply": respond in the current event's session. Only valid when
-//     the triggering event is a private chat message.
-//   - "send_to_session": send to an existing session the agent participates
-//     in (SessionID must be set). Used by "communicate" actions.
-//   - "create_and_send": create a new 1v1 session with RecipientPersonID
-//     and send the first message there. Used by "communicate" actions.
+// WorkPlan describes a task to be created via CreateTask action.
+// It carries Guidance (the execution intent) and Background (full contextual
+// information) so the task knows what to do and why without re-interpreting
+// the event.
 type WorkPlan struct {
-	Type       model.WorkType `json:"type" jsonschema:"description=Work type: 1=chat for direct reply, 2=task for multi-step execution using tools,enum=1,enum=2,required"`
+	Type       model.WorkType `json:"type" jsonschema:"description=Work type: 2=task for multi-step execution using tools,enum=2,required"`
 	Background string         `json:"background" jsonschema:"description=Full context for executing this plan. You will ONLY see this text during execution — include everything you need to remember: (1) what happened to trigger this work, (2) who else is involved and their names verbatim, (3) key takeaways from the comprehension analysis (inferred intent, situation). Write in natural language.,required"`
-	Guidance   string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to say (chat) or what you plan to execute (task). Write as if you are thinking to yourself.,required"`
+	Guidance   string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
 	Metadata   *task.Metadata `json:"-"` // System-generated traceability info, not written by LLM
+}
 
-	// DeliveryTarget controls how a chat work delivers its message.
-	// Only meaningful for WorkTypeChat; ignored for WorkTypeTask.
-	DeliveryTarget    string `json:"delivery_target,omitempty" jsonschema:"description=For chat work (type=1): how to deliver the message. 'reply' (default — respond in the current event's session, only for private chat message events), 'send_to_session' (send to an existing session you participate in — set session_id), 'create_and_send' (start a new 1v1 session with a person — set recipient_person_id). Leave empty for task work.,enum=reply,enum=send_to_session,enum=create_and_send"`
-	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=When delivery_target is 'send_to_session': the target session ID from your session list."`
-	RecipientPersonID int64  `json:"recipient_person_id,omitempty" jsonschema:"description=When delivery_target is 'create_and_send': the person ID to start a new conversation with. Use this to talk to someone you have no existing session with."`
+// ChatPlan describes a chat message delivery via the Chat action.
+// The Chat action is self-contained — it does not create a Work.
+//
+// SessionID and RecipientPersonID encode the delivery target:
+//   - SessionID > 0: send to the specified existing session.
+//   - SessionID == -1: create a new 1v1 session with RecipientPersonID.
+//   - SessionID == 0 is always invalid — it is the Go zero value and
+//     indistinguishable from a missing field in the LLM's JSON output.
+type ChatPlan struct {
+	Guidance          string `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to say. Write as if you are thinking to yourself.,required"`
+	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=Target session ID. Use a positive session ID from your sessions list to send to an existing session. Use -1 to create a new 1v1 session with recipient_person_id. 0 is invalid — always provide a real session ID or -1."`
+	RecipientPersonID int64  `json:"recipient_person_id,omitempty" jsonschema:"description=When session_id is -1: the person ID to start a new 1v1 conversation with."`
 }
 
 // WorkGuidance describes a directive to be sent to an existing active work.
@@ -69,20 +66,29 @@ type WorkGuidance struct {
 }
 
 // ActionType represents the type of action the Decide phase concludes.
+//
+// Actions are divided into two categories:
+//   - Self-contained actions: Chat, CreateAlarm — the Action itself is
+//     a complete description of what to do; no Work iteration is required.
+//   - Task-oriented actions: CreateTask, RouteTask, CancelTask — these
+//     operate on TaskWorks that run a multi-step ReAct loop.
 type ActionType int
 
 const (
-	// ActionCreate means a new Work should be created from the embedded WorkPlan.
-	ActionCreate ActionType = iota
-	// ActionRoute means the event should be routed to an existing active Work.
-	ActionRoute
-	// ActionCancel means an existing active Work should be abandoned.
-	ActionCancel
-	// ActionCreateAlarm means a new scheduled alarm should be created directly
-	// from the embedded AlarmPlan, without entering TaskLoop. This is the
-	// top-level Action form of the former wake_me_when tool — setting an
-	// alarm is a world action, not a workspace operation.
-	ActionCreateAlarm
+	// Chat sends a chat message to another Person. It creates a one-shot
+	// ChatWork that composes and delivers the message. No iteration loop.
+	Chat ActionType = iota
+	// CreateTask starts a new multi-step TaskWork. The task will enter a
+	// ReAct loop using tools (search, file operations, etc.).
+	CreateTask
+	// RouteTask routes the current event to an existing active TaskWork as
+	// a new directive or constraint.
+	RouteTask
+	// CancelTask requests an existing active TaskWork to stop and wrap up.
+	CancelTask
+	// CreateAlarm creates a scheduled alarm directly, without entering
+	// TaskLoop. This is a self-contained world action.
+	CreateAlarm
 )
 
 // AlarmPlan describes a self-wake alarm to be created as a top-level Action.
@@ -98,27 +104,10 @@ type AlarmPlan struct {
 	ActionContent string `json:"action_content,omitempty" jsonschema:"description=The exact message to send when the alarm fires. Only used when action is 'send_message'. This message is delivered instantly without any LLM processing, so write it as the final message that will be seen."`
 }
 
-// TriggerSource indicates what triggered this Decide call, used to:
-//   - Pick the energy cost (CostPassive for eventqueue events, CostActive
-//     for heartbeat-driven active behavior)
-//   - Render the cost hint in the system message
-type TriggerSource int
-
-const (
-	// TriggerSourceEvent means Decide was triggered by an eventqueue event
-	// (passive response). Energy cost: CostPassive (1).
-	TriggerSourceEvent TriggerSource = iota
-	// TriggerSourceHeartbeat means Decide was triggered by a heartbeat
-	// (active behavior). Energy cost: CostActive (5). Used by the heartbeat
-	// autonomous-decide path: when an agent is idle and has Energy, the
-	// heartbeat grants it an opportunity to form an intention.
-	TriggerSourceHeartbeat
-)
-
-// energyCost maps a TriggerSource to its energy Cost.
-// Returns CostPassive for any unrecognized source (defensive default).
-func energyCost(src TriggerSource) energy.Cost {
-	if src == TriggerSourceHeartbeat {
+// energyCost maps a SituationSource to its energy Cost.
+// External events use CostPassive (1); internal heartbeat uses CostActive (5).
+func energyCost(src SituationSource) energy.Cost {
+	if src == SituationSourceInternal {
 		return energy.CostActive
 	}
 	return energy.CostPassive
@@ -127,18 +116,19 @@ func energyCost(src TriggerSource) energy.Cost {
 // Action is a single atomic decision from the Decide phase.
 // Each Action is self-contained: it carries its own type and all associated data.
 // A DecisionResult can contain multiple Actions of different types, enabling
-// compound decisions like "cancel work A and create work B".
+// compound decisions like "cancel a task and reply to the person".
 //
 // The payload depends on the action type:
-//   - ActionCreate:       uses WorkPlan (type + guidance for the new work)
-//   - ActionRoute:        uses WorkGuidance (target_work_id + guidance + reason)
-//   - ActionCancel:       uses WorkGuidance (target_work_id + guidance + reason)
-//   - ActionCreateAlarm:  uses AlarmPlan (trigger_at + message + action + action_content)
+//   - Chat:       uses ChatPlan (guidance + delivery target for the message)
+//   - CreateTask: uses WorkPlan (type + guidance + background for the new task)
+//   - RouteTask / CancelTask: uses WorkGuidance (target_work_id + guidance + reason)
+//   - CreateAlarm: uses AlarmPlan (trigger_at + message + action + action_content)
 type Action struct {
-	Type         ActionType    `json:"type" jsonschema:"description=Action type: 0=create new work, 1=route to existing work, 2=cancel existing work, 3=create alarm,enum=0,enum=1,enum=2,enum=3,required"`
-	WorkPlan     *WorkPlan     `json:"work_plan,omitempty" jsonschema:"description=When type is create(0): the work plan to instantiate"`
-	WorkGuidance *WorkGuidance `json:"work_guidance,omitempty" jsonschema:"description=When type is route(1) or cancel(2): the directive to send to the target work"`
-	AlarmPlan    *AlarmPlan    `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(3): the alarm plan"`
+	Type         ActionType    `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm),enum=0,enum=1,enum=2,enum=3,enum=4,required"`
+	ChatPlan     *ChatPlan     `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
+	WorkPlan     *WorkPlan     `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
+	WorkGuidance *WorkGuidance `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
+	AlarmPlan    *AlarmPlan    `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
 }
 
 // DecisionResult is the output of the Decide phase.
@@ -177,51 +167,48 @@ Guard your energy carefully. Do not let it run too low — once it's gone, all y
 Decide what to do with this event. Return a list of actions — each action is independent and self-contained.
 
 Action types (use the integer value for the "type" field):
-1. 0 (create) — Create new work plan(s). Use when the event is a new request or topic.
-   - MUST include a "work_plan" object with "type", "background", and "guidance" fields.
-   - background: Full context you will need during execution. Include: what triggered this, who else is involved (use their exact names), and key points from the comprehension analysis if available. This text will be shown to you when you execute the plan.
-   - guidance: Your internal intention — what you plan to do, written in first-person.
-   - Work type 1 (chat): compose and send a message to a Person.
-     * delivery_target controls where the message goes:
-       - "reply" (default): respond in the current session. Only valid for direct chat messages.
-       - "send_to_session": send to an existing session you participate in (set session_id from your sessions list below). Use when you want to continue a different conversation.
-       - "create_and_send": start a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below). Use when you want to talk to someone you have no existing session with.
-     * Use "reply" when responding to the person who messaged you.
-     * Use "send_to_session" or "create_and_send" when the event asks you to reach out to someone else (e.g., "go ask B about X", "tell B what I said"). You may create multiple chat works in the same decision — one to acknowledge the request (reply) and one to talk to the other Person (send_to_session or create_and_send).
-   - Work type 2 (task): execute a multi-step task using tools, web searches, or file operations.
-   - Both type 1 + type 2: acknowledge (chat) then execute (task). These run in parallel with no ordering guarantee.
-   - When cancelling an existing work AND creating a new one in the same decision, the new work's guidance should naturally acknowledge the transition (e.g., "I stopped doing X and now I should help them with Y instead...").
+1. 0 (chat) — Send a chat message to a Person. The Action itself is a complete description of what to say and to whom.
+   - MUST include a "chat_plan" object with "guidance" and "session_id".
+   - guidance: Your internal intention — what you plan to say, written in first-person.
+   - session_id: The target session ID. Always provide a real session ID:
+     * Use a positive session ID from your sessions list to send to an existing session.
+     * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
 
-2. 1 (route) — Route the event to an existing active work listed above. Route when the event carries a new instruction or constraint that changes what an active work should do — a shift in direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). The event tells the work to do something different from what it's currently doing. Only works currently listed in "Active works" can be routed to.
-   - MUST include "guidance" (what I now want the target work to focus on, written in first-person as my own intention) and "reason" (WHY I made this decision, including the original message and inferred intent).
+2. 1 (create_task) — Start a multi-step task that will execute using tools, web searches, or file operations.
+   - MUST include a "work_plan" object with "type"=2, "background", and "guidance".
+   - background: Full context for the task — what triggered it, what you know, what the expected outcome is. Write in natural language.
+   - guidance: Your internal intention: what you plan to do, written in first-person.
+
+3. 2 (route_task) — Route the event to an existing active TaskWork listed above. Route when the event carries a new instruction or constraint that changes what an active work should do — a shift in direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
+   - MUST include "work_guidance" with "target_work_id", "guidance" (what I now want the target work to focus on, written in first-person), and "reason" (WHY I made this decision, including the original message and inferred intent).
    - The target work will see both guidance and reason, enabling it to understand the full context of the change.
    - Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
 
-3. 2 (cancel) — Request an existing active work to stop. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
-   - MUST include "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop") and "reason" (WHY, including the original message).
+4. 3 (cancel_task) — Request an existing active TaskWork to stop and wrap up. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
+   - MUST include "work_guidance" with "target_work_id", "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop"), and "reason" (WHY, including the original message).
    - Cancel is a request, not a forceful kill — the target work receives the directive and decides how to wrap up (save notes, record reasons) before exiting.
 
-4. 3 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation — you do not need to enter task work to do it.
+5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
    - message: Action instruction for your future self — what you should DO when the alarm fires. Write as a command.
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
 
-Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request (type=0 create), not a route or cancel.
+Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request (type=1 create_task), not a route or cancel.
 
 If no action is needed, return an empty actions list.
 
 You can return multiple actions. Examples (note: IDs in examples are placeholders; always use the actual work IDs from "Active works" above):
-- Cancel an old task and create a new one: [{"type":2, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop", "reason":"They said 'stop searching' — they want a direct answer instead"}}, {"type":0, "work_plan":{"type":1, "background":"Alice just told me to stop searching and give a direct answer. She originally asked about X.","guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
-- Route a follow-up to an existing work: [{"type":1, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go", "reason":"They said 'use Go instead' — they want the same task done in a different language"}}]
-- Talk to another Person and acknowledge the request: [{"type":0, "work_plan":{"type":1, "delivery_target":"create_and_send", "recipient_person_id":3, "background":"The user asked me to go ask Bob about the project status. Bob is person_id=3.","guidance":"I should ask Bob about the project status..."}}, {"type":0, "work_plan":{"type":1, "delivery_target":"reply", "background":"The user asked me to go ask Bob. I should acknowledge and say I'll do it.","guidance":"I should tell them I'll go ask Bob now..."}}]
+- Cancel an old task and chat: [{"type":3, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop", "reason":"They said 'stop searching' — they want a direct answer instead"}}, {"type":0, "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
+- Route a follow-up to an existing work: [{"type":2, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go", "reason":"They said 'use Go instead' — they want the same task done in a different language"}}]
+- Talk to another Person and acknowledge the request: [{"type":0, "chat_plan":{"session_id":-1, "recipient_person_id":3, "guidance":"I should ask Bob about the project status..."}}, {"type":0, "chat_plan":{"guidance":"I should tell them I'll go ask Bob now..."}}]
 
 Decision rules (apply in order):
-1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task work (type=0 with work_plan.type=2). If a direct response is also expected, create both chat + task in parallel.
-2. If the event carries a new instruction or constraint for an active work listed above (changing its direction, approach, or scope), use type=1 (route). If the event explicitly requests stopping an active work, use type=2 (cancel).
-3. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat work with delivery_target="send_to_session" or "create_and_send". You may also create a second chat work with delivery_target="reply" to acknowledge the request.
-4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. If the recent exchanges have reached a natural resting point — agreement reached, farewell exchanged, or the last few messages are just acknowledgments with no new content (e.g., "okay", "got it") — do NOT reply. Silence is a valid and recommended action; let the conversation rest naturally. If a reply is warranted, create a single chat work (type=0 with work_plan.type=1).
+1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task (type=1 with work_plan.type=2). If a direct response is also expected, create both chat (type=0) + create_task (type=1) in parallel.
+2. If the event carries a new instruction or constraint for an active work listed above (changing its direction, approach, or scope), use type=2 (route_task). If the event explicitly requests stopping an active work, use type=3 (cancel_task).
+3. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
+4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. If the recent exchanges have reached a natural resting point — agreement reached, farewell exchanged, or the last few messages are just acknowledgments with no new content (e.g., "okay", "got it") — do NOT reply. Silence is a valid and recommended action; let the conversation rest naturally. If a reply is warranted, create a single chat (type=0).
 5. When in doubt, consider silence before action — not every message requires a reply.
 
 ---
@@ -241,18 +228,18 @@ Write background, guidance, reason, and plan in the same language as the event c
 // "time has passed, you are idle" and asks whether it wants to form an
 // intention.
 //
-// Parameters: agent_name, agent_description, sessions_context, persons_context, energyDynamicSuffix
+// Parameters: agent_name, agent_description, description, energyDynamicSuffix
 //
 // The Action surface is intentionally narrower than the event-triggered path:
-//   - ActionCreate (type=0): only WorkTypeChat (ComposeMessageWork) is allowed.
-//     No TaskWork — the heartbeat is not a workspace trigger.
-//   - ActionCreateAlarm (type=3): set a future alarm.
-//   - ActionRoute / ActionCancel: not allowed — there is no event to route
-//     and no active work context to cancel against in this path.
+//   - Chat (type=0): compose and send a chat message. Only ChatPlan is
+//     accepted — no Work creation path.
+//   - CreateAlarm (type=4): set a future alarm.
+//   - CreateTask / RouteTask / CancelTask: not allowed — there is no event
+//     to route and no active work context to cancel against in this path.
 //
-// The agent's sessions and the world's contactable persons are injected so
-// the agent can choose between send_to_session (existing conversation) and
-// create_and_send (new conversation).
+// The description parameter carries the agent's self-observation: its sessions
+// (with narratives and recent messages) and the world's contactable persons,
+// so the agent can choose session_id (positive or -1) accordingly.
 const heartbeatPromptTemplate = world.WorldDescriptions + `
 
 You are %s, %s. Time has passed. You are idle — no event is happening to you right now. The world is offering you a moment to form an intention of your own.
@@ -267,19 +254,17 @@ You may decide to do nothing. Doing nothing is a legitimate choice — the world
 
 If you decide to act, you have two kinds of action available:
 
-1. 0 (create) — Begin a ComposeMessageWork: compose and send a message to another Person.
-   - MUST include a "work_plan" object with "type"=1, "background", and "guidance".
-   - type MUST be 1 (chat). Do not start task work from a heartbeat.
-   - background: Full context for executing the work — who you want to talk to and why, what you want to say, what past context is relevant. Write in natural language.
+1. 0 (chat) — Chat: compose and send a message to another Person.
+   - MUST include a "chat_plan" object with "guidance".
    - guidance: Your internal intention, written in first-person as your own thought.
-   - delivery_target controls where the message goes:
-     * "send_to_session": send to an existing session you participate in. Set "session_id" to one of the IDs from your session list below.
-     * "create_and_send": start a new 1v1 session with a Person. Set "recipient_person_id" to one of the IDs from the contactable persons list below.
-     * Leave empty or "reply" only when there is a current event session — NOT applicable to a heartbeat. For heartbeat, always choose "send_to_session" or "create_and_send".
-   - Use "send_to_session" when the conversation already exists and you want to continue it.
-   - Use "create_and_send" when you want to talk to someone you have no existing session with (or want a fresh start).
+   - session_id controls where the message goes:
+     * positive value: send to an existing session you participate in. Use an ID from your session list below.
+     * -1: create a new 1v1 session with a Person (set recipient_person_id from contactable persons below).
+     * 0 is an illegal value — always provide a positive session_id or -1.
+   - Use a positive session_id when the conversation already exists and you want to continue it.
+   - Use session_id=-1 when you want to talk to someone you have no existing session with (or want a fresh start).
 
-2. 3 (create_alarm) — Set an alarm that will wake you at a future time.
+2. 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
    - message: Action instruction for your future self — what you should DO when the alarm fires. Write as a command.
@@ -292,66 +277,60 @@ If you have nothing to act on, return an empty actions list. This is the default
 
 %s
 %s
-%s
 
 Write background, guidance, and plan in the same language you would use to speak.`
 
-// Decide determines how the agent should respond to an event.
+// Decide determines how the agent should respond to a Situation.
 //
-// For EventTypeNewMessage, the decision is made by LLM which can:
-//   - Create new Work(s) with WorkPlans
-//   - Route the event to an existing active Work
-//   - Cancel an existing active Work
-//   - Produce no actions (implicit ignore)
-//
-// For EventTypeHeartbeat (0.1.3), the agent is granted an autonomous
+// For SituationSourceInternal (heartbeat), the agent is granted an autonomous
 // cognitive opportunity — time has passed and it is idle. The LLM can:
 //   - Create a ComposeMessageWork (chat) to begin or continue a conversation
 //   - Create an alarm to wake itself at a future time
 //   - Produce no actions (the legitimate "I have nothing to act on" choice)
 //
-// For EventTypeWorkCompleted, the decision is rule-based: if the work was a
-// TaskWork that succeeded, create a ChatWork to inform the person. The ChatWork's
-// context assembly reads the latest DB messages, so the agent will see if the
-// person has already moved on (e.g., "never mind") and respond accordingly.
+// For EventTypeNewPrivateChatMessage (external), the decision is made by LLM
+// which can create, route, cancel, or produce no actions.
 //
-// For other event types, simple rule-based decisions are used.
+// For EventTypeWorkCompleted (external), the decision is rule-based: if the
+// work was a TaskWork that succeeded, create a ChatWork to inform the person.
+//
+// For other external event types, simple rule-based decisions are used.
 // The LLM call uses TemperatureDeterministic for consistent decision making.
-func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, activeWorks []*work, triggerSource TriggerSource, agentState *model.AgentState) DecisionResult {
-	// Non-message events use simple rule-based decisions
+func Decide(ctx context.Context, situation *Situation, personID int64, activeWorks []*work) DecisionResult {
+	// Internal source: heartbeat autonomous path.
+	if situation.Source == SituationSourceInternal {
+		return decideHeartbeat(ctx, situation, personID)
+	}
+
+	// External source: dispatch by event type.
+	event := situation.Matter.Event
 	switch event.Type {
 	case eventqueue.EventTypeGroupChatJoined:
-		applogger.Info("Decision made (rule-based)", "agent_config_id", ac.ID, "reason", "session_joined event")
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "session_joined event")
 		return DecisionResult{}
 	case eventqueue.EventTypeGroupChatLeft, eventqueue.EventTypeSystemNotification:
-		applogger.Info("Decision made (rule-based)", "agent_config_id", ac.ID, "reason", "non-message event")
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "non-message event")
 		return DecisionResult{}
 	case eventqueue.EventTypeWorkCompleted:
-		return decideWorkCompleted(event, ac)
+		return decideWorkCompleted(event, personID)
 	case eventqueue.EventTypeScheduled:
-		applogger.Info("Decision made (rule-based)", "agent_config_id", ac.ID, "action", ActionCreate, "reason", "scheduled event")
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", Chat, "reason", "scheduled event")
 		return DecisionResult{
-			Actions: []Action{{
-				Type:     ActionCreate,
-				WorkPlan: &WorkPlan{Type: model.WorkTypeChat, Guidance: "I should respond to my alarm — this is a self-reminder I set earlier"},
-			}},
+			Actions: []Action{
+				{
+					Type:     Chat,
+					ChatPlan: &ChatPlan{Guidance: "I should respond to my alarm — this is a self-reminder I set earlier"},
+				},
+			},
 		}
 	case eventqueue.EventTypeNewPrivateChatMessage:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
-
-		// Use LLM to decide — it can create, route, cancel, or produce no actions
-		return decideWithLLM(ctx, event, ac, llmConfig, comprehension, sameSessionWorks, triggerSource, agentState)
-	case eventqueue.EventTypeHeartbeat:
-		// Autonomous Decide — the agent is idle and may form an intention.
-		// No active works context is injected: the heartbeat path does not
-		// allow route/cancel, and listing active works would mislead the LLM
-		// into thinking it can interact with them.
-		return decideHeartbeat(ctx, event, ac, llmConfig, agentState)
+		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
 	default:
 		applogger.Error("Unknown event type in Decide",
 			"event_type", event.Type,
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 		)
 		return DecisionResult{}
 	}
@@ -367,10 +346,10 @@ func Decide(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentCo
 // ChatWork completion produces no action — chat works are one-shot replies
 // that don't need follow-up.
 // Task work failure also creates a ChatWork to let them know what happened.
-func decideWorkCompleted(event *eventqueue.AgentEvent, ac *model.AgentConfig) DecisionResult {
+func decideWorkCompleted(event *eventqueue.AgentEvent, personID int64) DecisionResult {
 	payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
 	if !ok || payload == nil {
-		applogger.Error("WorkCompleted event has invalid payload", "agent_config_id", ac.ID)
+		applogger.Error("WorkCompleted event has invalid payload", "person_id", personID)
 		return DecisionResult{}
 	}
 
@@ -378,7 +357,7 @@ func decideWorkCompleted(event *eventqueue.AgentEvent, ac *model.AgentConfig) De
 	// ChatWork completion is a one-shot reply — no follow-up needed.
 	if payload.WorkType != int(model.WorkTypeTask) {
 		applogger.Info("WorkCompleted: ChatWork, no follow-up needed",
-			"agent_config_id", ac.ID, "work_id", payload.WorkID)
+			"person_id", personID, "work_id", payload.WorkID)
 		return DecisionResult{}
 	}
 
@@ -390,32 +369,27 @@ func decideWorkCompleted(event *eventqueue.AgentEvent, ac *model.AgentConfig) De
 	}
 
 	applogger.Info("Decision made (rule-based, work completed)",
-		"agent_config_id", ac.ID,
+		"person_id", personID,
 		"work_id", payload.WorkID,
 		"status", payload.Status,
-		"action", ActionCreate,
+		"action", Chat,
 	)
 
 	return DecisionResult{
 		Actions: []Action{{
-			Type:     ActionCreate,
-			WorkPlan: &WorkPlan{Type: model.WorkTypeChat, Guidance: guidance},
+			Type:     Chat,
+			ChatPlan: &ChatPlan{Guidance: guidance},
 		}},
 	}
 }
 
 // buildEnergyDynamicSuffix constructs the energy info appended at the end of the
-// Decide user prompt. Static rules live in decidePromptTemplate; only the dynamic
+// Decide user prompt. Static rules live in the prompt templates; only the dynamic
 // parts (current time, remaining energy, cost hint) are rendered here.
 // Adds urgency cues when energy is critically low.
-func buildEnergyDynamicSuffix(triggerSource TriggerSource, agentState *model.AgentState) string {
-	currentEnergy := 0
-	if agentState != nil {
-		currentEnergy = agentState.Energy
-	}
-
+func buildEnergyDynamicSuffix(source SituationSource, currentEnergy int) string {
 	costHint := "This response will cost 1 energy."
-	if triggerSource == TriggerSourceHeartbeat {
+	if source == SituationSourceInternal {
 		costHint = "This response will cost 5 energy."
 	}
 
@@ -436,7 +410,10 @@ func buildEnergyDynamicSuffix(triggerSource TriggerSource, agentState *model.Age
 }
 
 // decideWithLLM uses LLM to decide whether to create new work or route to an existing one.
-func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, comprehension *comprehend.ComprehensionResult, sameSessionWorks []*work, triggerSource TriggerSource, agentState *model.AgentState) DecisionResult {
+func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sameSessionWorks []*work) DecisionResult {
+	event := situation.Matter.Event
+	comprehension := situation.Matter.Comprehension
+
 	// Validate event has content before calling LLM
 	eventDescription := comprehension.EventDescription
 	if eventDescription == "" {
@@ -444,19 +421,26 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 	}
 	if eventDescription == "" {
 		applogger.Error("Decision: event has empty content, ignoring",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 			"session_id", event.SessionID,
 		)
+		return DecisionResult{}
+	}
+
+	// Fetch agent info at the point of use — do not hold the pointer
+	// across LLM calls, as the cache may be invalidated mid-flight.
+	a, err := agent.GetAgent(personID)
+	if err != nil {
+		applogger.Error("Decision: failed to load agent", "person_id", personID, "error", err)
 		return DecisionResult{}
 	}
 
 	comprehensionContext := buildComprehensionContext(comprehension)
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
 
-	agentDescription := ac.CharacterSettings
-	person, err := dops.GetPerson(ac.PersonID)
-	if err == nil && person.Bio != "" {
-		agentDescription = person.Bio
+	agentDescription := a.Config.CharacterSettings
+	if a.Person.Bio != "" {
+		agentDescription = a.Person.Bio
 	}
 
 	// Inject the agent's social context: its sessions (with narratives and
@@ -465,14 +449,14 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 	// (continue an existing conversation), and create_and_send (start a new
 	// conversation with another Person). Without this context, the agent
 	// cannot know who else it can talk to or which sessions it has.
-	sessionsContext := buildSessionsContext(ac.PersonID)
-	personsContext := buildContactablePersonsContext(ac.PersonID)
+	sessionsContext := buildSessionsContext(a.Person.ID)
+	personsContext := buildContactablePersonsContext(a.Person.ID)
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
-		dops.GetAgentConfigName(ac.ID), agentDescription,
+		a.Person.Name, agentDescription,
 		eventDescription, comprehensionContext, activeWorksContext,
 		sessionsContext, personsContext,
-		buildEnergyDynamicSuffix(triggerSource, agentState),
+		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
 	// Active work IDs are listed in the prompt via buildActiveWorksContext so the
@@ -481,7 +465,7 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 	// not a type-level constraint. Application-layer validation in filterValidActions
 	// catches invalid work IDs with meaningful error logging.
 	chatModel := llm.NewChatModelWithTemperature(
-		llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic,
+		a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureDeterministic,
 	)
 
 	// Generate schema directly from DecisionResult — no separate LLM output type needed.
@@ -498,7 +482,7 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 
 	if err != nil {
 		applogger.Error("Decision LLM call failed, ignoring",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 			"error", err,
 		)
 		return DecisionResult{}
@@ -507,7 +491,7 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 	var decision DecisionResult
 	if err := json.Unmarshal([]byte(result), &decision); err != nil {
 		applogger.Error("Decision LLM output parse failed, ignoring",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 			"error", err,
 			"raw_output", result,
 		)
@@ -515,13 +499,13 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 	}
 
 	applogger.Info("Decision made",
-		"agent_config_id", ac.ID,
+		"person_id", personID,
 		"thoughts", decision.Thoughts,
 		"action_count", len(decision.Actions),
 	)
 
 	// Validate the LLM's decision — invalid actions are removed
-	validActions := filterValidActions(decision.Actions, sameSessionWorks, event, triggerSource)
+	validActions := filterValidActions(decision.Actions, sameSessionWorks, situation)
 	if len(validActions) == 0 {
 		applogger.Error("Decision: no valid actions, ignoring")
 		return DecisionResult{}
@@ -541,32 +525,32 @@ func decideWithLLM(ctx context.Context, event *eventqueue.AgentEvent, ac *model.
 // form an intention. The Action surface is narrower: only ComposeMessageWork
 // (chat) and CreateAlarm are allowed. No routing/cancelling active works.
 //
-// The agent is given:
-//   - Its full session list (with EntityProfile narrative + recent messages)
-//     so it can choose send_to_session
-//   - The world's contactable Persons (ID + name) so it can choose
-//     create_and_send
+// The agent's self-observation (sessions, contactable persons) is carried in
+// situation.Matter.Description, assembled by the runtime before calling Decide.
 //
 // Energy cost (CostActive = 5) is only deducted when the agent actually
 // produces actions — an empty Actions list (choosing to do nothing) is free.
-func decideHeartbeat(ctx context.Context, event *eventqueue.AgentEvent, ac *model.AgentConfig, llmConfig *model.LLMConfig, agentState *model.AgentState) DecisionResult {
-	agentDescription := ac.CharacterSettings
-	person, err := dops.GetPerson(ac.PersonID)
-	if err == nil && person.Bio != "" {
-		agentDescription = person.Bio
+func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) DecisionResult {
+	// Fetch agent info at the point of use.
+	a, err := agent.GetAgent(personID)
+	if err != nil {
+		applogger.Error("Heartbeat Decide: failed to load agent", "person_id", personID, "error", err)
+		return DecisionResult{}
 	}
 
-	sessionsContext := buildSessionsContext(ac.PersonID)
-	personsContext := buildContactablePersonsContext(ac.PersonID)
+	agentDescription := a.Config.CharacterSettings
+	if a.Person.Bio != "" {
+		agentDescription = a.Person.Bio
+	}
 
 	prompt := fmt.Sprintf(heartbeatPromptTemplate,
-		dops.GetAgentConfigName(ac.ID), agentDescription,
-		sessionsContext, personsContext,
-		buildEnergyDynamicSuffix(TriggerSourceHeartbeat, agentState),
+		a.Person.Name, agentDescription,
+		situation.Matter.Description,
+		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
 	chatModel := llm.NewChatModelWithTemperature(
-		llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic,
+		a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureDeterministic,
 	)
 
 	schema := llm.GenerateSchema[DecisionResult]()
@@ -582,7 +566,7 @@ func decideHeartbeat(ctx context.Context, event *eventqueue.AgentEvent, ac *mode
 
 	if err != nil {
 		applogger.Error("Heartbeat Decide LLM call failed, ignoring",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 			"error", err,
 		)
 		return DecisionResult{}
@@ -591,7 +575,7 @@ func decideHeartbeat(ctx context.Context, event *eventqueue.AgentEvent, ac *mode
 	var decision DecisionResult
 	if err := json.Unmarshal([]byte(result), &decision); err != nil {
 		applogger.Error("Heartbeat Decide LLM output parse failed, ignoring",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 			"error", err,
 			"raw_output", result,
 		)
@@ -599,17 +583,17 @@ func decideHeartbeat(ctx context.Context, event *eventqueue.AgentEvent, ac *mode
 	}
 
 	applogger.Info("Heartbeat decision made",
-		"agent_config_id", ac.ID,
+		"person_id", personID,
 		"thoughts", decision.Thoughts,
 		"action_count", len(decision.Actions),
 	)
 
-	// Validate the LLM's decision — only ActionCreate (chat) and
-	// ActionCreateAlarm are allowed in the heartbeat path.
-	validActions := filterValidActions(decision.Actions, nil, event, TriggerSourceHeartbeat)
+	// Validate the LLM's decision — only Chat (type=0) and
+	// CreateAlarm (type=4) are allowed in the heartbeat path.
+	validActions := filterValidActions(decision.Actions, nil, situation)
 	if len(validActions) == 0 {
 		applogger.Info("Heartbeat Decide: no valid actions (agent chose to do nothing)",
-			"agent_config_id", ac.ID,
+			"person_id", personID,
 		)
 		return DecisionResult{}
 	}
@@ -624,41 +608,49 @@ func decideHeartbeat(ctx context.Context, event *eventqueue.AgentEvent, ac *mode
 // filterValidActions filters out invalid actions from the LLM decision.
 // Pure validation — no modifications, only checks and logging.
 //
-// triggerSource controls which action types are accepted:
-//   - TriggerSourceEvent: all action types valid (subject to per-type checks)
-//   - TriggerSourceHeartbeat: only ActionCreate (chat) and ActionCreateAlarm;
-//     route/cancel are rejected because the heartbeat path has no event to
-//     route and no active-works context.
+// situation.Source controls which action types are accepted:
+//   - External: all action types valid (subject to per-type checks)
+//   - Internal (heartbeat): only Chat and CreateAlarm; CreateTask,
+//     RouteTask, and CancelTask are rejected because the heartbeat path
+//     has no event to route and no active-works context.
 //
-// event is used to validate delivery_target for chat works:
-//   - For event-triggered Decide with EventTypeNewPrivateChatMessage, "reply"
-//     (empty delivery_target) is allowed because there is a current session.
-//   - For heartbeat Decide, "reply" is rejected — there is no current session.
-func filterValidActions(actions []Action, sameSessionWorks []*work, event *eventqueue.AgentEvent, triggerSource TriggerSource) []Action {
+// session_id==0 is always illegal — it is the Go zero value and
+// indistinguishable from a missing field in the LLM's JSON output.
+// The LLM must always provide a positive session_id (existing session)
+// or -1 (new 1v1 session).
+func filterValidActions(actions []Action, sameSessionWorks []*work, situation *Situation) []Action {
 	var valid []Action
 	for _, action := range actions {
 		switch action.Type {
-		case ActionRoute:
-			if triggerSource == TriggerSourceHeartbeat {
-				applogger.Error("Decision route: rejected in heartbeat path")
+		case RouteTask:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision route_task: rejected in heartbeat path")
 				continue
 			}
-			if isValidRouteAction(action, sameSessionWorks) {
+			if isValidRouteTaskAction(action, sameSessionWorks) {
 				valid = append(valid, action)
 			}
-		case ActionCreate:
-			if isValidCreateAction(action, event, triggerSource) {
+		case Chat:
+			if isValidChatAction(action, situation) {
 				valid = append(valid, action)
 			}
-		case ActionCancel:
-			if triggerSource == TriggerSourceHeartbeat {
-				applogger.Error("Decision cancel: rejected in heartbeat path")
+		case CreateTask:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision create_task: rejected in heartbeat path")
 				continue
 			}
-			if isValidCancelAction(action, sameSessionWorks) {
+			if isValidCreateTaskAction(action) {
 				valid = append(valid, action)
 			}
-		case ActionCreateAlarm:
+		case CancelTask:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision cancel_task: rejected in heartbeat path")
+				continue
+			}
+			if isValidCancelTaskAction(action, sameSessionWorks) {
+				valid = append(valid, action)
+			}
+		case CreateAlarm:
 			if isValidCreateAlarmAction(action) {
 				valid = append(valid, action)
 			}
@@ -671,25 +663,25 @@ func filterValidActions(actions []Action, sameSessionWorks []*work, event *event
 	return valid
 }
 
-// isValidRouteAction checks whether a route action has a valid WorkGuidance
+// isValidRouteTaskAction checks whether a route_task action has a valid WorkGuidance
 // and its target work exists and is a TaskWork.
-func isValidRouteAction(action Action, sameSessionWorks []*work) bool {
+func isValidRouteTaskAction(action Action, sameSessionWorks []*work) bool {
 	if action.WorkGuidance == nil {
-		applogger.Error("Decision route: missing work_guidance, skipping")
+		applogger.Error("Decision route_task: missing work_guidance, skipping")
 		return false
 	}
 	if action.WorkGuidance.Guidance == "" {
-		applogger.Error("Decision route: missing guidance, skipping")
+		applogger.Error("Decision route_task: missing guidance, skipping")
 		return false
 	}
 	if action.WorkGuidance.Reason == "" {
-		applogger.Error("Decision route: missing reason, skipping")
+		applogger.Error("Decision route_task: missing reason, skipping")
 		return false
 	}
 	for _, w := range sameSessionWorks {
 		if w.ID == action.WorkGuidance.TargetWorkID {
 			if w.plan.Type != model.WorkTypeTask {
-				applogger.Error("Decision route: target is not TaskWork, skipping",
+				applogger.Error("Decision route_task: target is not TaskWork, skipping",
 					"target_work_id", action.WorkGuidance.TargetWorkID,
 					"work_type", w.plan.Type,
 				)
@@ -698,80 +690,53 @@ func isValidRouteAction(action Action, sameSessionWorks []*work) bool {
 			return true
 		}
 	}
-	applogger.Error("Decision route: target work not found, skipping",
+	applogger.Error("Decision route_task: target work not found, skipping",
 		"target_work_id", action.WorkGuidance.TargetWorkID,
 	)
 	return false
 }
 
-// isValidCreateAction checks whether a create action has a work plan with
-// guidance, and validates the delivery_target semantics.
+// UseNewSession reports whether this plan requests creating a new 1v1 session
+// (SessionID == -1). RecipientPersonID must also be set.
+func (p *ChatPlan) UseNewSession() bool { return p.SessionID < 0 }
+
+// isValidChatAction checks whether a chat action has a valid ChatPlan.
 //
-// delivery_target rules:
-//   - "" / "reply": only valid when triggerSource is TriggerSourceEvent and
-//     the event is EventTypeNewPrivateChatMessage (there is a current session
-//     to reply in). Rejected in heartbeat path.
-//   - "send_to_session": requires SessionID > 0. Valid in both paths.
-//   - "create_and_send": requires RecipientPersonID > 0. Valid in both paths.
-//   - For WorkTypeTask: delivery_target is ignored (tasks always run in the
-//     event's session; heartbeat path forbids task creation anyway).
-//
-// For heartbeat-triggered Decide, WorkTypeTask is rejected outright — the
-// heartbeat is not a workspace trigger.
-func isValidCreateAction(action Action, event *eventqueue.AgentEvent, triggerSource TriggerSource) bool {
+// SessionID must be either positive (existing session) or -1 (new session).
+// 0 is always rejected — it is indistinguishable from a missing field in
+// LLM-generated JSON.
+func isValidChatAction(action Action, situation *Situation) bool {
+	if action.ChatPlan == nil {
+		applogger.Error("Decision chat: missing chat_plan, skipping")
+		return false
+	}
+	plan := action.ChatPlan
+	if plan.Guidance == "" {
+		applogger.Error("Decision chat: missing guidance, skipping")
+		return false
+	}
+
+	if plan.SessionID == 0 {
+		// Go zero value, indistinguishable from missing field in LLM JSON.
+		applogger.Error("Decision chat: session_id is 0 (invalid), skipping")
+		return false
+	}
+	if plan.UseNewSession() && plan.RecipientPersonID <= 0 {
+		applogger.Error("Decision chat: session_id is -1 but recipient_person_id is empty, skipping")
+		return false
+	}
+	return true
+}
+
+// isValidCreateTaskAction checks whether a create_task action has a valid
+// WorkPlan with guidance.
+func isValidCreateTaskAction(action Action) bool {
 	if action.WorkPlan == nil {
-		applogger.Error("Decision create: missing work_plan, skipping")
+		applogger.Error("Decision create_task: missing work_plan, skipping")
 		return false
 	}
 	if action.WorkPlan.Guidance == "" {
-		applogger.Error("Decision create: missing guidance, skipping")
-		return false
-	}
-
-	// Heartbeat path: only chat works are allowed.
-	if triggerSource == TriggerSourceHeartbeat && action.WorkPlan.Type != model.WorkTypeChat {
-		applogger.Error("Decision create: heartbeat path only allows chat work, skipping",
-			"work_type", action.WorkPlan.Type,
-		)
-		return false
-	}
-
-	// Task work does not use delivery_target — skip further validation.
-	if action.WorkPlan.Type == model.WorkTypeTask {
-		return true
-	}
-
-	// Validate delivery_target for chat work.
-	target := action.WorkPlan.DeliveryTarget
-	switch target {
-	case "", "reply":
-		// "reply" (or empty) means "respond in the current event's session".
-		// Only valid for event-triggered private chat messages — heartbeat
-		// has no current session.
-		if triggerSource == TriggerSourceHeartbeat {
-			applogger.Error("Decision create: 'reply' delivery_target is not allowed in heartbeat path, skipping")
-			return false
-		}
-		if event.Type != eventqueue.EventTypeNewPrivateChatMessage {
-			applogger.Error("Decision create: 'reply' delivery_target requires a private chat message event, skipping",
-				"event_type", event.Type,
-			)
-			return false
-		}
-	case "send_to_session":
-		if action.WorkPlan.SessionID == 0 {
-			applogger.Error("Decision create: 'send_to_session' requires session_id, skipping")
-			return false
-		}
-	case "create_and_send":
-		if action.WorkPlan.RecipientPersonID == 0 {
-			applogger.Error("Decision create: 'create_and_send' requires recipient_person_id, skipping")
-			return false
-		}
-	default:
-		applogger.Error("Decision create: unknown delivery_target, skipping",
-			"delivery_target", target,
-		)
+		applogger.Error("Decision create_task: missing guidance, skipping")
 		return false
 	}
 	return true
@@ -800,21 +765,21 @@ func isValidCreateAlarmAction(action Action) bool {
 	return true
 }
 
-// isValidCancelAction checks whether a cancel action has a valid WorkGuidance
+// isValidCancelTaskAction checks whether a cancel_task action has a valid WorkGuidance
 // with required guidance and reason fields, and its target work exists.
 // Cancel is now a directive sent to the work (not a forceful kill), so it
 // must carry guidance (what to do) and reason (why).
-func isValidCancelAction(action Action, sameSessionWorks []*work) bool {
+func isValidCancelTaskAction(action Action, sameSessionWorks []*work) bool {
 	if action.WorkGuidance == nil {
-		applogger.Error("Decision cancel: missing work_guidance, skipping")
+		applogger.Error("Decision cancel_task: missing work_guidance, skipping")
 		return false
 	}
 	if action.WorkGuidance.Guidance == "" {
-		applogger.Error("Decision cancel: missing guidance, skipping")
+		applogger.Error("Decision cancel_task: missing guidance, skipping")
 		return false
 	}
 	if action.WorkGuidance.Reason == "" {
-		applogger.Error("Decision cancel: missing reason, skipping")
+		applogger.Error("Decision cancel_task: missing reason, skipping")
 		return false
 	}
 	for _, w := range sameSessionWorks {
@@ -822,7 +787,7 @@ func isValidCancelAction(action Action, sameSessionWorks []*work) bool {
 			return true
 		}
 	}
-	applogger.Error("Decision cancel: target work not found, skipping",
+	applogger.Error("Decision cancel_task: target work not found, skipping",
 		"target_work_id", action.WorkGuidance.TargetWorkID,
 	)
 	return false

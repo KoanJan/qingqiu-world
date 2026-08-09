@@ -22,7 +22,7 @@ graph TB
     end
 
     subgraph "Memory Feedback"
-        OnHit["memory.OnRetrievalHit<br/>importance boost<br/>(fired from ChatWork)"]
+        OnHit["memory.OnRetrievalHit<br/>importance boost<br/>(fired from Chat)"]
     end
 
     Event["Incoming message event"] --> Range
@@ -42,7 +42,7 @@ graph TB
     Engineered -.history segment message IDs.-> OnHit
 ```
 
-The pipeline has two phases: Comprehend (run before Decide) produces understanding plus retrieval results, and Chat (run by ChatWork) consumes that understanding to build the LLM prompt. Retrieval (chat-history keyword search and KB vector search) lives entirely in Comprehend; Chat only assembles context from the segments Comprehend produced.
+The pipeline has two phases: Comprehend (run before Decide) produces understanding plus retrieval results, and Chat (run by the `executeChat` goroutine) consumes that understanding to build the LLM prompt. Retrieval (chat-history keyword search and KB vector search) lives entirely in Comprehend; Chat only assembles context from the segments Comprehend produced.
 
 ## Comprehend Phase
 
@@ -71,7 +71,7 @@ For `NewPrivateChatMessage`, Comprehend reads two values from the DB at entry:
 - `prev_last_read` = `participant_session.LastReadMessageID` (the agent's read position before this event)
 - `current_max` = `GetMaxMessageID(sessionID)` (the latest message ID in the session)
 
-These form `ReadMessageRange [2]int64{prev_last_read, current_max}`. The range is **fixed for the entire Comprehend+Decide+ChatWork cycle** — messages that arrive after Comprehend starts are excluded from this batch and will be handled by the next event. This guarantees Comprehend, Decide, and ChatWork all see the same message set.
+These form `ReadMessageRange [2]int64{prev_last_read, current_max}`. The range is **fixed for the entire Comprehend+Decide+Chat cycle** — messages that arrive after Comprehend starts are excluded from this batch and will be handled by the next event. This guarantees Comprehend, Decide, and Chat all see the same message set.
 
 The event loop advances `last_read_message_id` to `ReadMessageRange[1]` **after** Decide returns (see [agent-runtime-event-loop.md](./agent-runtime-event-loop.md)). If Decide fails, `last_read` is not advanced, leaving the boundary in place for the next event to retry.
 
@@ -138,7 +138,7 @@ flowchart TD
 - Uses the keywords extracted during preprocessing (not the full query)
 - Performs case-insensitive sub-string matching against `messages.content` in past sessions
 - **Upper bound** is `ReadMessageRange[1]`: messages from the current batch are excluded from history search, so the same message cannot appear both as "current batch" and as "retrieved history"
-- After segments are selected, ChatWork calls `memory.OnRetrievalHit()` with the segment message IDs — this feeds the importance boost back into the memory system (see [Memory Feedback Loop](#memory-feedback-loop))
+- After segments are selected, Chat calls `memory.OnRetrievalHit()` with the segment message IDs — this feeds the importance boost back into the memory system (see [Memory Feedback Loop](#memory-feedback-loop))
 
 ### 4. KB Retrieval
 
@@ -167,7 +167,7 @@ The two retrieval results use pointer-to-struct semantics to distinguish "not ex
 | Executed, no hits | non-`nil`, `Segments` empty | non-`nil`, `Segments` empty |
 | Executed, with hits | non-`nil`, `Segments` populated | non-`nil`, `Segments` populated |
 
-This tri-state lets ChatWork distinguish "search would not help" from "search found nothing" — useful for context assembly decisions.
+This tri-state lets Chat distinguish "search would not help" from "search found nothing" — useful for context assembly decisions.
 
 ### `ConversationMessage` — domain message format
 
@@ -222,7 +222,7 @@ The resolved partner name flows through:
 
 ## Chat Phase — Consumes ComprehensionResult
 
-ChatWork receives a `ComprehensionInput` assembled from the `ComprehensionResult` (plus `Guidance` from Decide, plus `TaskResult` for post-task chat). ChatWork does **not** perform preprocessing, person-state inference, KB retrieval, or history search — all of these were done in Comprehend. It goes directly to context assembly and response streaming.
+Chat receives a `ComprehensionInput` assembled from the `ComprehensionResult` (plus `Guidance` from Decide, plus `TaskResult` for post-task chat). Chat does **not** perform preprocessing, person-state inference, KB retrieval, or history search — all of these were done in Comprehend. It goes directly to context assembly and response streaming.
 
 The chat phase chooses between two context assembly strategies based on message volume:
 
@@ -287,9 +287,9 @@ When the message count exceeds the window size threshold, the comprehension summ
 
 #### Segments (from ComprehensionResult)
 
-ChatWork merges `HistorySearch.Segments` and `KBRetrieval.Segments` into a single `relevantSegments` list for context assembly. The merge preserves source information (`SourceChatHistory` vs `SourceKnowledgeBase`) so the assembly template can format them appropriately.
+Chat merges `HistorySearch.Segments` and `KBRetrieval.Segments` into a single `relevantSegments` list for context assembly. The merge preserves source information (`SourceChatHistory` vs `SourceKnowledgeBase`) so the assembly template can format them appropriately.
 
-ChatWork does **not** re-execute keyword search or KB retrieval — it only consumes what Comprehend already produced.
+Chat does **not** re-execute keyword search or KB retrieval — it only consumes what Comprehend already produced.
 
 #### Entity Profiles
 
@@ -337,7 +337,7 @@ The trigger message is loaded from `ReadMessageRange[1]` (the upper bound of the
 
 ## Memory Feedback Loop
 
-When the Engineered Context path uses chat-history segments retrieved by Comprehend, ChatWork triggers the memory feedback loop:
+When the Engineered Context path uses chat-history segments retrieved by Comprehend, Chat triggers the memory feedback loop:
 
 ```mermaid
 flowchart LR
@@ -349,9 +349,9 @@ flowchart LR
 
 Note the split responsibility:
 - **Retrieval** happens in Comprehend (via `SearchMessagesByKeywordsBefore`)
-- **Feedback** is fired from ChatWork's `assembleEngineeredContext` (only in the V >= N branch)
+- **Feedback** is fired from Chat's `assembleEngineeredContext` (only in the V >= N branch)
 
-This split exists because the feedback should only fire when the segments are actually used in the response context — if Comprehend retrieved segments but ChatWork took the Simple Context path (V < N, no history segments used), no feedback is sent. The feedback call is fire-and-forget — it launches background goroutines for relevance propagation and returns immediately.
+This split exists because the feedback should only fire when the segments are actually used in the response context — if Comprehend retrieved segments but Chat took the Simple Context path (V < N, no history segments used), no feedback is sent. The feedback call is fire-and-forget — it launches background goroutines for relevance propagation and returns immediately.
 
 This creates a closed loop: the more a past event is retrieved and used in context, the more important it becomes, and the more likely it is to be retrieved again in the future. Combined with daily decay, this implements a natural "use it or lose it" memory model.
 
@@ -366,9 +366,9 @@ This creates a closed loop: the more a past event is retrieved and used in conte
 
 ## Key Design Decisions
 
-1. **Retrieval lives in Comprehend, not Chat**: Both chat-history keyword search and KB vector retrieval are "completing the understanding of the current unread batch." They belong with comprehension. ChatWork only consumes the resulting segments — it never executes retrieval itself. This eliminates duplicate retrieval calls and ensures Decide sees the same context ChatWork will use.
+1. **Retrieval lives in Comprehend, not Chat**: Both chat-history keyword search and KB vector retrieval are "completing the understanding of the current unread batch." They belong with comprehension. Chat only consumes the resulting segments — it never executes retrieval itself. This eliminates duplicate retrieval calls and ensures Decide sees the same context Chat will use.
 
-2. **`ReadMessageRange` fixes the batch boundary**: Comprehend, Decide, and ChatWork all use the same `[prev_last_read, current_max]` boundary. Messages arriving after Comprehend starts are excluded from this batch and handled by the next event. This guarantees understanding, decision, and response are based on the same message set.
+2. **`ReadMessageRange` fixes the batch boundary**: Comprehend, Decide, and Chat all use the same `[prev_last_read, current_max]` boundary. Messages arriving after Comprehend starts are excluded from this batch and handled by the next event. This guarantees understanding, decision, and response are based on the same message set.
 
 3. **`last_read` advances after Decide**: The read position is updated to `ReadMessageRange[1]` only after Decide returns, so a failed Decide leaves the boundary in place for retry. Work execution is asynchronous — `last_read` does not wait for Work success.
 

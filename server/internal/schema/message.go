@@ -18,7 +18,6 @@ type MessageResponse struct {
 	PersonID  int64     `json:"person_id"`
 	Content   string    `json:"content"`
 	Status    int       `json:"status"`
-	DraftID   *int64    `json:"draft_id,omitempty"`
 	CreatedAt time.Time `json:"created_at"`
 	UpdatedAt time.Time `json:"updated_at"`
 }
@@ -30,7 +29,6 @@ func NewMessageResponse(m *model.Message) *MessageResponse {
 		SessionID: m.SessionID,
 		PersonID:  m.PersonID,
 		Content:   m.Content,
-		DraftID:   m.DraftID,
 		CreatedAt: m.CreatedAt,
 		UpdatedAt: m.UpdatedAt,
 	}

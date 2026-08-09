@@ -20,6 +20,7 @@ import (
 	"encoding/json"
 	"io"
 	"strconv"
+	"sync"
 	"time"
 
 	"qingqiu-world-server/internal/database"
@@ -40,7 +41,11 @@ const userFriendlyErrorMessage = "Sorry, something went wrong on the server. Ple
 // connectionManager manages SSE connections per session.
 // Each session can have multiple connected clients (e.g., multiple browser tabs).
 // Messages are broadcast to all connections of the same session.
+//
+// Thread-safe: PushToSession (called from runtime goroutines) may run
+// concurrently with Register/Unregister (called from HTTP handler goroutines).
 type connectionManager struct {
+	mu          sync.RWMutex
 	connections map[int64][]chan string // sessionID -> list of SSE channels
 }
 
@@ -53,13 +58,17 @@ var connManager = &connectionManager{
 // Returns the channel for the caller to listen on.
 func (cm *connectionManager) Register(sessionID int64) chan string {
 	ch := make(chan string, 256)
+	cm.mu.Lock()
 	cm.connections[sessionID] = append(cm.connections[sessionID], ch)
+	cm.mu.Unlock()
 	return ch
 }
 
 // Unregister removes an SSE channel from a session and closes it.
 // Cleans up the session entry if no connections remain.
 func (cm *connectionManager) Unregister(sessionID int64, ch chan string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	conns := cm.connections[sessionID]
 	for i, c := range conns {
 		if c == ch {
@@ -76,14 +85,17 @@ func (cm *connectionManager) Unregister(sessionID int64, ch chan string) {
 // PushToSession sends a message to all SSE channels of a session.
 // Drops the message if a channel is full (non-blocking send).
 func (cm *connectionManager) PushToSession(sessionID int64, data string) {
+	cm.mu.RLock()
 	conns := cm.connections[sessionID]
-	for _, ch := range conns {
+	// Copy the slice under lock so we can release the lock before iterating
+	// and potentially blocking on channel sends.
+	snapshot := make([]chan string, len(conns))
+	copy(snapshot, conns)
+	cm.mu.RUnlock()
+	for _, ch := range snapshot {
 		select {
 		case ch <- data:
 		default:
-			// TODO: Notify the client to refresh and reset the SSE connection when messages
-			// are dropped. Without this, the client will have an incomplete message list,
-			// causing a cognitive gap for the user who sees stale/partial data.
 			applogger.Error("SSE channel full, dropping message", "session_id", sessionID)
 		}
 	}
@@ -92,6 +104,8 @@ func (cm *connectionManager) PushToSession(sessionID int64, data string) {
 // CloseAll closes all SSE channels and clears the connection map.
 // Causes all StreamMessages handlers to exit cleanly.
 func (cm *connectionManager) CloseAll() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
 	for sessionID, conns := range cm.connections {
 		for _, ch := range conns {
 			close(ch)

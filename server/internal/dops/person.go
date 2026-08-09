@@ -121,7 +121,7 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 			// NOTE: This logic assumes 1v1 (one agent per session).
 			// In multi-agent/group chat, deleting one agent should NOT cascade delete the entire session.
 			tables := []interface{}{
-				&model.Work{}, &model.MessageDraft{}, &model.Interaction{},
+				&model.Work{}, &model.Interaction{},
 				&model.AgentNarrative{}, &model.Summary{},
 				&model.ParticipantSession{}, &model.Message{},
 			}
