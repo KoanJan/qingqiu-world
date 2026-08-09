@@ -30,22 +30,22 @@ import (
 // Returns the exec.Cmd, a sandboxed flag (true if the command is wrapped in a
 // platform sandbox, false for plain exec fallback), and any error.
 //
-// workspace is the session workspace absolute path, used as the writable area.
-// personID and sessionID are used for policy file naming (macOS AAC directory,
-// Windows AppContainer profile name).
+// workspace is the writable area path.
+// policyDir is the directory for sandbox policy files (macOS Seatbelt policy
+// is stored as {policyDir}/sandbox.sb). Use empty string when not needed.
 // cmd is the command and its arguments.
-func Run(workspace string, personID, sessionID int64, cmd []string) (*exec.Cmd, bool, error) {
+func Run(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, error) {
 	if len(cmd) == 0 {
 		return nil, false, fmt.Errorf("sandbox: cmd is empty")
 	}
 
 	switch runtime.GOOS {
 	case "darwin":
-		return runDarwin(workspace, personID, sessionID, cmd)
+		return runDarwin(workspace, policyDir, cmd)
 	case "linux":
 		return runLinux(workspace, cmd)
 	case "windows":
-		return runWindows(personID, sessionID, cmd)
+		return runWindows(policyDir, cmd)
 	default:
 		applogger.Error("sandbox: unsupported platform, plain exec",
 			"goos", runtime.GOOS)

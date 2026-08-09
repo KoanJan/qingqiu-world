@@ -1,0 +1,131 @@
+// Package action defines the Action types and Plan structures used across
+// the Decide→Execute pipeline. It is a shared package imported by both
+// runtime (which produces and executes Actions) and eventqueue (which
+// carries Action context through events).
+package action
+
+import (
+	"qingqiu-world-server/internal/service/task"
+)
+
+// ActionType represents the type of action the Decide phase concludes.
+//
+// Actions are divided into two categories:
+//   - Self-contained actions: Chat, CreateAlarm, UpdateBio — the Action
+//     itself is a complete description of what to do; no Work iteration is
+//     required.
+//   - Task-oriented actions: CreateTask, RouteTask, CancelTask — these
+//     operate on TaskWorks that run a multi-step ReAct loop.
+type ActionType int
+
+const (
+	// Chat sends a chat message to another Person. No iteration loop.
+	Chat ActionType = iota
+	// CreateTask starts a new multi-step TaskWork. The task will enter a
+	// ReAct loop using tools (search, file operations, etc.).
+	CreateTask
+	// RouteTask routes the current event to an existing active TaskWork as
+	// a new directive or constraint.
+	RouteTask
+	// CancelTask requests an existing active TaskWork to stop and wrap up.
+	CancelTask
+	// CreateAlarm creates a scheduled alarm directly, without entering
+	// TaskLoop. This is a self-contained world action.
+	CreateAlarm
+	// UpdateBio updates the agent's own Bio field — a self-reflective action.
+	// Available during heartbeat. No iteration loop.
+	UpdateBio
+
+	// EnterPrivateSpace enters the agent's private space — a personal, persistent
+	// directory space. No plan struct needed; Background and Reason together
+	// serve as the Thoughts payload expressing what the agent wants to do there.
+	// Available during heartbeat. Runs a lightweight ReAct loop.
+	EnterPrivateSpace
+)
+
+// WorkPlan describes a task to be created via CreateTask action.
+// It carries Guidance (the execution intent) so the task knows what to do
+// without re-interpreting the event. Background and Reason have been lifted
+// to the Action level.
+type WorkPlan struct {
+	Guidance string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
+	Metadata *task.Metadata `json:"-"` // System-generated traceability info, not written by LLM
+}
+
+// ChatPlan describes a chat message delivery via the Chat action.
+// The Chat action is self-contained — it does not create a Work.
+//
+// SessionID and RecipientPersonID encode the delivery target:
+//   - SessionID > 0: send to the specified existing session.
+//   - SessionID == -1: create a new 1v1 session with RecipientPersonID.
+//   - SessionID == 0 is always invalid — it is the Go zero value and
+//     indistinguishable from a missing field in the LLM's JSON output.
+type ChatPlan struct {
+	Guidance          string `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to say. Write as if you are thinking to yourself.,required"`
+	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=Target session ID. Use a positive session ID from your sessions list to send to an existing session. Use -1 to create a new 1v1 session with recipient_person_id. 0 is invalid — always provide a real session ID or -1."`
+	RecipientPersonID int64  `json:"recipient_person_id,omitempty" jsonschema:"description=When session_id is -1: the person ID to start a new 1v1 conversation with."`
+}
+
+// UseNewSession reports whether this plan requests creating a new 1v1 session
+// (as opposed to sending to an existing session identified by a positive ID).
+func (p *ChatPlan) UseNewSession() bool { return p.SessionID < 0 }
+
+// WorkGuidance describes a directive to be sent to an existing active work.
+// It is the payload for route and cancel actions — the symmetric counterpart
+// to WorkPlan (which is the payload for create actions).
+//
+// Guidance: the executable directive (what the target work should do).
+// Reason has been lifted to the Action level.
+type WorkGuidance struct {
+	TargetWorkID int64  `json:"target_work_id" jsonschema:"description=The ID of the active work this directive targets"`
+	Guidance     string `json:"guidance" jsonschema:"description=What I want the target work to do now. Written in first-person as my own intention.,required"`
+}
+
+// AlarmPlan describes a self-wake alarm to be created as a top-level Action.
+//
+// The fields mirror the former wake_me_when tool's arguments exactly — this
+// is a path migration (tool → action), not a redesign. The LLM produces the
+// same inputs; the runtime executes the same logic (create ScheduledEvent
+// record, send AlarmCreated event, register waiting goroutine).
+type AlarmPlan struct {
+	TriggerAt     string `json:"trigger_at" jsonschema:"description=Absolute time to wake yourself, in the exact format 'YYYY-MM-DD HH:MM:SS' (server local time). Must be a future time. Example: '2026-06-09 23:10:00'. Compute the exact future time based on the current time shown in the context.,required"`
+	Message       string `json:"message" jsonschema:"description=Action instruction for your future self when the alarm fires. Write as a COMMAND telling yourself exactly what to DO and SAY. This field is always required as a fallback, even when using send_message action.,required"`
+	Action        string `json:"action,omitempty" jsonschema:"description=How to handle the alarm when it fires. 'send_message': instantly send action_content without any LLM processing (fast path, best for simple reminders). 'full_pipeline': go through the full LLM pipeline (needed for complex actions). Default is 'full_pipeline' if omitted.,enum=send_message,enum=full_pipeline"`
+	ActionContent string `json:"action_content,omitempty" jsonschema:"description=The exact message to send when the alarm fires. Only used when action is 'send_message'. This message is delivered instantly without any LLM processing, so write it as the final message that will be seen."`
+}
+
+// BioUpdate carries the new bio content for the UpdateBio action.
+type BioUpdate struct {
+	Bio string `json:"bio" jsonschema:"description=Your self-introduction displayed to others. A one-sentence statement about who you are.,required"`
+}
+
+// Action is a single atomic decision from the Decide phase.
+// Each Action is self-contained: it carries its own type and all associated data.
+// A DecisionResult can contain multiple Actions of different types, enabling
+// compound decisions like "cancel a task and reply to the person".
+//
+// Background and Reason capture the cognitive "why" of the action at the
+// decision level. Plan sub-structures capture the executive "how".
+//
+// The payload depends on the action type:
+//   - Chat:         uses ChatPlan (guidance + delivery target for the message)
+//   - CreateTask:   uses WorkPlan (guidance for the new task)
+//   - RouteTask / CancelTask: uses WorkGuidance (target_work_id + guidance)
+//   - CreateAlarm:  uses AlarmPlan (trigger_at + message + action + action_content)
+//   - UpdateBio:    uses BioUpdate (new bio text)
+//   - EnterPrivateSpace: uses Background+Reason as Thoughts (no plan struct)
+type Action struct {
+	Type ActionType `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm), 5=update_bio (update your self-introduction), 6=enter_private_space (enter your private space),enum=0,enum=1,enum=2,enum=3,enum=4,enum=5,enum=6,required"`
+
+	// Background: situational awareness — what triggered this decision.
+	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
+
+	// Reason: deliberative choice — why this specific action over alternatives.
+	Reason string `json:"reason" jsonschema:"description=Why you chose this specific action rather than alternatives. What led to this choice.,required"`
+
+	ChatPlan     *ChatPlan     `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
+	WorkPlan     *WorkPlan     `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
+	WorkGuidance *WorkGuidance `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
+	AlarmPlan    *AlarmPlan    `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
+	BioUpdate    *BioUpdate    `json:"bio_update,omitempty" jsonschema:"description=When type is update_bio(5): the new bio text"`
+}

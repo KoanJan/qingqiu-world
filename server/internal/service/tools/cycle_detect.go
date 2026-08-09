@@ -1,3 +1,9 @@
+// Package tools provides reusable, path-based tool implementations for agent
+// operations. Tools accept directory paths directly (not person/session IDs)
+// and are free of domain-specific interfaces like Tool/ToolName/Schema.
+//
+// Higher-level packages (task/tools, privatespace/tools) wrap these cores with
+// their own interface contracts.
 package tools
 
 import (
@@ -10,12 +16,10 @@ import (
 // CycleStatus carries the result of cycle detection after a tool call.
 type CycleStatus struct {
 	// Warning is appended to the tool result when a cyclical pattern is detected.
-	// Empty string means no warning.
 	Warning string
 	// Blocked triggers a forced checkpoint at the next iteration.
-	// The tool should refuse further calls until the work is reset.
 	Blocked bool
-	// Reason is a human-readable block reason, used in the checkpoint prompt.
+	// Reason is a human-readable block reason.
 	Reason string
 }
 
@@ -24,21 +28,16 @@ var NoCycleDetected = CycleStatus{}
 
 // Cycle detection thresholds.
 const (
-	// warnThreshold: consecutive identical (args, result) pairs before warning.
-	warnThreshold = 3
-	// blockThreshold: consecutive identical (args, result) pairs before blocking.
+	warnThreshold  = 3
 	blockThreshold = 8
 )
 
 // CycleDetector tracks whether a tool receives the same input and produces
-// the same output repeatedly. It does not interpret the content of args or
-// result — both are treated as opaque values. Same (args, result) pair
-// repeating N times consecutively is a cycle, regardless of whether the
-// result represents success or failure.
+// the same output repeatedly. Same (args, result) pair repeating N times
+// consecutively is a cycle.
 //
-// Tools embed this struct. The CycleDetect method is automatically promoted
-// to satisfy the Tool interface. No initialization is needed — zero values
-// are correct defaults.
+// Tools embed this struct. The CycleDetect method is promoted to the
+// embedding tool. Zero-value is immediately usable.
 type CycleDetector struct {
 	lastSignature string
 	count         int
@@ -48,10 +47,7 @@ type CycleDetector struct {
 
 // CycleDetect checks whether the current (args, result) pair matches the
 // previous one. Consecutive identical pairs increment the counter;
-// any difference resets it. When the counter reaches warnThreshold,
-// a warning is returned. When it reaches blockThreshold, a block is returned.
-//
-// This method is promoted to the embedding tool, satisfying the Tool interface.
+// any difference resets it.
 func (d *CycleDetector) CycleDetect(args map[string]interface{}, result string) CycleStatus {
 	if d.blocked {
 		return CycleStatus{Blocked: true, Reason: d.blockReason}
@@ -80,21 +76,16 @@ func (d *CycleDetector) CycleDetect(args map[string]interface{}, result string) 
 	return NoCycleDetected
 }
 
-// signature computes a stable hash of the args + result combination.
-// args are JSON-marshalled for stable serialization; result is used as-is.
 func signature(args map[string]interface{}, result string) string {
 	normalizedArgs, _ := json.Marshal(args)
 	return hashString(string(normalizedArgs) + ":" + result)
 }
 
-// hashString computes a SHA256 hex digest of the input string.
 func hashString(s string) string {
 	h := sha256.Sum256([]byte(s))
 	return hex.EncodeToString(h[:])
 }
 
-// formatWarning constructs a loop warning message that guides the agent
-// to self-reflect rather than command it to stop.
 func formatWarning(count int) string {
 	return fmt.Sprintf(
 		"[Loop Warning: repeated_call; count=%d]\n"+

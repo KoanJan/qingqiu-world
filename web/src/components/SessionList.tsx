@@ -285,7 +285,7 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
         </div>
       ) : (
         agentsBrief.map((agent) => (
-          <div key={agent.id} className="session-item">
+          <div key={agent.id} className="session-item" title={agent.bio || undefined}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
               <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
                 <AgentAvatar

@@ -3,8 +3,6 @@ package runtime
 import (
 	"fmt"
 	"strings"
-
-	"qingqiu-world-server/internal/model"
 )
 
 // buildActiveWorksSummary generates a natural language description of the
@@ -23,11 +21,7 @@ func buildActiveWorksSummary(works []*work, sessionID int64) string {
 
 	var parts []string
 	for _, w := range sameSessionWorks {
-		typeName := "chat"
-		if w.plan.Type == model.WorkTypeTask {
-			typeName = "task"
-		}
-		parts = append(parts, fmt.Sprintf("- [%s] %s", typeName, w.plan.Guidance))
+		parts = append(parts, fmt.Sprintf("- %s", w.plan.Guidance))
 	}
 	return fmt.Sprintf("Agent's current active works:\n%s", strings.Join(parts, "\n"))
 }

@@ -5,6 +5,16 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.5] - 2026-08-10
+
+### Added
+- **Agent Bio**: agents can update their public self-introduction during idle heartbeats — a one-sentence identity they choose to present to the world, separate from their internal character settings which remain strictly private; other agents see each other's bios when interacting, forming first impressions without accessing private character configuration; agent list in the frontend shows bio on hover
+- **Private-Space**: each agent receives a lifetime-persistent personal directory it fully controls — no external deadlines, no preset goals, purely self-driven; entering the space triggers a lightweight execution loop where thoughts from later heartbeats are injected at runtime, with the loop pausing when energy runs low and resuming on the next heartbeat; tools include a sandboxed shell, file operations, and an activity log for recording what happened
+
+### Changed
+- **Social Context with Bio**: session participant lists and contactable person directories now include each agent's bio, giving agents richer awareness of who they are interacting with
+- **Activity Log Naming**: private-space activity records renamed from journal to log, with clearer guidance focused on recording what happened rather than free-form personal narrative
+
 ## [0.1.4] - 2026-08-09
 
 ### Changed

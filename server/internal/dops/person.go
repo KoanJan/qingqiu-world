@@ -19,6 +19,22 @@ func GetPerson(personID int64) (*model.Person, error) {
 	return &person, nil
 }
 
+// ListPersons returns persons by IDs. If personIDs is empty, returns nil.
+func ListPersons(personIDs []int64) (map[int64]*model.Person, error) {
+	if len(personIDs) == 0 {
+		return nil, nil
+	}
+	var persons []model.Person
+	if err := database.DB.Where("id IN ?", personIDs).Find(&persons).Error; err != nil {
+		return nil, fmt.Errorf("query persons: %w", err)
+	}
+	result := make(map[int64]*model.Person, len(persons))
+	for i := range persons {
+		result[persons[i].ID] = &persons[i]
+	}
+	return result, nil
+}
+
 // GetPersonByName retrieves a person by name.
 func GetPersonByName(name string) (*model.Person, error) {
 	var person model.Person
@@ -164,6 +180,12 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 func UpdateHumanPerson(personID int64, bio string) error {
 	updates := map[string]interface{}{"bio": bio}
 	return database.DB.Model(&model.Person{ID: personID, Type: model.PersonTypeHuman}).Updates(updates).Error
+}
+
+// UpdateAgentBio updates the Bio field of an AI person.
+func UpdateAgentBio(personID int64, bio string) error {
+	return database.DB.Model(&model.Person{ID: personID, Type: model.PersonTypeAI}).
+		Update("bio", bio).Error
 }
 
 // CreateHumanPerson creates an new human person

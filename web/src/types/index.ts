@@ -75,6 +75,7 @@ export interface Agent {
 export interface AgentBrief {
   id: number;
   name: string;
+  bio: string;
   avatar: string;
   energy: number;
 }

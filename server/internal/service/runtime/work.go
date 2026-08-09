@@ -8,6 +8,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/eventqueue"
@@ -20,7 +21,7 @@ import (
 //
 // Two-layer model: Agent (long-lived) → Work (coherent goal with ReAct loop).
 //
-// work holds a WorkPlan (carrying the Decide phase's execution intent as
+// work holds a action.WorkPlan (carrying the Decide phase's execution intent as
 // Guidance) and comprehension results (carrying the Comprehend phase's
 // understanding). This ensures the execution layer has full context
 // without re-interpreting the event.
@@ -28,12 +29,15 @@ type work struct {
 	ID            int64
 	agent         *agentRuntime
 	sessionID     int64
-	plan          *WorkPlan // From Decide phase: guidance
+	plan          *action.WorkPlan // From Decide phase: guidance
 	maxIterations int
 	comprehension *comprehend.ComprehensionResult // Results from the Comprehend phase
 	taskResult    *task.TaskResult                // Task execution result
 	guidanceCh    chan task.GuidanceDirective     // Channel for sending guidance/cancel directives to TaskLoop
 	done          chan struct{}                   // Closed when work finishes (normal or abandoned)
+
+	// triggerAction carries the originating Action for the WorkCompleted event.
+	triggerAction *action.Action
 
 	// startedAt is set when work begins running, read by buildActiveWorksContext
 	// so the Decide LLM can see how long a work has been running.
@@ -75,13 +79,12 @@ func (w *work) Run(ctx context.Context) {
 			Type:      eventqueue.EventTypeWorkCompleted,
 			SessionID: w.sessionID,
 			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:     w.ID,
-				WorkType:   int(w.plan.Type),
-				Guidance:   w.plan.Guidance,
-				Status:     status,
-				TaskOutput: output,
-				TaskError:  taskErr,
-				Trigger:    w.getTrigger(),
+				WorkID:        w.ID,
+				Guidance:      w.plan.Guidance,
+				Status:        status,
+				TaskOutput:    output,
+				TaskError:     taskErr,
+				TriggerAction: w.triggerAction,
 			},
 		})
 	}()
@@ -130,7 +133,7 @@ func (w *work) runTask(ctx context.Context) {
 		PersonID:   a.Person.ID,
 		WorkID:     w.ID,
 		Guidance:   w.plan.Guidance,
-		Background: w.plan.Background,
+		Background: w.triggerAction.Background,
 		Metadata:   w.plan.Metadata,
 		Ctx:        ctx,
 		OnNotify:   func(data string) { pushSSEEvent(w.sessionID, data) },
@@ -197,13 +200,6 @@ func (w *work) loadSession() *model.Session {
 		return nil
 	}
 	return session
-}
-
-func (w *work) getTrigger() string {
-	if w.plan != nil && w.plan.Metadata != nil && w.plan.Metadata.SessionMeta != nil {
-		return w.plan.Metadata.SessionMeta.Trigger
-	}
-	return "work execution"
 }
 
 // removeWorkByID removes a work from the active works slice by its ID.

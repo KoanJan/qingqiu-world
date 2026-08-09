@@ -9,7 +9,7 @@ import (
 func ListTaskWorks(sessionID int64) ([]int64, error) {
 	var workIDs []int64
 	if err := database.DB.Model(&model.Work{}).
-		Where("session_id = ? AND type = ?", sessionID, model.WorkTypeTask).
+		Where("session_id = ?", sessionID).
 		Pluck("id", &workIDs).Error; err != nil {
 		return nil, err
 	}

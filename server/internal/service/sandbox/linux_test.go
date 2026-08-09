@@ -57,7 +57,7 @@ func TestBwrapLookup_EmbeddedOrFallback(t *testing.T) {
 func TestRunLinux_EmptyCmd(t *testing.T) {
 	requireLinux(t)
 
-	_, _, err := Run("/tmp/ws", 1, 1, []string{})
+	_, _, err := Run("/tmp/ws", "/tmp/ws", []string{})
 	if err == nil {
 		t.Error("expected error for empty cmd")
 	}
@@ -69,7 +69,7 @@ func TestRunLinux_BwrapFallback(t *testing.T) {
 	requireLinux(t)
 
 	available, availErr := BwrapAvailable()
-	cmd, _, err := Run("/tmp/ws", 1, 1, []string{"true"})
+	cmd, _, err := Run("/tmp/ws", "/tmp/ws", []string{"true"})
 	if err != nil {
 		applogger.Error("sandbox test: Run failed on linux bwrap fallback", "error", err)
 		t.Fatalf("Run() returned error: %v", err)
@@ -94,7 +94,7 @@ func TestRunLinux_NonExistentCmd(t *testing.T) {
 	requireLinux(t)
 
 	// Run returns *exec.Cmd without error — actual exec failure happens at cmd.Start()
-	cmd, _, err := Run("/tmp/ws", 1, 1, []string{"nonexistent_command_xyz"})
+	cmd, _, err := Run("/tmp/ws", "/tmp/ws", []string{"nonexistent_command_xyz"})
 	if err != nil {
 		applogger.Error("sandbox test: Run failed on linux non-existent cmd", "error", err)
 		t.Fatalf("Run() should not error on nonexistent command: %v", err)
@@ -109,7 +109,7 @@ func TestRunLinux_NonExistentCmd(t *testing.T) {
 func TestRunLinux_CmdArgsArePassed(t *testing.T) {
 	requireLinux(t)
 
-	cmd, _, err := Run("/tmp/ws", 1, 1, []string{"echo", "-n", "test"})
+	cmd, _, err := Run("/tmp/ws", "/tmp/ws", []string{"echo", "-n", "test"})
 	if err != nil {
 		applogger.Error("sandbox test: Run failed on linux args test", "error", err)
 		t.Fatalf("Run() returned error: %v", err)

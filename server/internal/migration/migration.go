@@ -54,6 +54,11 @@ var migrations = []migration{
 		description: "Add persistent agent event buffers and sleep state",
 		fn:          migrate_0_1_2,
 	},
+	{
+		version:     "0.1.5",
+		description: "Drop works.type column (WorkType removed)",
+		fn:          migrate_0_1_5,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

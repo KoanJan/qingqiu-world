@@ -38,6 +38,7 @@ func (h *Handler) ListAgentsBrief(c *gin.Context) {
 		result = append(result, schema.AgentBrief{
 			ID:     p.ID,
 			Name:   p.Name,
+			Bio:    p.Bio,
 			Avatar: p.Avatar,
 			Energy: e,
 		})

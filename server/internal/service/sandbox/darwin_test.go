@@ -69,7 +69,7 @@ func TestRunDarwin_Echo(t *testing.T) {
 	}
 	defer os.RemoveAll(ws)
 
-	execCmd, _, err := runDarwin(ws, 1, 1, []string{"echo", "hello"})
+	execCmd, _, err := runDarwin(ws, ws, []string{"echo", "hello"})
 	if err != nil {
 		applogger.Error("sandbox test: runDarwin echo failed", "error", err)
 		t.Fatalf("runDarwin() returned error: %v", err)
@@ -101,7 +101,7 @@ func TestRunDarwin_WriteDenied(t *testing.T) {
 	defer os.RemoveAll(ws)
 
 	// Attempt to write to a protected directory
-	execCmd, _, err := runDarwin(ws, 1, 1, []string{"touch", "/private/etc/sandbox_test_probe"})
+	execCmd, _, err := runDarwin(ws, ws, []string{"touch", "/private/etc/sandbox_test_probe"})
 	if err != nil {
 		applogger.Error("sandbox test: runDarwin write denied test failed", "error", err)
 		t.Fatalf("runDarwin() returned error: %v", err)
@@ -136,7 +136,7 @@ func TestRunDarwin_WriteAllowed(t *testing.T) {
 	defer os.RemoveAll(ws)
 
 	testFile := filepath.Join(ws, "sandbox_write_test.txt")
-	execCmd, _, err := runDarwin(ws, 1, 1, []string{"touch", testFile})
+	execCmd, _, err := runDarwin(ws, ws, []string{"touch", testFile})
 	if err != nil {
 		applogger.Error("sandbox test: runDarwin write allowed test failed", "error", err)
 		t.Fatalf("runDarwin() returned error: %v", err)
@@ -157,7 +157,7 @@ func TestRunDarwin_WriteAllowed(t *testing.T) {
 func TestRunDarwin_EmptyCmd(t *testing.T) {
 	requireDarwin(t)
 
-	_, _, err := Run("/tmp/ws", 1, 1, []string{})
+	_, _, err := Run("/tmp/ws", "/tmp/ws", []string{})
 	if err == nil {
 		t.Error("expected error for empty cmd")
 	}

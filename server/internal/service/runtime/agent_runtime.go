@@ -10,12 +10,14 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/chat"
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/privatespace"
 	"qingqiu-world-server/internal/service/task"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -58,6 +60,7 @@ type agentRuntime struct {
 	heartbeatTick      int                                                        // Total heartbeat ticks (for check scheduling)
 	mu                 sync.Mutex                                                 // Protects activeWrites for external queries
 	learningInProgress atomic.Bool                                                // Guards against concurrent learning checks
+	privateSpaceLoop   *privatespace.Loop                                         // Private-space loop (nil if not initialized)
 	onStatusChange     func(agentConfigID, personID, sessionID int64, status int) // Callback for SSE push
 }
 
@@ -260,40 +263,36 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 
 // executeActions dispatches Decide output Actions to their handlers.
 // Shared by both external event and internal heartbeat paths.
-func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation, actions []Action) {
-	for _, action := range actions {
-		switch action.Type {
-		case RouteTask, CancelTask:
-			if action.WorkGuidance == nil {
-				applogger.Error("work guidance is missing", "agent_config_id", r.agentConfigID, "action_type", action.Type)
+func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation, actions []action.Action) {
+	for _, act := range actions {
+		switch act.Type {
+		case action.RouteTask, action.CancelTask:
+			if act.WorkGuidance == nil {
+				applogger.Error("work guidance is missing", "agent_config_id", r.agentConfigID, "action_type", act.Type)
 				continue
 			}
-			target := r.findActiveWorkByID(action.WorkGuidance.TargetWorkID)
+			target := r.findActiveWorkByID(act.WorkGuidance.TargetWorkID)
 			if target == nil {
-				applogger.Error("target work not found", "agent_config_id", r.agentConfigID, "work_id", action.WorkGuidance.TargetWorkID)
+				applogger.Error("target work not found", "agent_config_id", r.agentConfigID, "work_id", act.WorkGuidance.TargetWorkID)
 				continue
 			}
-			if action.Type == CancelTask && target.plan.Type != model.WorkTypeTask {
+			if act.Type == action.CancelTask {
 				target.abandon()
 				continue
 			}
-			if target.plan.Type != model.WorkTypeTask {
-				applogger.Error("route target is not task work", "agent_config_id", r.agentConfigID, "work_id", target.ID)
-				continue
-			}
-			target.FeedGuidance(task.GuidanceDirective{Guidance: action.WorkGuidance.Guidance, Reason: action.WorkGuidance.Reason})
-		case Chat:
-			if action.ChatPlan == nil {
+			target.FeedGuidance(task.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason})
+		case action.Chat:
+			if act.ChatPlan == nil {
 				applogger.Error("chat action has no chat plan", "agent_config_id", r.agentConfigID)
 				continue
 			}
-			go r.executeChat(ctx, situation, action.ChatPlan)
-		case CreateTask:
-			if action.WorkPlan == nil {
+			go r.executeChat(ctx, situation, act.ChatPlan)
+		case action.CreateTask:
+			if act.WorkPlan == nil {
 				applogger.Error("create_task action has no work plan", "agent_config_id", r.agentConfigID)
 				continue
 			}
-			w, success := r.newWork(situation, action.WorkPlan)
+			w, success := r.newWork(situation, act)
 			if !success {
 				applogger.Error("failed to create work", "agent_config_id", r.agentConfigID)
 				continue
@@ -305,21 +304,85 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			}
 			r.activeWorks = append(r.activeWorks, w)
 			go w.Run(ctx)
-		case CreateAlarm:
-			if action.AlarmPlan == nil {
+		case action.CreateAlarm:
+			if act.AlarmPlan == nil {
 				applogger.Error("create_alarm action has no alarm_plan", "agent_config_id", r.agentConfigID)
 				continue
 			}
-			r.handleCreateAlarmAction(action.AlarmPlan, situation)
+			r.handleCreateAlarmAction(act.AlarmPlan, situation)
+		case action.UpdateBio:
+			if act.BioUpdate == nil {
+				applogger.Error("update_bio action has no bio_update", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			if err := dops.UpdateAgentBio(r.agentPersonID, act.BioUpdate.Bio); err != nil {
+				applogger.Error("failed to update agent bio", "agent_config_id", r.agentConfigID, "error", err)
+			} else {
+				agent.Refresh(r.agentPersonID)
+			}
+		case action.EnterPrivateSpace:
+			thoughts := act.Background
+			if act.Reason != "" {
+				if thoughts != "" {
+					thoughts += "\n"
+				}
+				thoughts += act.Reason
+			}
+			r.handleEnterPrivateSpace(thoughts)
 		}
 	}
 }
 
-// executeChat handles a Chat action as a lightweight async operation.
+// handleEnterPrivateSpace manages the private-space loop lifecycle.
+// If the loop has never been initialized, it lazily creates the directory and loop.
+// If the loop is already running, thoughts are injected via channel.
+// If the loop is idle, a new goroutine is started.
+func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
+	// Lazy initialization: create the loop on first use.
+	if r.privateSpaceLoop == nil {
+		a, err := agent.GetAgent(r.agentPersonID)
+		if err != nil {
+			applogger.Error("private-space: failed to load agent",
+				"person_id", r.agentPersonID, "error", err,
+			)
+			return
+		}
+		rootDir, workDir, err := privatespace.InitDir(r.agentPersonID)
+		if err != nil {
+			applogger.Error("private-space: failed to init directory",
+				"person_id", r.agentPersonID, "error", err,
+			)
+			return
+		}
+		r.privateSpaceLoop = privatespace.NewLoop(
+			r.agentPersonID,
+			rootDir,
+			workDir,
+			&a.LLM,
+			0, // Use default max iterations
+		)
+	}
+
+	if r.privateSpaceLoop.IsRunning() {
+		r.privateSpaceLoop.FeedThoughts(thoughts)
+		applogger.Info("private-space: thoughts injected into running loop",
+			"person_id", r.agentPersonID,
+		)
+	} else {
+		// Feed the initial thoughts, then start the loop in a new goroutine.
+		r.privateSpaceLoop.FeedThoughts(thoughts)
+		go func() {
+			ctx := context.Background()
+			r.privateSpaceLoop.Run(ctx)
+		}()
+	}
+}
+
+// executeaction.Chat handles a action.Chat action as a lightweight async operation.
 // It does not create a Work record — it launches a goroutine that calls
-// chat.ExecuteChat and commits the result directly via the message commit
+// chat.Executeaction.Chat and commits the result directly via the message commit
 // channel.
-func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, plan *ChatPlan) {
+func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, plan *action.ChatPlan) {
 	if plan.SessionID == 0 {
 		applogger.Error("executeChat: session_id is 0 (invalid), skipping",
 			"agent_config_id", r.agentConfigID,
@@ -432,9 +495,10 @@ func (r *agentRuntime) findActiveWorkByID(workID int64) *work {
 	return nil
 }
 
-// newWork creates a new TaskWork from a Situation, persists it to the
+// newWork creates a new TaskWork from a Situation and anaction.Action, persists it to the
 // database, and returns the work object. Only used for CreateTask actions.
-func (r *agentRuntime) newWork(situation *Situation, plan *WorkPlan) (*work, bool) {
+func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, bool) {
+	plan := dec.WorkPlan
 	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
 
@@ -457,7 +521,6 @@ func (r *agentRuntime) newWork(situation *Situation, plan *WorkPlan) (*work, boo
 	workRecord := &model.Work{
 		PersonID:    r.agentPersonID,
 		SessionID:   targetSessionID,
-		Type:        plan.Type,
 		Description: workDescription,
 		Status:      model.WorkStatusRunning,
 	}
@@ -475,6 +538,10 @@ func (r *agentRuntime) newWork(situation *Situation, plan *WorkPlan) (*work, boo
 		comprehension: comprehension,
 		guidanceCh:    make(chan task.GuidanceDirective, 8),
 		done:          make(chan struct{}),
+		triggerAction: &action.Action{
+			Background: dec.Background,
+			Reason:     dec.Reason,
+		},
 	}
 
 	if err := tx.Commit().Error; err != nil {
@@ -486,7 +553,6 @@ func (r *agentRuntime) newWork(situation *Situation, plan *WorkPlan) (*work, boo
 		"work_id", w.ID,
 		"agent_config_id", r.agentConfigID,
 		"session_id", w.sessionID,
-		"type", plan.Type,
 	)
 
 	return w, true
@@ -517,11 +583,15 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 			SourceType: task.SourceTypeScheduled,
 		}
 	case eventqueue.EventTypeWorkCompleted:
+		trigger := "a previous work completed"
+		if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil && payload.TriggerAction != nil {
+			trigger = payload.TriggerAction.Background
+		}
 		return &task.Metadata{
 			SourceType: task.SourceTypeWorkCompleted,
 			SessionMeta: &task.SessionMeta{
 				SessionID: event.SessionID,
-				Trigger:   "a previous work completed",
+				Trigger:   trigger,
 			},
 		}
 	}
@@ -565,15 +635,15 @@ func (r *agentRuntime) handleFastPathSendMessage(sessionID int64, payload *event
 // alarmTriggerAtFormat is the only accepted time format for AlarmPlan.TriggerAt.
 const alarmTriggerAtFormat = "2006-01-02 15:04:05"
 
-// handleCreateAlarmAction executes a CreateAlarm action.
-func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, situation *Situation) {
+// handleCreateAlarmAction executes a action.CreateAlarm action.
+func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation *Situation) {
 	var sessionID int64
 	if situation.Matter.Event != nil {
 		sessionID = situation.Matter.Event.SessionID
 	}
 	triggerAt, err := time.ParseInLocation(alarmTriggerAtFormat, plan.TriggerAt, time.Local)
 	if err != nil {
-		applogger.Error("CreateAlarm: invalid trigger_at format, skipping",
+		applogger.Error("action.CreateAlarm: invalid trigger_at format, skipping",
 			"agent_config_id", r.agentConfigID,
 			"trigger_at", plan.TriggerAt,
 			"error", err,
@@ -581,7 +651,7 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, situation *Situa
 		return
 	}
 	if triggerAt.Before(time.Now()) {
-		applogger.Error("CreateAlarm: trigger_at is in the past, skipping",
+		applogger.Error("action.CreateAlarm: trigger_at is in the past, skipping",
 			"agent_config_id", r.agentConfigID,
 			"trigger_at", plan.TriggerAt,
 		)
@@ -593,7 +663,7 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, situation *Situa
 		action = model.ScheduledEventActionSendMessage
 	}
 	if action == model.ScheduledEventActionSendMessage && plan.ActionContent == "" {
-		applogger.Error("CreateAlarm: 'send_message' action requires action_content, skipping",
+		applogger.Error("action.CreateAlarm: 'send_message' action requires action_content, skipping",
 			"agent_config_id", r.agentConfigID,
 		)
 		return
@@ -609,7 +679,7 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, situation *Situa
 		Status:        model.ScheduledEventStatusPending,
 	}
 	if err := database.DB.Create(&record).Error; err != nil {
-		applogger.Error("CreateAlarm: failed to create scheduled event record",
+		applogger.Error("action.CreateAlarm: failed to create scheduled event record",
 			"agent_config_id", r.agentConfigID,
 			"person_id", r.agentPersonID,
 			"error", err,
@@ -626,7 +696,7 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *AlarmPlan, situation *Situa
 	})
 
 	until := time.Until(triggerAt).Round(time.Minute)
-	applogger.Info("CreateAlarm: alarm set",
+	applogger.Info("action.CreateAlarm: alarm set",
 		"agent_config_id", r.agentConfigID,
 		"person_id", r.agentPersonID,
 		"scheduled_event_id", record.ID,

@@ -5,11 +5,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
-
-	"qingqiu-world-server/internal/config"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -66,22 +63,21 @@ func checkDarwinSandbox() bool {
 
 // runDarwin executes the command inside macOS sandbox-exec with a Seatbelt policy.
 //
-// Policy files are stored in {DATA_ROOT}/aac/{personID}/{sessionID}/sandbox.sb
-// (outside the person-writable workspace, preventing tampering). The policy is
-// generated once per session and reused for subsequent calls.
-func runDarwin(workspace string, personID, sessionID int64, cmd []string) (*exec.Cmd, bool, error) {
-	// One-time check: if sandbox-exec cannot apply policies (SIP block, etc.), fall back
+// policyDir is the directory where the Seatbelt policy file is stored
+// ({policyDir}/sandbox.sb). It should be outside the agent-writable workspace
+// to prevent tampering.
+func runDarwin(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, error) {
 	if !checkDarwinSandbox() {
 		return fallbackExec(cmd), false, nil
 	}
 
-	policyDir := filepath.Join(config.Get().GetDataRoot(), "aac",
-		strconv.FormatInt(personID, 10), strconv.FormatInt(sessionID, 10))
+	if policyDir == "" {
+		applogger.Error("sandbox: policyDir is empty, falling back to plain exec")
+		return fallbackExec(cmd), false, nil
+	}
+
 	policyPath := filepath.Join(policyDir, "sandbox.sb")
 
-	// Resolve to absolute path: the bash tool sets cmd.Dir to the output
-	// directory, so a relative policy path would resolve incorrectly when
-	// sandbox-exec runs in that working directory.
 	absPolicyPath, err := filepath.Abs(policyPath)
 	if err != nil {
 		applogger.Error("sandbox: failed to resolve absolute policy path, falling back to plain exec",
@@ -89,7 +85,6 @@ func runDarwin(workspace string, personID, sessionID int64, cmd []string) (*exec
 		return fallbackExec(cmd), false, nil
 	}
 
-	// Generate policy file once per session
 	if _, err := os.Stat(absPolicyPath); err != nil {
 		if !os.IsNotExist(err) {
 			applogger.Error("sandbox: failed to stat policy file, falling back to plain exec",
@@ -97,7 +92,7 @@ func runDarwin(workspace string, personID, sessionID int64, cmd []string) (*exec
 			return fallbackExec(cmd), false, nil
 		}
 		if err := os.MkdirAll(policyDir, 0700); err != nil {
-			applogger.Error("sandbox: failed to create AAC policy directory, falling back to plain exec",
+			applogger.Error("sandbox: failed to create policy directory, falling back to plain exec",
 				"dir", policyDir, "error", err)
 			return fallbackExec(cmd), false, nil
 		}

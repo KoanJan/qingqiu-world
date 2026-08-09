@@ -19,9 +19,8 @@ import (
 //
 // The full AppContainer implementation design is documented in
 // draft/sandbox/pbsandbox.md section 3.3.
-func runWindows(personID, sessionID int64, cmd []string) (*exec.Cmd, bool, error) {
-	applogger.Error("sandbox: Windows AppContainer not implemented, falling back to plain exec",
-		"person_id", personID, "session_id", sessionID)
+func runWindows(policyDir string, cmd []string) (*exec.Cmd, bool, error) {
+	applogger.Error("sandbox: Windows AppContainer not implemented, falling back to plain exec")
 
 	if len(cmd) == 0 {
 		return nil, false, fmt.Errorf("sandbox: cmd is empty")

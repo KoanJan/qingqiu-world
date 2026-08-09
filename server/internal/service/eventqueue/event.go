@@ -3,6 +3,7 @@ package eventqueue
 import (
 	"fmt"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 )
 
 // ---------------------------------------------------------------------------
@@ -104,14 +105,21 @@ type ScheduledEventPayload struct {
 // This represents the agent's self-perception: "I just finished doing X."
 // The agent processes it through the same Comprehend→Decide pipeline as
 // external events, ensuring consistent cognitive handling.
+//
+// TriggerAction carries the originating Action's cognitive context when this
+// Work was created by the agent's own Decide output. It is nil when the Work
+// was triggered externally (e.g., system-initiated).
 type WorkCompletedPayload struct {
 	WorkID     int64  // ID of the completed work
-	WorkType   int    // model.WorkTypeChat or model.WorkTypeTask
 	Guidance   string // The original guidance (execution intent) of the work
 	Status     string // "success" or "failure"
 	TaskOutput string // Task execution output (for TaskWork success)
 	TaskError  string // Task execution error (for TaskWork failure)
-	Trigger    string // Semantic description of the completed work's cause
+
+	// TriggerAction carries the originating Action when this Work was created
+	// by the agent's own Decide output. It is nil when the Work was triggered
+	// externally (e.g., system-initiated).
+	TriggerAction *action.Action
 }
 
 // AlarmCreatedPayload is the payload type for EventTypeAlarmCreated events.

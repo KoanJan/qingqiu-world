@@ -27,7 +27,7 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.4"
+const AppVersion = "0.1.5"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings
@@ -41,6 +41,7 @@ type Settings struct {
 	LogLevel              string // Logging level (DEBUG, INFO, WARN, ERROR)
 	TaskMaxIterations     int    // Maximum iterations for task loop
 	WorkspaceRoot         string // Root directory for task workspace files
+	PrivateSpaceRoot      string // Root directory for agent private-space directories
 	MinIterationWindow    int    // Minimum iterations visible to agent (anchor size)
 	MaxIterationWindow    int    // Maximum iterations before bulk-shrink triggers
 	NotesMaxChars         int    // Maximum character limit for agent notes
@@ -58,6 +59,7 @@ func Init() {
 		LogLevel:              getEnv("LOG_LEVEL", "INFO"),
 		TaskMaxIterations:     getEnvInt("TASK_MAX_ITERATIONS", 300),
 		WorkspaceRoot:         expandHome(getEnv("WORKSPACE_ROOT", "")),
+		PrivateSpaceRoot:      expandHome(getEnv("PRIVATE_SPACE_ROOT", "")),
 		MinIterationWindow:    getEnvInt("MIN_ITERATION_WINDOW", 10),
 		MaxIterationWindow:    getEnvInt("MAX_ITERATION_WINDOW", 100),
 		NotesMaxChars:         getEnvInt("NOTES_MAX_CHARS", 10000),
@@ -89,6 +91,15 @@ func (s *Settings) GetWorkspaceRoot() string {
 		return s.WorkspaceRoot
 	}
 	return filepath.Join(s.DataRoot, "workspace")
+}
+
+// GetPrivateSpaceRoot returns the private-space root directory path.
+// Falls back to DATA_ROOT/private_space if PRIVATE_SPACE_ROOT is not explicitly set.
+func (s *Settings) GetPrivateSpaceRoot() string {
+	if s.PrivateSpaceRoot != "" {
+		return s.PrivateSpaceRoot
+	}
+	return filepath.Join(s.DataRoot, "private_space")
 }
 
 // GetAvatarsDir returns the directory path for agent avatar images.

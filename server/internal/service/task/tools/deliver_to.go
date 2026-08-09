@@ -15,6 +15,7 @@ import (
 	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
+	servicetools "qingqiu-world-server/internal/service/tools"
 )
 
 // DeliverToTool copies files from the agent's output/ directory to another
@@ -121,10 +122,11 @@ func (d *DeliverToTool) Execute(args map[string]interface{}) (string, error) {
 	}
 
 	// Validate each source path exists and is within output/
+	sessionRoot := workspace.GetWorkspacePath(d.personID, d.sessionID)
 	outputDir := workspace.GetOutputDir(d.personID, d.sessionID)
 	var validatedPaths []string
 	for _, p := range paths {
-		resolved, err := resolvePath(p, d.personID, d.sessionID)
+		resolved, err := servicetools.ResolvePath(p, sessionRoot, outputDir)
 		if err != nil {
 			return "", fmt.Errorf("invalid path '%s': %w", p, err)
 		}

@@ -18,7 +18,7 @@ func TestMain(m *testing.M) {
 
 // TestRun_EmptyCmd tests that Run returns an error for an empty command slice.
 func TestRun_EmptyCmd(t *testing.T) {
-	_, _, err := Run("/tmp/ws", 1, 1, []string{})
+	_, _, err := Run("/tmp/ws", "/tmp/ws", []string{})
 	if err == nil {
 		t.Error("expected error for empty cmd")
 	}
@@ -76,7 +76,7 @@ func TestRun_UnsupportedPlatform(t *testing.T) {
 	case "darwin", "linux", "windows":
 		t.Skipf("skipping unsupported-platform test on %s (platform is supported)", runtime.GOOS)
 	default:
-		cmd, _, err := Run("/tmp/ws", 1, 1, []string{"true"})
+		cmd, _, err := Run("/tmp/ws", "/tmp/ws", []string{"true"})
 		if err != nil {
 			applogger.Error("sandbox test: Run failed on unsupported platform", "error", err)
 			t.Fatalf("Run() returned error on unsupported platform: %v", err)
@@ -93,7 +93,7 @@ func TestRun_ArgsPreserved(t *testing.T) {
 	case "darwin", "linux", "windows":
 		t.Skipf("skipping args-preserved test on %s (platform-specific wrapping applies)", runtime.GOOS)
 	default:
-		cmd, _, err := Run("/tmp/ws", 1, 1, []string{"sh", "-c", "echo test"})
+		cmd, _, err := Run("/tmp/ws", "/tmp/ws", []string{"sh", "-c", "echo test"})
 		if err != nil {
 			applogger.Error("sandbox test: Run failed on args preserved test", "error", err)
 			t.Fatalf("Run() returned error: %v", err)

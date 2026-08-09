@@ -47,6 +47,10 @@ const (
 	// CostActive applies when Decide is triggered by a heartbeat (reserved
 	// for future active-behavior paths; not triggered in 0.1.1).
 	CostActive Cost = 5
+	// CostPrivateSpace is the per-iteration cost for the private-space loop.
+	// Kept intentionally low (equal to CostPassive) so the agent does not
+	// avoid using its private space due to energy pressure.
+	CostPrivateSpace Cost = 1
 )
 
 // ErrInsufficientEnergy is returned when energy < cost.

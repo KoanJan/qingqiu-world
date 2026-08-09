@@ -19,7 +19,7 @@ func requireWindows(t *testing.T) {
 func TestRunWindows_EmptyCmd(t *testing.T) {
 	requireWindows(t)
 
-	_, _, err := Run(`C:\tmp\ws`, 1, 1, []string{})
+	_, _, err := Run(`C:\tmp\ws`, `C:\tmp\ws`, []string{})
 	if err == nil {
 		t.Error("expected error for empty cmd")
 	}
@@ -30,7 +30,7 @@ func TestRunWindows_EmptyCmd(t *testing.T) {
 func TestRunWindows_FallbackExec(t *testing.T) {
 	requireWindows(t)
 
-	cmd, _, err := Run(`C:\tmp\ws`, 1, 1, []string{"cmd", "/c", "echo", "hello"})
+	cmd, _, err := Run(`C:\tmp\ws`, `C:\tmp\ws`, []string{"cmd", "/c", "echo", "hello"})
 	if err != nil {
 		applogger.Error("sandbox test: Run failed on windows fallback exec", "error", err)
 		t.Fatalf("Run() returned error: %v", err)
@@ -49,7 +49,7 @@ func TestRunWindows_FallbackExec(t *testing.T) {
 func TestRunWindows_ArgsPreserved(t *testing.T) {
 	requireWindows(t)
 
-	cmd, _, err := Run(`C:\tmp\ws`, 1, 1, []string{"powershell", "-Command", "Write-Host test"})
+	cmd, _, err := Run(`C:\tmp\ws`, `C:\tmp\ws`, []string{"powershell", "-Command", "Write-Host test"})
 	if err != nil {
 		applogger.Error("sandbox test: Run failed on windows args test", "error", err)
 		t.Fatalf("Run() returned error: %v", err)

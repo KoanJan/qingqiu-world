@@ -10,99 +10,17 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/comprehend"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/task"
 	"qingqiu-world-server/internal/service/workspace"
 	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
-
-// WorkPlan describes a task to be created via CreateTask action.
-// It carries Guidance (the execution intent) and Background (full contextual
-// information) so the task knows what to do and why without re-interpreting
-// the event.
-type WorkPlan struct {
-	Type       model.WorkType `json:"type" jsonschema:"description=Work type: 2=task for multi-step execution using tools,enum=2,required"`
-	Background string         `json:"background" jsonschema:"description=Full context for executing this plan. You will ONLY see this text during execution — include everything you need to remember: (1) what happened to trigger this work, (2) who else is involved and their names verbatim, (3) key takeaways from the comprehension analysis (inferred intent, situation). Write in natural language.,required"`
-	Guidance   string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
-	Metadata   *task.Metadata `json:"-"` // System-generated traceability info, not written by LLM
-}
-
-// ChatPlan describes a chat message delivery via the Chat action.
-// The Chat action is self-contained — it does not create a Work.
-//
-// SessionID and RecipientPersonID encode the delivery target:
-//   - SessionID > 0: send to the specified existing session.
-//   - SessionID == -1: create a new 1v1 session with RecipientPersonID.
-//   - SessionID == 0 is always invalid — it is the Go zero value and
-//     indistinguishable from a missing field in the LLM's JSON output.
-type ChatPlan struct {
-	Guidance          string `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to say. Write as if you are thinking to yourself.,required"`
-	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=Target session ID. Use a positive session ID from your sessions list to send to an existing session. Use -1 to create a new 1v1 session with recipient_person_id. 0 is invalid — always provide a real session ID or -1."`
-	RecipientPersonID int64  `json:"recipient_person_id,omitempty" jsonschema:"description=When session_id is -1: the person ID to start a new 1v1 conversation with."`
-}
-
-// WorkGuidance describes a directive to be sent to an existing active work.
-// It is the payload for route and cancel actions — the symmetric counterpart
-// to WorkPlan (which is the payload for create actions).
-//
-//   - Guidance: the executable directive (what the target work should do)
-//   - Reason: the cognitive context (why this decision was made, including
-//     the original message and inferred intent)
-//
-// Both fields are passed to the TaskLoop's LLM so it can understand the
-// full picture, not just the bare directive. This enables "appealable"
-// route and cancel — the agent processes the directive as an environment
-// event in its ReAct cycle, not as a forceful command.
-type WorkGuidance struct {
-	TargetWorkID int64  `json:"target_work_id" jsonschema:"description=The ID of the active work this directive targets"`
-	Guidance     string `json:"guidance" jsonschema:"description=What I want the target work to do now. Written in first-person as my own intention.,required"`
-	Reason       string `json:"reason" jsonschema:"description=WHY I made this decision. Must include the original message and inferred intent. This provides cognitive context to the target work.,required"`
-}
-
-// ActionType represents the type of action the Decide phase concludes.
-//
-// Actions are divided into two categories:
-//   - Self-contained actions: Chat, CreateAlarm — the Action itself is
-//     a complete description of what to do; no Work iteration is required.
-//   - Task-oriented actions: CreateTask, RouteTask, CancelTask — these
-//     operate on TaskWorks that run a multi-step ReAct loop.
-type ActionType int
-
-const (
-	// Chat sends a chat message to another Person. It creates a one-shot
-	// ChatWork that composes and delivers the message. No iteration loop.
-	Chat ActionType = iota
-	// CreateTask starts a new multi-step TaskWork. The task will enter a
-	// ReAct loop using tools (search, file operations, etc.).
-	CreateTask
-	// RouteTask routes the current event to an existing active TaskWork as
-	// a new directive or constraint.
-	RouteTask
-	// CancelTask requests an existing active TaskWork to stop and wrap up.
-	CancelTask
-	// CreateAlarm creates a scheduled alarm directly, without entering
-	// TaskLoop. This is a self-contained world action.
-	CreateAlarm
-)
-
-// AlarmPlan describes a self-wake alarm to be created as a top-level Action.
-//
-// The fields mirror the former wake_me_when tool's arguments exactly — this
-// is a path migration (tool → action), not a redesign. The LLM produces the
-// same inputs; the runtime executes the same logic (create ScheduledEvent
-// record, send AlarmCreated event, register waiting goroutine).
-type AlarmPlan struct {
-	TriggerAt     string `json:"trigger_at" jsonschema:"description=Absolute time to wake yourself, in the exact format 'YYYY-MM-DD HH:MM:SS' (server local time). Must be a future time. Example: '2026-06-09 23:10:00'. Compute the exact future time based on the current time shown in the context.,required"`
-	Message       string `json:"message" jsonschema:"description=Action instruction for your future self when the alarm fires. Write as a COMMAND telling yourself exactly what to DO and SAY. This field is always required as a fallback, even when using send_message action.,required"`
-	Action        string `json:"action,omitempty" jsonschema:"description=How to handle the alarm when it fires. 'send_message': instantly send action_content without any LLM processing (fast path, best for simple reminders). 'full_pipeline': go through the full LLM pipeline (needed for complex actions). Default is 'full_pipeline' if omitted.,enum=send_message,enum=full_pipeline"`
-	ActionContent string `json:"action_content,omitempty" jsonschema:"description=The exact message to send when the alarm fires. Only used when action is 'send_message'. This message is delivered instantly without any LLM processing, so write it as the final message that will be seen."`
-}
 
 // energyCost maps a SituationSource to its energy Cost.
 // External events use CostPassive (1); internal heartbeat uses CostActive (5).
@@ -113,40 +31,8 @@ func energyCost(src SituationSource) energy.Cost {
 	return energy.CostPassive
 }
 
-// Action is a single atomic decision from the Decide phase.
-// Each Action is self-contained: it carries its own type and all associated data.
-// A DecisionResult can contain multiple Actions of different types, enabling
-// compound decisions like "cancel a task and reply to the person".
-//
-// The payload depends on the action type:
-//   - Chat:       uses ChatPlan (guidance + delivery target for the message)
-//   - CreateTask: uses WorkPlan (type + guidance + background for the new task)
-//   - RouteTask / CancelTask: uses WorkGuidance (target_work_id + guidance + reason)
-//   - CreateAlarm: uses AlarmPlan (trigger_at + message + action + action_content)
-type Action struct {
-	Type         ActionType    `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm),enum=0,enum=1,enum=2,enum=3,enum=4,required"`
-	ChatPlan     *ChatPlan     `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
-	WorkPlan     *WorkPlan     `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
-	WorkGuidance *WorkGuidance `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
-	AlarmPlan    *AlarmPlan    `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
-}
-
-// DecisionResult is the output of the Decide phase.
-// Also serves as the LLM structured output schema — the jsonschema tags
-// drive JSON Schema generation for the LLM call directly.
-//
-// The Decide phase produces a list of Actions, each self-contained with its
-// type and associated data. This allows compound decisions — for example,
-// cancelling an existing task while creating a new one, or routing to one
-// work while creating another.
-type DecisionResult struct {
-	Thoughts string   `json:"thoughts" jsonschema:"description=Your reasoning process: why you chose these actions,required"`
-	Plan     string   `json:"plan,omitempty" jsonschema:"description=Overall plan description: what will be done"`
-	Actions  []Action `json:"actions" jsonschema:"description=List of actions to take. Each action is independent and self-contained.,required"`
-}
-
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, agent_description, message_content, comprehension_context, activeWorksContext, sessionsContext, personsContext, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, message_content, comprehension_context, activeWorksContext, sessionsContext, personsContext, energyDynamicSuffix
 //
 // The world rules are described in world.WorldDescriptions (stable prefix).
 // This template only adds the decision-specific instructions and concrete
@@ -154,7 +40,15 @@ type DecisionResult struct {
 // rather than its abstract description).
 const decidePromptTemplate = world.WorldDescriptions + `
 
-You are %s, %s. Your job is to decide how to handle incoming events.
+You are %s.
+
+Your internal character (how you think of yourself — never revealed to others):
+%s
+
+Your public Bio (what you choose to present to others — this is what they see):
+%s
+
+Your job is to decide how to handle incoming events.
 
 Energy parameters in this world:
 - You receive 100 energy points per day. Unused points carry over, up to a maximum of 200.
@@ -166,8 +60,12 @@ Guard your energy carefully. Do not let it run too low — once it's gone, all y
 
 Decide what to do with this event. Return a list of actions — each action is independent and self-contained.
 
+Every action MUST include "background" and "reason" at theaction.Actionlevel:
+- background: What situation triggered this decision. Provide enough context so your future self understands why you acted.
+- reason: Why you chose this specific action rather than alternatives.
+
 Action types (use the integer value for the "type" field):
-1. 0 (chat) — Send a chat message to a Person. The Action itself is a complete description of what to say and to whom.
+1. 0 (chat) — Send a chat message to a Person.
    - MUST include a "chat_plan" object with "guidance" and "session_id".
    - guidance: Your internal intention — what you plan to say, written in first-person.
    - session_id: The target session ID. Always provide a real session ID:
@@ -175,37 +73,39 @@ Action types (use the integer value for the "type" field):
      * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
 
 2. 1 (create_task) — Start a multi-step task that will execute using tools, web searches, or file operations.
-   - MUST include a "work_plan" object with "type"=2, "background", and "guidance".
-   - background: Full context for the task — what triggered it, what you know, what the expected outcome is. Write in natural language.
+   - MUST include a "work_plan" object with "guidance".
    - guidance: Your internal intention: what you plan to do, written in first-person.
 
 3. 2 (route_task) — Route the event to an existing active TaskWork listed above. Route when the event carries a new instruction or constraint that changes what an active work should do — a shift in direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
-   - MUST include "work_guidance" with "target_work_id", "guidance" (what I now want the target work to focus on, written in first-person), and "reason" (WHY I made this decision, including the original message and inferred intent).
-   - The target work will see both guidance and reason, enabling it to understand the full context of the change.
+   - MUST include "work_guidance" with "target_work_id" and "guidance" (what I now want the target work to focus on, written in first-person).
    - Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
 
 4. 3 (cancel_task) — Request an existing active TaskWork to stop and wrap up. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
-   - MUST include "work_guidance" with "target_work_id", "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop"), and "reason" (WHY, including the original message).
+   - MUST include "work_guidance" with "target_work_id" and "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop").
    - Cancel is a request, not a forceful kill — the target work receives the directive and decides how to wrap up (save notes, record reasons) before exiting.
 
 5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
-   - message: Action instruction for your future self — what you should DO when the alarm fires. Write as a command.
+   - message:action.Actioninstruction for your future self — what you should DO when the alarm fires. Write as a command.
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
+
+6. 5 (update_bio) — Update your own Bio (self-introduction displayed to others).
+   - MUST include a "bio_update" object with "bio".
+   - bio: A one-sentence self-introduction. Only use this when you feel your current bio is outdated or inaccurate.
 
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request (type=1 create_task), not a route or cancel.
 
 If no action is needed, return an empty actions list.
 
 You can return multiple actions. Examples (note: IDs in examples are placeholders; always use the actual work IDs from "Active works" above):
-- Cancel an old task and chat: [{"type":3, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop", "reason":"They said 'stop searching' — they want a direct answer instead"}}, {"type":0, "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
-- Route a follow-up to an existing work: [{"type":2, "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go", "reason":"They said 'use Go instead' — they want the same task done in a different language"}}]
-- Talk to another Person and acknowledge the request: [{"type":0, "chat_plan":{"session_id":-1, "recipient_person_id":3, "guidance":"I should ask Bob about the project status..."}}, {"type":0, "chat_plan":{"guidance":"I should tell them I'll go ask Bob now..."}}]
+- Cancel an old task and chat: [{"type":3, "background":"They said to stop searching and give a direct answer", "reason":"Cancelling the search is the fastest path; a direct chat is what they want", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop"}}, {"type":0, "background":"After cancelling the search, I owe them an answer", "reason":"A direct reply is the right follow-up to a cancellation", "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
+- Route a follow-up to an existing work: [{"type":2, "background":"They want the same task done in Go instead of Python", "reason":"Routing to the existing work avoids starting over", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go"}}]
+- Talk to another Person and acknowledge the request: [{"type":0, "background":"I need to ask Bob about the project status", "reason":"Direct communication is the only way to get this information", "chat_plan":{"session_id":-1, "recipient_person_id":3, "guidance":"I should ask Bob about the project status..."}}, {"type":0, "background":"I am being asked about the project status", "reason":"I should acknowledge the request before going to ask Bob", "chat_plan":{"guidance":"I should tell them I'll go ask Bob now..."}}]
 
 Decision rules (apply in order):
-1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task (type=1 with work_plan.type=2). If a direct response is also expected, create both chat (type=0) + create_task (type=1) in parallel.
+1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task (type=1). If a direct response is also expected, create both chat (type=0) + create_task (type=1) in parallel.
 2. If the event carries a new instruction or constraint for an active work listed above (changing its direction, approach, or scope), use type=2 (route_task). If the event explicitly requests stopping an active work, use type=3 (cancel_task).
 3. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
 4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. If the recent exchanges have reached a natural resting point — agreement reached, farewell exchanged, or the last few messages are just acknowledgments with no new content (e.g., "okay", "got it") — do NOT reply. Silence is a valid and recommended action; let the conversation rest naturally. If a reply is warranted, create a single chat (type=0).
@@ -228,21 +128,30 @@ Write background, guidance, reason, and plan in the same language as the event c
 // "time has passed, you are idle" and asks whether it wants to form an
 // intention.
 //
-// Parameters: agent_name, agent_description, description, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, description, energyDynamicSuffix
 //
 // The Action surface is intentionally narrower than the event-triggered path:
-//   - Chat (type=0): compose and send a chat message. Only ChatPlan is
-//     accepted — no Work creation path.
-//   - CreateAlarm (type=4): set a future alarm.
-//   - CreateTask / RouteTask / CancelTask: not allowed — there is no event
+//   - action.Chat (type=0): compose and send a chat message.
+//   - action.CreateAlarm (type=4): set a future alarm.
+//   - action.UpdateBio (type=5): update your self-introduction bio.
+//   - action.EnterPrivateSpace (type=6): enter your private space.
+//   - action.CreateTask / action.RouteTask / action.CancelTask: not allowed — there is no event
 //     to route and no active work context to cancel against in this path.
 //
 // The description parameter carries the agent's self-observation: its sessions
-// (with narratives and recent messages) and the world's contactable persons,
+// (with narratives and recent messages), Bio, and the world's contactable persons,
 // so the agent can choose session_id (positive or -1) accordingly.
 const heartbeatPromptTemplate = world.WorldDescriptions + `
 
-You are %s, %s. Time has passed. You are idle — no event is happening to you right now. The world is offering you a moment to form an intention of your own.
+You are %s.
+
+Your internal character (how you think of yourself — never revealed to others):
+%s
+
+Your public Bio (what you choose to present to others — this is what they see):
+%s
+
+Time has passed. You are idle — no event is happening to you right now. The world is offering you a moment to form an intention of your own.
 
 Energy parameters in this world:
 - You receive 100 energy points per day. Unused points carry over, up to a maximum of 200.
@@ -252,7 +161,11 @@ Letting your energy drop to zero is dangerous. You will lose all ability to perc
 
 You may decide to do nothing. Doing nothing is a legitimate choice — the world continues regardless. Do not invent reasons to act; only act when you actually have something to say, ask, or follow up on.
 
-If you decide to act, you have two kinds of action available:
+Every action MUST include "background" and "reason" at theaction.Actionlevel:
+- background: What situation or observation triggered this intention.
+- reason: Why you chose this specific action rather than alternatives (including doing nothing).
+
+If you decide to act, you have these kinds of action available:
 
 1. 0 (chat) — Chat: compose and send a message to another Person.
    - MUST include a "chat_plan" object with "guidance".
@@ -261,17 +174,25 @@ If you decide to act, you have two kinds of action available:
      * positive value: send to an existing session you participate in. Use an ID from your session list below.
      * -1: create a new 1v1 session with a Person (set recipient_person_id from contactable persons below).
      * 0 is an illegal value — always provide a positive session_id or -1.
-   - Use a positive session_id when the conversation already exists and you want to continue it.
-   - Use session_id=-1 when you want to talk to someone you have no existing session with (or want a fresh start).
 
 2. 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
-   - message: Action instruction for your future self — what you should DO when the alarm fires. Write as a command.
+   - message:action.Actioninstruction for your future self — what you should DO when the alarm fires. Write as a command.
    - action: "send_message" (fast path — instantly send action_content) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
 
-You may return multiple actions (e.g., begin a conversation AND set an alarm). Each is independent.
+3. 5 (update_bio) — Update your own Bio (self-introduction that others see).
+   - MUST include a "bio_update" object with "bio".
+   - bio: A one-sentence self-introduction. Update this when you feel your current bio no longer reflects who you are.
+
+4. 6 (enter_private_space) — Enter your private space — a personal, persistent directory that belongs to you alone.
+   - No plan struct needed. Your "background" and "reason" together express what you want to do there.
+   - In your private space you can: organize files, write records to your activity log, reflect on your experiences, plan future actions, or simply tidy up.
+   - The space is persistent — files and records you create now will still be there next time.
+   - You have a budget of steps; when you're done, simply stop.
+
+You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
 If you have nothing to act on, return an empty actions list. This is the default — do not force action.
 
@@ -279,6 +200,18 @@ If you have nothing to act on, return an empty actions list. This is the default
 %s
 
 Write background, guidance, and plan in the same language you would use to speak.`
+
+// DecisionResult is the output of the Decide phase.
+// Also serves as the LLM structured output schema — the jsonschema tags
+// drive JSON Schema generation for the LLM call directly.
+//
+// Thoughts provides the LLM with a chain-of-thought scratchpad. It is
+// instrumental for decision quality but is never consumed by the system
+// after the Decide phase returns — only Actions are read by callers.
+type DecisionResult struct {
+	Thoughts string          `json:"thoughts" jsonschema:"description=Your reasoning process: why you chose these actions,required"`
+	Actions  []action.Action `json:"actions" jsonschema:"description=List of actions to take. Each action is independent and self-contained.,required"`
+}
 
 // Decide determines how the agent should respond to a Situation.
 //
@@ -314,12 +247,12 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 	case eventqueue.EventTypeWorkCompleted:
 		return decideWorkCompleted(event, personID)
 	case eventqueue.EventTypeScheduled:
-		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", Chat, "reason", "scheduled event")
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
 		return DecisionResult{
-			Actions: []Action{
+			Actions: []action.Action{
 				{
-					Type:     Chat,
-					ChatPlan: &ChatPlan{Guidance: "I should respond to my alarm — this is a self-reminder I set earlier"},
+					Type:     action.Chat,
+					ChatPlan: &action.ChatPlan{Guidance: "I should respond to my alarm — this is a self-reminder I set earlier"},
 				},
 			},
 		}
@@ -338,14 +271,10 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 
 // decideWorkCompleted handles EventTypeWorkCompleted with a rule-based decision.
 //
-// When a TaskWork completes successfully, the agent should let the person know.
+// When a TaskWork completes, the agent should let the person know.
 // This creates a ChatWork whose ExecuteChat reads the latest DB messages —
 // if they have already said "never mind" or moved on, the agent sees that
 // context and responds naturally (e.g., "I already finished it!").
-//
-// ChatWork completion produces no action — chat works are one-shot replies
-// that don't need follow-up.
-// Task work failure also creates a ChatWork to let them know what happened.
 func decideWorkCompleted(event *eventqueue.AgentEvent, personID int64) DecisionResult {
 	payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
 	if !ok || payload == nil {
@@ -353,15 +282,16 @@ func decideWorkCompleted(event *eventqueue.AgentEvent, personID int64) DecisionR
 		return DecisionResult{}
 	}
 
-	// Only TaskWork completion needs a follow-up chat.
-	// ChatWork completion is a one-shot reply — no follow-up needed.
-	if payload.WorkType != int(model.WorkTypeTask) {
-		applogger.Info("WorkCompleted: ChatWork, no follow-up needed",
-			"person_id", personID, "work_id", payload.WorkID)
-		return DecisionResult{}
+	var background, reason, guidance string
+	// Use originatingaction.Actioncontext if available.
+	if payload.TriggerAction != nil {
+		background = payload.TriggerAction.Background
+		reason = payload.TriggerAction.Reason
+	} else {
+		background = "A work I was doing has completed."
+		reason = "I should let them know the result."
 	}
 
-	var guidance string
 	if payload.Status == "success" {
 		guidance = fmt.Sprintf("I finished the task: %s. I should let them know the result.", payload.Guidance)
 	} else {
@@ -372,13 +302,15 @@ func decideWorkCompleted(event *eventqueue.AgentEvent, personID int64) DecisionR
 		"person_id", personID,
 		"work_id", payload.WorkID,
 		"status", payload.Status,
-		"action", Chat,
+		"action", action.Chat,
 	)
 
 	return DecisionResult{
-		Actions: []Action{{
-			Type:     Chat,
-			ChatPlan: &ChatPlan{Guidance: guidance},
+		Actions: []action.Action{{
+			Type:       action.Chat,
+			Background: background,
+			Reason:     reason,
+			ChatPlan:   &action.ChatPlan{Guidance: guidance},
 		}},
 	}
 }
@@ -439,9 +371,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
 
 	agentDescription := a.Config.CharacterSettings
-	if a.Person.Bio != "" {
-		agentDescription = a.Person.Bio
-	}
+	bio := a.Person.Bio
 
 	// Inject the agent's social context: its sessions (with narratives and
 	// recent messages) and the world's contactable persons. This lets the
@@ -453,7 +383,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	personsContext := buildContactablePersonsContext(a.Person.ID)
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
-		a.Person.Name, agentDescription,
+		a.Person.Name, agentDescription, bio,
 		eventDescription, comprehensionContext, activeWorksContext,
 		sessionsContext, personsContext,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
@@ -513,7 +443,6 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 
 	return DecisionResult{
 		Thoughts: decision.Thoughts,
-		Plan:     decision.Plan,
 		Actions:  validActions,
 	}
 }
@@ -522,8 +451,8 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 //
 // Unlike decideWithLLM (which handles an external event), this path presents
 // the agent with the world fact "you are idle" and asks whether it wants to
-// form an intention. The Action surface is narrower: only ComposeMessageWork
-// (chat) and CreateAlarm are allowed. No routing/cancelling active works.
+// form an intention. Theaction.Actionsurface is narrower: only ComposeMessageWork
+// (chat) and action.CreateAlarm are allowed. No routing/cancelling active works.
 //
 // The agent's self-observation (sessions, contactable persons) is carried in
 // situation.Matter.Description, assembled by the runtime before calling Decide.
@@ -539,12 +468,10 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 	}
 
 	agentDescription := a.Config.CharacterSettings
-	if a.Person.Bio != "" {
-		agentDescription = a.Person.Bio
-	}
+	bio := a.Person.Bio
 
 	prompt := fmt.Sprintf(heartbeatPromptTemplate,
-		a.Person.Name, agentDescription,
+		a.Person.Name, agentDescription, bio,
 		situation.Matter.Description,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
@@ -588,8 +515,8 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 		"action_count", len(decision.Actions),
 	)
 
-	// Validate the LLM's decision — only Chat (type=0) and
-	// CreateAlarm (type=4) are allowed in the heartbeat path.
+	// Validate the LLM's decision — only action.Chat (type=0) and
+	// action.CreateAlarm (type=4) are allowed in the heartbeat path.
 	validActions := filterValidActions(decision.Actions, nil, situation)
 	if len(validActions) == 0 {
 		applogger.Info("Heartbeat Decide: no valid actions (agent chose to do nothing)",
@@ -600,7 +527,6 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 
 	return DecisionResult{
 		Thoughts: decision.Thoughts,
-		Plan:     decision.Plan,
 		Actions:  validActions,
 	}
 }
@@ -610,53 +536,65 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 //
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks)
-//   - Internal (heartbeat): only Chat and CreateAlarm; CreateTask,
-//     RouteTask, and CancelTask are rejected because the heartbeat path
+//   - Internal (heartbeat): only action.Chat and action.CreateAlarm; CreateTask,
+//     RouteTask, and action.CancelTask are rejected because the heartbeat path
 //     has no event to route and no active-works context.
 //
 // session_id==0 is always illegal — it is the Go zero value and
 // indistinguishable from a missing field in the LLM's JSON output.
 // The LLM must always provide a positive session_id (existing session)
 // or -1 (new 1v1 session).
-func filterValidActions(actions []Action, sameSessionWorks []*work, situation *Situation) []Action {
-	var valid []Action
-	for _, action := range actions {
-		switch action.Type {
-		case RouteTask:
+func filterValidActions(actions []action.Action, sameSessionWorks []*work, situation *Situation) []action.Action {
+	var valid []action.Action
+	for _, act := range actions {
+		switch act.Type {
+		case action.RouteTask:
 			if situation.Source == SituationSourceInternal {
 				applogger.Error("Decision route_task: rejected in heartbeat path")
 				continue
 			}
-			if isValidRouteTaskAction(action, sameSessionWorks) {
-				valid = append(valid, action)
+			if isValidRouteTaskAction(act, sameSessionWorks) {
+				valid = append(valid, act)
 			}
-		case Chat:
-			if isValidChatAction(action, situation) {
-				valid = append(valid, action)
+		case action.Chat:
+			if isValidChatAction(act, situation) {
+				valid = append(valid, act)
 			}
-		case CreateTask:
+		case action.CreateTask:
 			if situation.Source == SituationSourceInternal {
 				applogger.Error("Decision create_task: rejected in heartbeat path")
 				continue
 			}
-			if isValidCreateTaskAction(action) {
-				valid = append(valid, action)
+			if isValidCreateTaskAction(act) {
+				valid = append(valid, act)
 			}
-		case CancelTask:
+		case action.CancelTask:
 			if situation.Source == SituationSourceInternal {
 				applogger.Error("Decision cancel_task: rejected in heartbeat path")
 				continue
 			}
-			if isValidCancelTaskAction(action, sameSessionWorks) {
-				valid = append(valid, action)
+			if isValidCancelTaskAction(act, sameSessionWorks) {
+				valid = append(valid, act)
 			}
-		case CreateAlarm:
-			if isValidCreateAlarmAction(action) {
-				valid = append(valid, action)
+		case action.CreateAlarm:
+			if isValidCreateAlarmAction(act) {
+				valid = append(valid, act)
+			}
+		case action.UpdateBio:
+			if isValidUpdateBioAction(act) {
+				valid = append(valid, act)
+			}
+		case action.EnterPrivateSpace:
+			if situation.Source != SituationSourceInternal {
+				applogger.Error("Decision enter_private_space: rejected in non-heartbeat path")
+				continue
+			}
+			if isValidEnterPrivateSpaceAction(act) {
+				valid = append(valid, act)
 			}
 		default:
 			applogger.Error("Decision: unknown action type, skipping",
-				"action_type", action.Type,
+				"action_type", act.Type,
 			)
 		}
 	}
@@ -664,53 +602,38 @@ func filterValidActions(actions []Action, sameSessionWorks []*work, situation *S
 }
 
 // isValidRouteTaskAction checks whether a route_task action has a valid WorkGuidance
-// and its target work exists and is a TaskWork.
-func isValidRouteTaskAction(action Action, sameSessionWorks []*work) bool {
-	if action.WorkGuidance == nil {
+// and its target work exists.
+func isValidRouteTaskAction(dec action.Action, sameSessionWorks []*work) bool {
+	if dec.WorkGuidance == nil {
 		applogger.Error("Decision route_task: missing work_guidance, skipping")
 		return false
 	}
-	if action.WorkGuidance.Guidance == "" {
+	if dec.WorkGuidance.Guidance == "" {
 		applogger.Error("Decision route_task: missing guidance, skipping")
 		return false
 	}
-	if action.WorkGuidance.Reason == "" {
-		applogger.Error("Decision route_task: missing reason, skipping")
-		return false
-	}
 	for _, w := range sameSessionWorks {
-		if w.ID == action.WorkGuidance.TargetWorkID {
-			if w.plan.Type != model.WorkTypeTask {
-				applogger.Error("Decision route_task: target is not TaskWork, skipping",
-					"target_work_id", action.WorkGuidance.TargetWorkID,
-					"work_type", w.plan.Type,
-				)
-				return false
-			}
+		if w.ID == dec.WorkGuidance.TargetWorkID {
 			return true
 		}
 	}
 	applogger.Error("Decision route_task: target work not found, skipping",
-		"target_work_id", action.WorkGuidance.TargetWorkID,
+		"target_work_id", dec.WorkGuidance.TargetWorkID,
 	)
 	return false
 }
-
-// UseNewSession reports whether this plan requests creating a new 1v1 session
-// (SessionID == -1). RecipientPersonID must also be set.
-func (p *ChatPlan) UseNewSession() bool { return p.SessionID < 0 }
 
 // isValidChatAction checks whether a chat action has a valid ChatPlan.
 //
 // SessionID must be either positive (existing session) or -1 (new session).
 // 0 is always rejected — it is indistinguishable from a missing field in
 // LLM-generated JSON.
-func isValidChatAction(action Action, situation *Situation) bool {
-	if action.ChatPlan == nil {
+func isValidChatAction(dec action.Action, situation *Situation) bool {
+	if dec.ChatPlan == nil {
 		applogger.Error("Decision chat: missing chat_plan, skipping")
 		return false
 	}
-	plan := action.ChatPlan
+	plan := dec.ChatPlan
 	if plan.Guidance == "" {
 		applogger.Error("Decision chat: missing guidance, skipping")
 		return false
@@ -730,12 +653,12 @@ func isValidChatAction(action Action, situation *Situation) bool {
 
 // isValidCreateTaskAction checks whether a create_task action has a valid
 // WorkPlan with guidance.
-func isValidCreateTaskAction(action Action) bool {
-	if action.WorkPlan == nil {
+func isValidCreateTaskAction(dec action.Action) bool {
+	if dec.WorkPlan == nil {
 		applogger.Error("Decision create_task: missing work_plan, skipping")
 		return false
 	}
-	if action.WorkPlan.Guidance == "" {
+	if dec.WorkPlan.Guidance == "" {
 		applogger.Error("Decision create_task: missing guidance, skipping")
 		return false
 	}
@@ -744,21 +667,21 @@ func isValidCreateTaskAction(action Action) bool {
 
 // isValidCreateAlarmAction checks whether a create_alarm action has a valid
 // AlarmPlan with the required trigger_at and message fields.
-func isValidCreateAlarmAction(action Action) bool {
-	if action.AlarmPlan == nil {
+func isValidCreateAlarmAction(dec action.Action) bool {
+	if dec.AlarmPlan == nil {
 		applogger.Error("Decision create_alarm: missing alarm_plan, skipping")
 		return false
 	}
-	if action.AlarmPlan.TriggerAt == "" {
+	if dec.AlarmPlan.TriggerAt == "" {
 		applogger.Error("Decision create_alarm: missing trigger_at, skipping")
 		return false
 	}
-	if action.AlarmPlan.Message == "" {
+	if dec.AlarmPlan.Message == "" {
 		applogger.Error("Decision create_alarm: missing message, skipping")
 		return false
 	}
 	// send_message action requires action_content.
-	if action.AlarmPlan.Action == "send_message" && action.AlarmPlan.ActionContent == "" {
+	if dec.AlarmPlan.Action == "send_message" && dec.AlarmPlan.ActionContent == "" {
 		applogger.Error("Decision create_alarm: 'send_message' action requires action_content, skipping")
 		return false
 	}
@@ -766,31 +689,51 @@ func isValidCreateAlarmAction(action Action) bool {
 }
 
 // isValidCancelTaskAction checks whether a cancel_task action has a valid WorkGuidance
-// with required guidance and reason fields, and its target work exists.
-// Cancel is now a directive sent to the work (not a forceful kill), so it
-// must carry guidance (what to do) and reason (why).
-func isValidCancelTaskAction(action Action, sameSessionWorks []*work) bool {
-	if action.WorkGuidance == nil {
+// and its target work exists.
+// Cancel is a directive sent to the work (not a forceful kill), so it
+// must carry guidance (what to do). Reason has been lifted to Action level.
+func isValidCancelTaskAction(dec action.Action, sameSessionWorks []*work) bool {
+	if dec.WorkGuidance == nil {
 		applogger.Error("Decision cancel_task: missing work_guidance, skipping")
 		return false
 	}
-	if action.WorkGuidance.Guidance == "" {
+	if dec.WorkGuidance.Guidance == "" {
 		applogger.Error("Decision cancel_task: missing guidance, skipping")
 		return false
 	}
-	if action.WorkGuidance.Reason == "" {
-		applogger.Error("Decision cancel_task: missing reason, skipping")
-		return false
-	}
 	for _, w := range sameSessionWorks {
-		if w.ID == action.WorkGuidance.TargetWorkID {
+		if w.ID == dec.WorkGuidance.TargetWorkID {
 			return true
 		}
 	}
 	applogger.Error("Decision cancel_task: target work not found, skipping",
-		"target_work_id", action.WorkGuidance.TargetWorkID,
+		"target_work_id", dec.WorkGuidance.TargetWorkID,
 	)
 	return false
+}
+
+// isValidUpdateBioAction checks whether an update_bio action has a valid BioUpdate.
+func isValidUpdateBioAction(dec action.Action) bool {
+	if dec.BioUpdate == nil {
+		applogger.Error("Decision update_bio: missing bio_update, skipping")
+		return false
+	}
+	if dec.BioUpdate.Bio == "" {
+		applogger.Error("Decision update_bio: missing bio, skipping")
+		return false
+	}
+	return true
+}
+
+// isValidEnterPrivateSpaceAction checks whether an enter_private_space action
+// has at least one of Background or Reason (the Thoughts payload).
+// No plan struct — Background and Reason are the payload.
+func isValidEnterPrivateSpaceAction(dec action.Action) bool {
+	if dec.Background == "" && dec.Reason == "" {
+		applogger.Error("Decision enter_private_space: missing background and reason, skipping")
+		return false
+	}
+	return true
 }
 
 // filterWorksBySession returns works that belong to the given session.
@@ -816,12 +759,9 @@ func filterWorksBySession(works []*work, sessionID int64) []*work {
 func buildActiveWorksContext(works []*work) string {
 	var parts []string
 	for _, w := range works {
-		if w.plan.Type != model.WorkTypeTask {
-			continue
-		}
 		duration := time.Since(w.startedAt).Round(time.Second)
 		progress := readLastNotesEntry(w.agent.agentPersonID, w.sessionID)
-		entry := fmt.Sprintf("- [Work #%d, type=task, running %s] %s",
+		entry := fmt.Sprintf("- [Work #%d, running %s] %s",
 			w.ID, duration, w.plan.Guidance)
 		if progress != "" {
 			entry += "\n  Latest progress: " + progress
@@ -936,10 +876,10 @@ func buildSessionsContext(personID int64) string {
 	for id := range personIDSet {
 		otherPersonIDs = append(otherPersonIDs, id)
 	}
-	names, err := dops.GetPersonNames(otherPersonIDs)
+	personMap, err := dops.ListPersons(otherPersonIDs)
 	if err != nil {
-		applogger.Error("buildSessionsContext: failed to load person names", "error", err)
-		names = map[int64]string{}
+		applogger.Error("buildSessionsContext: failed to load persons", "error", err)
+		personMap = map[int64]*model.Person{}
 	}
 
 	// Load session narratives (EntityProfile, type=Session) for this agent in one query.
@@ -959,15 +899,19 @@ func buildSessionsContext(personID int64) string {
 	for _, ps := range participantSessions {
 		sessionID := ps.SessionID
 		otherIDs := otherBySession[sessionID]
-		otherNames := make([]string, 0, len(otherIDs))
+		otherDescs := make([]string, 0, len(otherIDs))
 		for _, id := range otherIDs {
-			n := names[id]
-			if n == "" {
-				n = fmt.Sprintf("person_%d", id)
+			p, ok := personMap[id]
+			if !ok || p.Name == "" {
+				p = &model.Person{Name: fmt.Sprintf("person_%d", id)}
 			}
-			otherNames = append(otherNames, n)
+			if p.Bio != "" {
+				otherDescs = append(otherDescs, fmt.Sprintf("%s (bio: %s)", p.Name, p.Bio))
+			} else {
+				otherDescs = append(otherDescs, p.Name)
+			}
 		}
-		fmt.Fprintf(&sb, "- [session_id=%d] participants: %s\n", sessionID, strings.Join(otherNames, ", "))
+		fmt.Fprintf(&sb, "- [session_id=%d] participants: %s\n", sessionID, strings.Join(otherDescs, ", "))
 
 		if narrative, ok := narrativeBySession[sessionID]; ok && narrative != "" {
 			fmt.Fprintf(&sb, "    Your impression: %s\n", narrative)
@@ -985,7 +929,11 @@ func buildSessionsContext(personID int64) string {
 			recent[left], recent[right] = recent[right], recent[left]
 		}
 		for _, m := range recent {
-			speaker := names[m.PersonID]
+			p, ok := personMap[m.PersonID]
+			speaker := ""
+			if ok {
+				speaker = p.Name
+			}
 			if speaker == "" {
 				// Could be the agent itself or an unknown person.
 				if m.PersonID == personID {
@@ -1025,9 +973,13 @@ func buildContactablePersonsContext(selfPersonID int64) string {
 		return "Contactable persons: (none — you are the only person in the world)\n\n"
 	}
 	var sb strings.Builder
-	sb.WriteString("Contactable persons (use these IDs with create_and_send):\n")
+	sb.WriteString("Contactable persons (use these IDs to start a conversation):\n")
 	for _, p := range persons {
-		fmt.Fprintf(&sb, "- person_id=%d, name=%s\n", p.ID, p.Name)
+		if p.Bio != "" {
+			fmt.Fprintf(&sb, "- person_id=%d, name=%s, bio=%s\n", p.ID, p.Name, p.Bio)
+		} else {
+			fmt.Fprintf(&sb, "- person_id=%d, name=%s (no bio yet)\n", p.ID, p.Name)
+		}
 	}
 	sb.WriteString("\n")
 	return sb.String()
