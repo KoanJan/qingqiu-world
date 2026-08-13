@@ -95,7 +95,7 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 	)
 
 	// Memory: produce event record (sync) + consume self-observation.
-	eventID, err := memory.RecordEvent(msg.ID, msg.Content)
+	eventID, err := memory.RecordMessageEvent(msg.ID, msg.Content)
 	if err != nil {
 		applogger.Error("failed to record memory event for agent message",
 			"message_id", msg.ID, "error", err)

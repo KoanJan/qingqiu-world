@@ -29,7 +29,7 @@ var vectorizerCh = make(chan embeddingTask, vectorizationChannelSize)
 // External API — production
 // ---------------------------------------------------------------------------
 
-// RecordEvent creates a memory event record for a message and enqueues
+// RecordMessageEvent creates a memory event record for a message and enqueues
 // async embedding generation. This is the production-side entry point.
 //
 // Sync: inserts the event row (fast local DB write) and returns eventID.
@@ -39,7 +39,7 @@ var vectorizerCh = make(chan embeddingTask, vectorizationChannelSize)
 // This function does NOT create observations — that is the consumer's job.
 // Agent runtimes call CreateObservation after receiving the event from
 // eventqueue.
-func RecordEvent(messageID int64, content string) (int64, error) {
+func RecordMessageEvent(messageID int64, content string) (int64, error) {
 	eventID, err := createEvent(model.EventTypeMessage, messageID)
 	if err != nil {
 		return 0, err
@@ -56,6 +56,18 @@ func RecordEvent(messageID int64, content string) (int64, error) {
 	}
 
 	return eventID, nil
+}
+
+// RecordBiographyEvent creates a memory event record for an agent's origin
+// record. Unlike RecordEvent, it does not enqueue embedding generation — an
+// origin statement is a fixed self-orienting fact, not conversational content
+// that needs semantic retrieval.
+//
+// The event type is EventTypeBiography and ref_id points to the
+// AgentBiography record. Observations are created by the agent runtime after
+// it receives the corresponding eventqueue event.
+func RecordBiographyEvent(biographyID int64) (int64, error) {
+	return createEvent(model.EventTypeBiography, biographyID)
 }
 
 // ---------------------------------------------------------------------------

@@ -28,6 +28,9 @@ const (
 	EventTypeWorkCompleted
 	// EventTypeAlarmCreated represents a new scheduled alarm being created (by tool or recovery).
 	EventTypeAlarmCreated
+	// EventTypeBiography represents the system delivering the agent its own origin
+	// record — informing the agent that it came into existence at a specific time.
+	EventTypeBiography
 )
 
 // AgentEvent represents an event that should be processed by an agent.
@@ -64,6 +67,12 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Work completed]"
 		}
 		return fmt.Sprintf("[Work completed] %s (status: %s)", p.Guidance, p.Status)
+	case EventTypeBiography:
+		p, ok := e.Payload.(*BiographyPayload)
+		if !ok || p == nil {
+			return "[Biography]"
+		}
+		return p.Content
 	default:
 		return ""
 	}
@@ -131,4 +140,13 @@ type WorkCompletedPayload struct {
 // goroutine lifecycle management centralized.
 type AlarmCreatedPayload struct {
 	ScheduledEventID int64 // ID of the newly created ScheduledEvent record
+}
+
+// BiographyPayload is the payload type for EventTypeBiography events.
+// It carries the agent's own origin record — a factual statement that the
+// agent came into existence at a specific time. The agent processes this as
+// a self-orienting event, not as a message from another Person.
+type BiographyPayload struct {
+	BiographyID int64  // ID of the AgentBiography record
+	Content     string // Natural-language origin statement shown to the agent
 }

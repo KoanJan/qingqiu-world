@@ -42,6 +42,13 @@ func serializeEventPayload(event *eventqueue.AgentEvent) (string, error) {
 		}
 		data, err := json.Marshal(payload)
 		return string(data), err
+	case eventqueue.EventTypeBiography:
+		payload, ok := event.Payload.(*eventqueue.BiographyPayload)
+		if !ok || payload == nil {
+			return "", fmt.Errorf("invalid biography payload")
+		}
+		data, err := json.Marshal(payload)
+		return string(data), err
 	default:
 		return "", fmt.Errorf("unsupported event type %d", event.Type)
 	}
@@ -74,6 +81,12 @@ func deserializeBufferedEvent(buffer model.AgentEventBuffer) (*eventqueue.AgentE
 		event.Payload = payload
 	case eventqueue.EventTypeAlarmCreated:
 		payload := &eventqueue.AlarmCreatedPayload{}
+		if err := json.Unmarshal([]byte(buffer.PayloadJSON), payload); err != nil {
+			return nil, err
+		}
+		event.Payload = payload
+	case eventqueue.EventTypeBiography:
+		payload := &eventqueue.BiographyPayload{}
 		if err := json.Unmarshal([]byte(buffer.PayloadJSON), payload); err != nil {
 			return nil, err
 		}

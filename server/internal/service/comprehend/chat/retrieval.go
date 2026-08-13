@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"qingqiu-world-server/internal/database"
@@ -6,21 +6,6 @@ import (
 
 	applogger "qingqiu-world-server/internal/logger"
 )
-
-// Segment source constants
-const (
-	SourceChatHistory = iota + 1
-	SourceKnowledgeBase
-)
-
-// Segment represents a retrieved context segment used in prompt assembly.
-// MessageID is set for chat-history segments so the memory system can
-// locate the corresponding observation and apply a retrieval hit.
-type Segment struct {
-	MessageID int64  `json:"message_id"`
-	Content   string `json:"content"`
-	Source    int    `json:"source"`
-}
 
 // GetRecentMessages returns recent messages from a session in chronological order.
 // Messages are fetched in DESC order by ID and then reversed to ASC order.

@@ -13,6 +13,8 @@ import (
 	"path/filepath"
 
 	"qingqiu-world-server/internal/config"
+
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // GetDirPath returns the private-space root directory path for the given person.
@@ -44,4 +46,18 @@ func InitDir(personID int64) (rootDir, workDir string, err error) {
 // GetLogPath returns the path to the agent's activity log file.
 func GetLogPath(personID int64) string {
 	return filepath.Join(GetDirPath(personID), "log.jsonl")
+}
+
+// RemoveDir removes the entire private-space directory for the given person.
+// This should be called when an agent is deleted to prevent orphaned
+// private-space files from accumulating.
+func RemoveDir(personID int64) {
+	dirPath := GetDirPath(personID)
+	if err := os.RemoveAll(dirPath); err != nil {
+		applogger.Error("failed to remove private-space directory",
+			"person_id", personID, "path", dirPath, "error", err)
+	} else {
+		applogger.Info("private-space directory removed",
+			"person_id", personID, "path", dirPath)
+	}
 }

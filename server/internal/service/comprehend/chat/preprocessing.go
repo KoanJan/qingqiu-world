@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -57,7 +58,7 @@ type QueryPreprocessingOutput struct {
 
 // formatHistoryForPreprocessing formats conversation history for preprocessing prompts.
 // Limits to the most recent maxMessages if > 0.
-func formatHistoryForPreprocessing(history []ConversationMessage, maxMessages int) string {
+func formatHistoryForPreprocessing(history []types.ConversationMessage, maxMessages int) string {
 	if len(history) == 0 {
 		return "(No conversation history)"
 	}
@@ -78,7 +79,7 @@ func preprocessQuery(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []ConversationMessage,
+	history []types.ConversationMessage,
 	maxMessages int,
 ) *QueryPreprocessingOutput {
 	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
@@ -117,7 +118,7 @@ func generateClarification(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []ConversationMessage,
+	history []types.ConversationMessage,
 	reason string,
 	characterSettings string,
 	maxMessages int,
@@ -148,7 +149,7 @@ func PreprocessQuery(
 	ctx context.Context,
 	llmConfig *model.LLMConfig,
 	query string,
-	history []ConversationMessage,
+	history []types.ConversationMessage,
 	characterSettings string,
 	maxMessages int,
 ) *QueryPreprocessingOutput {

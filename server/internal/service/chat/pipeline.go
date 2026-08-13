@@ -11,6 +11,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
 )
@@ -41,11 +42,12 @@ type pipeline struct {
 	// assumption that broke A2A addressing.
 	partnerName     string
 	partnerPersonID int64
+	selfName        string // Agent's own name, for identity anchoring in chat generation
 
 	// Results from pipeline stages
-	personStateResult  *comprehend.PersonState
-	historySegments    []comprehend.Segment
-	kbSegments         []comprehend.Segment
+	personStateResult  *comprehendTypes.PersonState
+	historySegments    []comprehendTypes.Segment
+	kbSegments         []comprehendTypes.Segment
 	needsClarification bool
 	clarification      string
 	taskResult         *TaskResultForAssembly
@@ -171,6 +173,7 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 		personStateDescription,
 		p.taskResult,
 		p.partnerName,
+		p.selfName,
 		p.aiPersonID,
 		p.guidance,
 		formatAlarmNotification(p.trigger),
@@ -207,7 +210,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	contextResult := getContext(p.session.ID, p.aiPersonID, p.readMessageRange[1], p.windowSize)
 
 	// Merge knowledge base segments with chat history segments
-	relevantSegments := append([]comprehend.Segment{}, p.historySegments...)
+	relevantSegments := append([]comprehendTypes.Segment{}, p.historySegments...)
 	if len(p.kbSegments) > 0 {
 		relevantSegments = append(relevantSegments, p.kbSegments...)
 	}
@@ -249,7 +252,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	// importance scores.
 	var ragHitIDs []int64
 	for _, seg := range p.historySegments {
-		if seg.Source == comprehend.SourceChatHistory && seg.MessageID > 0 {
+		if seg.Source == comprehendTypes.SourceChatHistory && seg.MessageID > 0 {
 			ragHitIDs = append(ragHitIDs, seg.MessageID)
 		}
 	}
@@ -272,6 +275,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 		personStateDescription,
 		p.taskResult,
 		p.partnerName,
+		p.selfName,
 		p.aiPersonID,
 		p.guidance,
 		formatAlarmNotification(p.trigger),

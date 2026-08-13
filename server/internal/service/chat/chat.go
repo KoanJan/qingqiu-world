@@ -24,7 +24,8 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/comprehend"
+	"qingqiu-world-server/internal/service/agent"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/task"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -71,6 +72,11 @@ func ExecuteChat(
 		readMessageRange: readMessageRange,
 		trigger:          trigger,
 		guidance:         guidance,
+	}
+
+	// Resolve agent name for identity anchoring in chat generation.
+	if a, err := agent.GetAgent(aiPersonID); err == nil {
+		p.selfName = a.Name
 	}
 
 	if chatCtx != nil {
@@ -130,11 +136,11 @@ func ExecuteChat(
 //   - Heartbeat (autonomous): nil (guidance alone drives the chat)
 type ChatContext struct {
 	// PersonState is the inferred state of the other participant.
-	PersonState *comprehend.PersonState
+	PersonState *comprehendTypes.PersonState
 	// HistorySegments are RAG-retrieved chat history fragments.
-	HistorySegments []comprehend.Segment
+	HistorySegments []comprehendTypes.Segment
 	// KBSegments are RAG-retrieved knowledge base fragments.
-	KBSegments []comprehend.Segment
+	KBSegments []comprehendTypes.Segment
 	// NeedsClarification indicates the agent needs to ask a clarifying question.
 	NeedsClarification bool
 	// Clarification is the clarifying question text.

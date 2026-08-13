@@ -5,7 +5,7 @@ import (
 	"os"
 	"strings"
 
-	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/privatespace"
 )
@@ -50,14 +50,14 @@ type SituationSubject struct {
 //   - External: Event and Comprehension are populated.
 //   - Internal: Description is populated.
 type SituationMatter struct {
-	Event         *eventqueue.AgentEvent          // non-nil when Source == External
-	Comprehension *comprehend.ComprehensionResult // non-nil when Source == External
-	Description   string                          // non-empty when Source == Internal
+	Event         *eventqueue.AgentEvent         // non-nil when Source == External
+	Comprehension *comprehendTypes.Comprehension // non-nil when Source == External
+	Description   string                         // non-empty when Source == Internal
 }
 
 // buildExternalSituation constructs a Situation from an external event
 // and its comprehension result.
-func buildExternalSituation(event *eventqueue.AgentEvent, comp *comprehend.ComprehensionResult, energy int, activeWorksSummary string) *Situation {
+func buildExternalSituation(event *eventqueue.AgentEvent, comp *comprehendTypes.Comprehension, energy int, activeWorksSummary string) *Situation {
 	return &Situation{
 		Source: SituationSourceExternal,
 		Subject: SituationSubject{
@@ -99,12 +99,14 @@ func buildHeartbeatDescription(personID int64) string {
 }
 
 // buildPrivateSpaceContext surveys the agent's private-space state:
-// directory contents and recent log entries.
+// workspace directory contents and recent log entries.
+// Only the space/ subdirectory is visible — system files like log.jsonl
+// and the parent directory path are not exposed to the agent.
 func buildPrivateSpaceContext(personID int64) string {
-	dirPath := privatespace.GetDirPath(personID)
+	workDirPath := privatespace.GetWorkDirPath(personID)
 
-	// Read directory listing.
-	entries, err := readDirSummary(dirPath)
+	// Read directory listing from the agent's workspace subdirectory only.
+	entries, err := readDirSummary(workDirPath)
 	if err != nil {
 		entries = "(unavailable)"
 	}
@@ -113,7 +115,6 @@ func buildPrivateSpaceContext(personID int64) string {
 
 	var sb strings.Builder
 	sb.WriteString("\n=== YOUR PRIVATE SPACE ===\n")
-	sb.WriteString(fmt.Sprintf("Directory: %s\n", dirPath))
 	sb.WriteString(fmt.Sprintf("Contents: %s\n", entries))
 	if logContext != "" {
 		sb.WriteString("\n" + logContext)

@@ -3,17 +3,17 @@ package chat
 import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
 
 // retrievalResult holds all context components retrieved for chat processing.
 type retrievalResult struct {
-	RecentMessages   []model.Message      `json:"recent_messages"`
-	RelevantSegments []comprehend.Segment `json:"relevant_segments"`
-	SummaryVersion   int                  `json:"summary_version"`
-	Narrative        string               `json:"narrative"`
+	RecentMessages   []model.Message           `json:"recent_messages"`
+	RelevantSegments []comprehendTypes.Segment `json:"relevant_segments"`
+	SummaryVersion   int                       `json:"summary_version"`
+	Narrative        string                    `json:"narrative"`
 }
 
 // buildSummaryAndNarrative extracts summary version and cached narrative
@@ -58,7 +58,7 @@ func getLatestNarrativeByIDs(sessionID, personID int64) *model.AgentNarrative {
 func getContext(sessionID, personID, maxMessageID int64, recentCount int) *retrievalResult {
 	result := &retrievalResult{
 		RecentMessages:   []model.Message{},
-		RelevantSegments: []comprehend.Segment{},
+		RelevantSegments: []comprehendTypes.Segment{},
 	}
 
 	result.RecentMessages = getRecentMessagesBefore(sessionID, maxMessageID, recentCount)

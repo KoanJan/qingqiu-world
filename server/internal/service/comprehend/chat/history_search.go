@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"strings"
@@ -6,12 +6,13 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend/types"
 )
 
 const defaultHistorySearchLimit = 5
 
 // SearchMessagesByKeywordsBefore returns keyword-matched messages up to an ID boundary.
-func SearchMessagesByKeywordsBefore(sessionIDs []int64, maxMessageID int64, keywords []string, limit int) []Segment {
+func SearchMessagesByKeywordsBefore(sessionIDs []int64, maxMessageID int64, keywords []string, limit int) []types.Segment {
 	if len(sessionIDs) == 0 || len(keywords) == 0 {
 		return nil
 	}
@@ -53,9 +54,9 @@ func SearchMessagesByKeywordsBefore(sessionIDs []int64, maxMessageID int64, keyw
 	if limit > len(matches) {
 		limit = len(matches)
 	}
-	segments := make([]Segment, 0, limit)
+	segments := make([]types.Segment, 0, limit)
 	for _, item := range matches[:limit] {
-		segments = append(segments, Segment{MessageID: item.message.ID, Content: item.message.Content, Source: SourceChatHistory})
+		segments = append(segments, types.Segment{MessageID: item.message.ID, Content: item.message.Content, Source: types.SourceChatHistory})
 	}
 	return segments
 }

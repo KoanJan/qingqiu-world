@@ -10,7 +10,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
-	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/task"
 )
@@ -31,10 +31,10 @@ type work struct {
 	sessionID     int64
 	plan          *action.WorkPlan // From Decide phase: guidance
 	maxIterations int
-	comprehension *comprehend.ComprehensionResult // Results from the Comprehend phase
-	taskResult    *task.TaskResult                // Task execution result
-	guidanceCh    chan task.GuidanceDirective     // Channel for sending guidance/cancel directives to TaskLoop
-	done          chan struct{}                   // Closed when work finishes (normal or abandoned)
+	comprehension *comprehendTypes.Comprehension // Results from the Comprehend phase
+	taskResult    *task.TaskResult               // Task execution result
+	guidanceCh    chan task.GuidanceDirective    // Channel for sending guidance/cancel directives to TaskLoop
+	done          chan struct{}                  // Closed when work finishes (normal or abandoned)
 
 	// triggerAction carries the originating Action for the WorkCompleted event.
 	triggerAction *action.Action

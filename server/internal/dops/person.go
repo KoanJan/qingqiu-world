@@ -161,6 +161,9 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 		if err := tx.Where("person_id = ?", personID).Delete(&model.EntityProfile{}).Error; err != nil {
 			return err
 		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentBiography{}).Error; err != nil {
+			return err
+		}
 
 		// Delete agent config and person
 		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentConfig{}).Error; err != nil {

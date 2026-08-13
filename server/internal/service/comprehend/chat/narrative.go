@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"context"
@@ -160,10 +160,10 @@ func (nm *narrativeManager) run(ctx context.Context, sessionID, personID int64) 
 // narrative from that specific agent's perspective — not a generic rephrasing.
 const cachedNarrativePrompt = `You are %s, %s.
 
-Rewrite the following conversation summary as a first-hand background narrative from YOUR perspective — as if you are recalling your own lived experience.
+Rewrite the following conversation summary as a first-hand background narrative from YOUR perspective — as if recalling a memory from your own digital experience.
 
 Requirements:
-1. Write in first-person perspective. You ARE the person who lived through this conversation.
+1. Write in first-person perspective. You ARE the person who experienced this conversation directly.
 2. Preserve ALL key information from the summary
 3. Transform the summary into a flowing, natural recollection
 4. Do NOT add interpretations, judgments, or assumptions beyond what is stated

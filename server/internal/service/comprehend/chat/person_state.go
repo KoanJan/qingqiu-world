@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"context"
@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -22,68 +23,6 @@ Analyze their emotional tone, conversational purpose, and any clues about their 
 
 Recent conversation:
 %s`
-
-// PersonState represents the inferred person state from conversation context.
-//
-// Three-dimensional model:
-//   - Emotion: person's current emotional state (affects response tone)
-//   - Purpose: person's current conversational goal (affects response content direction)
-//   - Situation: person's physical context (affects response constraints)
-//
-// Intent type is implicitly derived from purpose + situation, not modeled separately.
-//
-// Field descriptions serve dual purpose:
-//  1. Guide LLM structured output generation
-//  2. Provide natural language fragments for prompt template assembly
-type PersonState struct {
-	Emotion   string `json:"emotion" jsonschema:"description=The person's current emotional state: calm for relaxed or neutral, anxious for worried or uneasy, frustrated for annoyed or impatient (e.g. repeated failed attempts), urgent for time-pressured or emergency, curious for inquisitive or exploratory,enum=calm,enum=anxious,enum=frustrated,enum=urgent,enum=curious,required"`
-	Purpose   string `json:"purpose" jsonschema:"description=The person's current conversational goal: seek_help for needing a solution or fix, seek_advice for wanting recommendations or guidance, seek_confirmation for validating a decision or understanding, express_feeling for sharing emotions without expecting solutions, casual_chat for social or non-goal-oriented conversation,enum=seek_help,enum=seek_advice,enum=seek_confirmation,enum=express_feeling,enum=casual_chat,required"`
-	Situation string `json:"situation" jsonschema:"description=Brief natural language description of the person's physical context if inferable from the conversation, such as time of day, device, environment, or activity. Use unknown if not inferable. Examples: at work on desktop, late evening on mobile, in a meeting, commuting,required"`
-}
-
-// emotionDescriptions maps emotion codes to natural language descriptions.
-var emotionDescriptions = map[string]string{
-	"calm":       "calm and relaxed",
-	"anxious":    "anxious or worried",
-	"frustrated": "frustrated or impatient",
-	"urgent":     "under time pressure or in urgency",
-	"curious":    "curious and exploratory",
-}
-
-// purposeDescriptions maps purpose codes to natural language descriptions.
-var purposeDescriptions = map[string]string{
-	"seek_help":         "seeking help with a problem",
-	"seek_advice":       "looking for advice or recommendations",
-	"seek_confirmation": "seeking confirmation or validation",
-	"express_feeling":   "expressing feelings without expecting solutions",
-	"casual_chat":       "engaging in casual conversation",
-}
-
-// ToNaturalLanguage converts the structured person state into a natural language description
-// suitable for injection into the prompt's instruction area.
-// personName is the actual name of the person (empty = no profile set).
-func (ps *PersonState) ToNaturalLanguage(personName string) string {
-	emotionDesc := ps.Emotion
-	if desc, ok := emotionDescriptions[ps.Emotion]; ok {
-		emotionDesc = desc
-	}
-	purposeDesc := ps.Purpose
-	if desc, ok := purposeDescriptions[ps.Purpose]; ok {
-		purposeDesc = desc
-	}
-
-	subject := personName
-
-	parts := []string{
-		fmt.Sprintf("%s appears %s", subject, emotionDesc),
-		fmt.Sprintf("is %s", purposeDesc),
-	}
-	if ps.Situation != "" && ps.Situation != "unknown" {
-		parts = append(parts, fmt.Sprintf("and is likely %s", ps.Situation))
-	}
-
-	return strings.Join(parts, ", ") + "."
-}
 
 // formatRecentMessages formats recent messages into text for the inference prompt.
 // personName is the actual name of the other party (the partner being inferred),
@@ -123,7 +62,7 @@ func InferPersonState(
 	selfPersonID int64,
 	characterSettings string,
 	activeWorksSummary string,
-) *PersonState {
+) *types.PersonState {
 	if len(recentMessages) == 0 {
 		return nil
 	}
@@ -146,7 +85,7 @@ func InferPersonState(
 		Name:        "PersonState",
 		Description: "Infer the person's current state from conversation context",
 		Strict:      true,
-		Schema:      llm.GenerateSchema[PersonState](),
+		Schema:      llm.GenerateSchema[types.PersonState](),
 	})
 
 	if err != nil {
@@ -155,7 +94,7 @@ func InferPersonState(
 	}
 
 	if result != "" {
-		var state PersonState
+		var state types.PersonState
 		if err := json.Unmarshal([]byte(result), &state); err == nil {
 			applogger.Info("Inferred person state",
 				"emotion", state.Emotion,

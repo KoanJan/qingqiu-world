@@ -10,8 +10,9 @@ import (
 	"strings"
 
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -35,7 +36,9 @@ Recent conversation:
 
 ---
 
-%s%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
+%s%s%s%s%sYou are talking to %s. Address them directly. Use the same language as the conversation.
+
+Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
 
 // Template for simple context without background story (V < N case).
 // Used when there are not enough messages to generate a summary.
@@ -46,7 +49,9 @@ const oneBigMessageNoStoryTemplate = `%s%sConversation record:
 
 ---
 
-%s%s%s%s%sRespond to the person you are talking to. Use the same language as the conversation. Do not use parenthetical action descriptions or non-verbal content.`
+%s%s%s%s%sYou are talking to %s. Address them directly. Use the same language as the conversation.
+
+Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
 
 // TaskResultForAssembly represents the task execution result for context assembly.
 // Mirrors Python's TaskResult DTO used in context assembly.
@@ -59,12 +64,13 @@ type TaskResultForAssembly struct {
 }
 
 // formatCharacterSection formats character settings section for the prompt.
+// Includes the agent's name so the LLM knows its own identity.
 // Returns "[Your Character]\n{settings}\n\n---\n\n" or empty string if nil/empty.
-func formatCharacterSection(characterSettings string) string {
+func formatCharacterSection(name, characterSettings string) string {
 	if characterSettings == "" {
 		return ""
 	}
-	return fmt.Sprintf("[Your Character]\n%s\n\n---\n\n", characterSettings)
+	return fmt.Sprintf("You are %s.\n\n[Your Character]\n%s\n\n---\n\n", name, characterSettings)
 }
 
 // formatEntityProfileSection formats an EntityProfile narrative for context injection.
@@ -81,7 +87,7 @@ func formatEntityProfileSection(narrative string, entityName string) string {
 // Segments are RAG-retrieved historical fragments placed with narrative transition,
 // since they could not be fused into the pre-generated cached narrative.
 // Returns "Some additional details from earlier conversations...\n{items}\n\n" or empty string.
-func formatSegmentsSection(relevantSegments []comprehend.Segment) string {
+func formatSegmentsSection(relevantSegments []comprehendTypes.Segment) string {
 	if len(relevantSegments) == 0 {
 		return ""
 	}
@@ -89,7 +95,7 @@ func formatSegmentsSection(relevantSegments []comprehend.Segment) string {
 	var segmentsText []string
 	for _, seg := range relevantSegments {
 		sourceLabel := "ChatHistory"
-		if seg.Source == comprehend.SourceKnowledgeBase {
+		if seg.Source == comprehendTypes.SourceKnowledgeBase {
 			sourceLabel = "KnowledgeBase"
 		}
 		segmentsText = append(segmentsText, fmt.Sprintf("- (%s) %s", sourceLabel, seg.Content))
@@ -199,16 +205,17 @@ func assembleContext(
 	entityProfiles string,
 	backgroundStory string,
 	recentMessages []model.Message,
-	relevantSegments []comprehend.Segment,
+	relevantSegments []comprehendTypes.Segment,
 	summaryVersion int,
 	personStateDescription string,
 	taskResult *TaskResultForAssembly,
 	partnerName string,
+	selfName string,
 	selfPersonID int64,
 	guidance string,
 	alarmNotification string,
 ) []llm.Message {
-	characterSection := formatCharacterSection(characterSettings)
+	characterSection := formatCharacterSection(selfName, characterSettings)
 	alarmTriggerSection := formatAlarmTriggerSection(alarmNotification)
 	personStateInstruction := formatPersonStateInstruction(personStateDescription)
 	taskResultSection := formatTaskResultSection(taskResult)
@@ -242,6 +249,7 @@ func assembleContext(
 			personStateInstruction,
 			alarmTriggerSection,
 			guidanceSection,
+			partnerName,
 		)
 	} else {
 		oneBigMessage = fmt.Sprintf(oneBigMessageNoStoryTemplate,
@@ -253,10 +261,12 @@ func assembleContext(
 			personStateInstruction,
 			alarmTriggerSection,
 			guidanceSection,
+			partnerName,
 		)
 	}
 
 	messages := []llm.Message{
+		{Role: "system", Content: world.ChatIdentityDescription},
 		{Role: "user", Content: oneBigMessage},
 	}
 

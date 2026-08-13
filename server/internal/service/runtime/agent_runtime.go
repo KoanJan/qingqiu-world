@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/chat"
 	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
@@ -189,6 +190,26 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		}
 		return true
 	}
+	if event.Type == eventqueue.EventTypeBiography {
+		// A biography is the agent's own origin record. It records its
+		// observation here — same as a chat message — and then falls through
+		// to the shared Comprehend→Decide→Action path below for architectural
+		// consistency. Its comprehension is non-LLM and its decision is an
+		// empty (no-action) one, so this is still effectively observation-only.
+		if event.EventID > 0 {
+			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
+				applogger.Error("failed to create biography observation",
+					"person_id", r.agentPersonID,
+					"event_id", event.EventID,
+					"error", err,
+				)
+			}
+		}
+		applogger.Info("biography event observed",
+			"person_id", r.agentPersonID,
+			"event_id", event.EventID,
+		)
+	}
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
 		if !ok || payload == nil {
@@ -242,14 +263,15 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		applogger.Error("handleEvent: failed to load agent", "person_id", r.agentPersonID, "error", err)
 		return true
 	}
-	c := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, buildActiveWorksSummary(r.activeWorks, event.SessionID))
-	situation := buildExternalSituation(event, c, state.Energy, c.ActiveWorksSummary)
+	activeWorksSummary := buildActiveWorksSummary(r.activeWorks, event.SessionID)
+	c := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, activeWorksSummary)
+	situation := buildExternalSituation(event, c, state.Energy, activeWorksSummary)
 	// Do not pass the agent pointer across function boundaries — Decide will
 	// fetch its own copy via agent.GetAgent when it needs agent data.
 	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
-	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.ReadMessageRange[1] > c.ReadMessageRange[0] {
-		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.ReadMessageRange[1]); err != nil {
-			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.ReadMessageRange[1], "error", err)
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.Chat.ReadMessageRange[1] > c.Chat.ReadMessageRange[0] {
+		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.Chat.ReadMessageRange[1]); err != nil {
+			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.Chat.ReadMessageRange[1], "error", err)
 		}
 	}
 	if len(d.Actions) > 0 {
@@ -443,15 +465,31 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 
 	var chatCtx *chat.ChatContext
 	var readMessageRange [2]int64
-	if comprehension != nil {
+	if comprehension != nil && comprehension.Chat != nil {
 		chatCtx = &chat.ChatContext{
-			PersonState:        comprehension.PersonState,
-			HistorySegments:    historySegments(comprehension.HistorySearch),
-			KBSegments:         kbSegments(comprehension.KBRetrieval),
-			NeedsClarification: comprehension.NeedsClarification,
-			Clarification:      comprehension.Clarification,
+			PersonState:        comprehension.Chat.PersonState,
+			HistorySegments:    historySegments(comprehension.Chat.HistorySearch),
+			KBSegments:         kbSegments(comprehension.Chat.KBRetrieval),
+			NeedsClarification: comprehension.Chat.NeedsClarification,
+			Clarification:      comprehension.Chat.Clarification,
 		}
-		readMessageRange = comprehension.ReadMessageRange
+		readMessageRange = comprehension.Chat.ReadMessageRange
+	}
+
+	// A work-completed event carries the TaskLoop's final summary in its
+	// payload. Surface it into the chat context so the agent can reference
+	// what was actually produced when notifying the user.
+	if event != nil {
+		if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil {
+			if chatCtx == nil {
+				chatCtx = &chat.ChatContext{}
+			}
+			chatCtx.TaskResult = &task.TaskResult{
+				Status: payload.Status,
+				Output: payload.TaskOutput,
+				Error:  payload.TaskError,
+			}
+		}
 	}
 
 	result, err := chat.ExecuteChat(
@@ -512,11 +550,18 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 	tx := database.DB.Begin()
 	defer tx.Rollback()
 
-	var workDescription string
-	if event != nil {
-		workDescription = event.FormatDescription()
-	} else {
-		workDescription = situation.Matter.Description
+	// The work's Description should reflect what the agent intends to DO
+	// (its guidance), not merely what triggered it. Using the triggering
+	// event description breaks down for retries: a work created in response
+	// to a WorkCompleted event would otherwise record the previous work's
+	// completion status as its own description.
+	workDescription := plan.Guidance
+	if workDescription == "" {
+		if event != nil {
+			workDescription = event.FormatDescription()
+		} else {
+			workDescription = situation.Matter.Description
+		}
 	}
 	workRecord := &model.Work{
 		PersonID:    r.agentPersonID,
@@ -827,14 +872,14 @@ func createAgentRuntime(agentConfigID int64, onStatusChange func(agentConfigID, 
 	return runtime, nil
 }
 
-func historySegments(search *comprehend.HistorySearch) []comprehend.Segment {
+func historySegments(search *comprehendTypes.HistorySearch) []comprehendTypes.Segment {
 	if search == nil {
 		return nil
 	}
 	return search.Segments
 }
 
-func kbSegments(retrieval *comprehend.KBRetrieval) []comprehend.Segment {
+func kbSegments(retrieval *comprehendTypes.KBRetrieval) []comprehendTypes.Segment {
 	if retrieval == nil {
 		return nil
 	}

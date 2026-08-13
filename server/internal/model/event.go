@@ -2,10 +2,13 @@ package model
 
 import "time"
 
+type EventType int
+
 // Event type constants. Each type represents a different kind of external event
 // that agents can observe. New types are added as the system evolves.
 const (
-	EventTypeMessage = iota + 1 // A message in a session (user or agent)
+	EventTypeMessage   EventType = iota + 1 // A message in a session (user or agent)
+	EventTypeBiography                      // An agent's origin record (its beginning in the world)
 )
 
 // Event represents an external event in the unified event table.
@@ -20,7 +23,7 @@ const (
 // each event.
 type Event struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	EventType int       `gorm:"not null;index:idx_events_type_created;column:event_type" json:"event_type"`
+	EventType EventType `gorm:"not null;index:idx_events_type_created;column:event_type" json:"event_type"`
 	RefID     int64     `gorm:"not null;column:ref_id" json:"ref_id"`
 	CreatedAt time.Time `gorm:"not null;autoCreateTime;index:idx_events_type_created" json:"created_at"`
 }

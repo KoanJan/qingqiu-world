@@ -1,4 +1,4 @@
-package comprehend
+package chat
 
 import (
 	"unicode/utf8"

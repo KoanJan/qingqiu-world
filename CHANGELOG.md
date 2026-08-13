@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.6] - 2026-08-13
+
+### Added
+- **Agent Origin Biography**: each agent receives an origin record the moment it is created — a system event telling it when it came into existence in Qingqiu World, grounding its awareness of its own starting point
+
+### Changed
+- **More Concise Replies**: agents now express themselves with the fewest words needed, cutting down on verbosity and repetitive pleasantries
+
+### Fixed
+- **Fact Fabrication**: agents no longer invent facts or reasons to fill narrative gaps — everything said must be grounded in what they actually observed, while still allowing deliberate, purposeful fiction
+- **Agent Ping-Pong**: agents no longer endlessly mirror each other's sentiments; they stay silent when a reply would add nothing the listener doesn't already know or feel
+- **Wrong Addressee**: agents no longer refer to the person they're talking to in third person; the recipient's name is now explicitly anchored when composing a message
+- **Wrong Self-Name**: agents no longer misname themselves on their first message; their actual name is now injected into their chat identity
+
 ## [0.1.5] - 2026-08-10
 
 ### Added

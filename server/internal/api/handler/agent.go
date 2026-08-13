@@ -8,6 +8,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/agent"
+	"qingqiu-world-server/internal/service/privatespace"
 	"qingqiu-world-server/internal/service/runtime"
 	"qingqiu-world-server/internal/service/workspace"
 	"strings"
@@ -39,6 +40,9 @@ func (h *Handler) CreateAgent(c *gin.Context) {
 	// Register and start the agent's runtime so it can receive events immediately.
 	runtime.StartRuntime(entity.ID)
 	agent.Refresh(person.ID)
+
+	// Deliver the agent's origin record as a self-orienting biography event.
+	runtime.SendBiographyEvent(entity.ID, person.ID)
 
 	response.Success(c, schema.NewAgentResponse(entity, person))
 }
@@ -149,6 +153,7 @@ func (h *Handler) DeleteAgent(c *gin.Context) {
 		workspace.RemoveWorkspace(personID, sid)
 		workspace.RemoveAac(personID, sid)
 	}
+	privatespace.RemoveDir(personID)
 
 	response.SuccessMessage(c, "Agent config deleted successfully", nil)
 }

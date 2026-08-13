@@ -12,7 +12,7 @@ import (
 )
 
 // createEvent creates an event record and returns the event_id.
-func createEvent(eventType int, refID int64) (int64, error) {
+func createEvent(eventType model.EventType, refID int64) (int64, error) {
 	event := &model.Event{
 		EventType: eventType,
 		RefID:     refID,

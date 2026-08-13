@@ -1,7 +1,11 @@
-// Package comprehend provides cross-stage cognitive tools used by both the
-// Comprehend phase (runtime) and the execution phase (chat).
+// Package comprehend is the comprehension phase of the agent pipeline.
 //
-// Functions in this package are information-gathering primitives — query
-// preprocessing, person state inference, message retrieval, and shared types —
-// that are not specific to any single phase of the agent pipeline.
+// It is a router plus a public API facade: the parent package exposes the
+// entry point (Comprehend), the shared result types, and a few cross-cutting
+// signals that the execution phase needs. Event-type-specific comprehension
+// logic lives in sub-packages (for example, chat handles private chat message
+// events).
+//
+// External callers should import only this package; they must not reach into
+// the sub-packages directly.
 package comprehend

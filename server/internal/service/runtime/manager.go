@@ -208,7 +208,7 @@ func Start(
 // calls memory.CreateObservation using the EventID carried in the payload.
 func SendNewMessageEvent(agentConfigID, sessionID, messageID int64, content, speakerName string) {
 	// Production: record memory event before dispatching.
-	eventID, err := memory.RecordEvent(messageID, content)
+	eventID, err := memory.RecordMessageEvent(messageID, content)
 	if err != nil {
 		applogger.Error("failed to record memory event for user message",
 			"message_id", messageID, "error", err)

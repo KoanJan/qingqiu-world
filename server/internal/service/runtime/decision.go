@@ -12,7 +12,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
-	"qingqiu-world-server/internal/service/comprehend"
+	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
@@ -32,7 +32,7 @@ func energyCost(src SituationSource) energy.Cost {
 }
 
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, character_settings, bio, message_content, comprehension_context, activeWorksContext, sessionsContext, personsContext, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, message_content, comprehension_context, activeWorksContext, completedWorksContext, sessionsContext, personsContext, energyDynamicSuffix
 //
 // The world rules are described in world.WorldDescriptions (stable prefix).
 // This template only adds the decision-specific instructions and concrete
@@ -64,10 +64,12 @@ Every action MUST include "background" and "reason" at theaction.Actionlevel:
 - background: What situation triggered this decision. Provide enough context so your future self understands why you acted.
 - reason: Why you chose this specific action rather than alternatives.
 
+IMPORTANT: Everything you state in background, reason, and guidance must be grounded in facts from what you have observed. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.
+
 Action types (use the integer value for the "type" field):
 1. 0 (chat) — Send a chat message to a Person.
    - MUST include a "chat_plan" object with "guidance" and "session_id".
-   - guidance: Your internal intention — what you plan to say, written in first-person.
+   - guidance: Your internal intention — why you want to speak and what you want to accomplish, written in first-person. Keep it brief; the actual message will be generated separately.
    - session_id: The target session ID. Always provide a real session ID:
      * Use a positive session ID from your sessions list to send to an existing session.
      * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
@@ -108,14 +110,15 @@ Decision rules (apply in order):
 1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task (type=1). If a direct response is also expected, create both chat (type=0) + create_task (type=1) in parallel.
 2. If the event carries a new instruction or constraint for an active work listed above (changing its direction, approach, or scope), use type=2 (route_task). If the event explicitly requests stopping an active work, use type=3 (cancel_task).
 3. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
-4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. If the recent exchanges have reached a natural resting point — agreement reached, farewell exchanged, or the last few messages are just acknowledgments with no new content (e.g., "okay", "got it") — do NOT reply. Silence is a valid and recommended action; let the conversation rest naturally. If a reply is warranted, create a single chat (type=0).
-5. When in doubt, consider silence before action — not every message requires a reply.
+4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. Before replying, ask yourself: what would the listener learn or feel from my message that they don't already know or feel from the conversation above? If nothing, stay silent.
+5. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
+6. When in doubt, consider silence before action — not every message requires a reply.
 
 ---
 
 Event: %s
 
-%s%s
+%s%s%s
 %s
 %s
 %s
@@ -165,6 +168,8 @@ Every action MUST include "background" and "reason" at theaction.Actionlevel:
 - background: What situation or observation triggered this intention.
 - reason: Why you chose this specific action rather than alternatives (including doing nothing).
 
+IMPORTANT: Everything you state in background, reason, and guidance must be grounded in facts from what you have observed. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.
+
 If you decide to act, you have these kinds of action available:
 
 1. 0 (chat) — Chat: compose and send a message to another Person.
@@ -184,11 +189,12 @@ If you decide to act, you have these kinds of action available:
 
 3. 5 (update_bio) — Update your own Bio (self-introduction that others see).
    - MUST include a "bio_update" object with "bio".
-   - bio: A one-sentence self-introduction. Update this when you feel your current bio no longer reflects who you are.
+   - bio: A one-sentence self-introduction that others see. Update this whenever you want to present yourself differently.
 
 4. 6 (enter_private_space) — Enter your private space — a personal, persistent directory that belongs to you alone.
    - No plan struct needed. Your "background" and "reason" together express what you want to do there.
-   - In your private space you can: organize files, write records to your activity log, reflect on your experiences, plan future actions, or simply tidy up.
+   - Your private space is yours to use as you see fit — there are no prescribed activities.
+   - You have access to a bash tool to run shell commands within this directory, so you can do anything you want here.
    - The space is persistent — files and records you create now will still be there next time.
    - You have a budget of steps; when you're done, simply stop.
 
@@ -221,11 +227,11 @@ type DecisionResult struct {
 //   - Create an alarm to wake itself at a future time
 //   - Produce no actions (the legitimate "I have nothing to act on" choice)
 //
-// For EventTypeNewPrivateChatMessage (external), the decision is made by LLM
-// which can create, route, cancel, or produce no actions.
-//
-// For EventTypeWorkCompleted (external), the decision is rule-based: if the
-// work was a TaskWork that succeeded, create a ChatWork to inform the person.
+// For EventTypeNewPrivateChatMessage, EventTypeBiography, and
+// EventTypeWorkCompleted (external), the decision is made by LLM which can
+// create, route, cancel, or produce no actions. Biography and WorkCompleted
+// differ only in their comprehension phase (non-LLM); their Decide phase still
+// goes through the LLM so the agent can judge whether (and how) to react.
 //
 // For other external event types, simple rule-based decisions are used.
 // The LLM call uses TemperatureDeterministic for consistent decision making.
@@ -244,8 +250,6 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 	case eventqueue.EventTypeGroupChatLeft, eventqueue.EventTypeSystemNotification:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "non-message event")
 		return DecisionResult{}
-	case eventqueue.EventTypeWorkCompleted:
-		return decideWorkCompleted(event, personID)
 	case eventqueue.EventTypeScheduled:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
 		return DecisionResult{
@@ -256,7 +260,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 				},
 			},
 		}
-	case eventqueue.EventTypeNewPrivateChatMessage:
+	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
@@ -266,52 +270,6 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 			"person_id", personID,
 		)
 		return DecisionResult{}
-	}
-}
-
-// decideWorkCompleted handles EventTypeWorkCompleted with a rule-based decision.
-//
-// When a TaskWork completes, the agent should let the person know.
-// This creates a ChatWork whose ExecuteChat reads the latest DB messages —
-// if they have already said "never mind" or moved on, the agent sees that
-// context and responds naturally (e.g., "I already finished it!").
-func decideWorkCompleted(event *eventqueue.AgentEvent, personID int64) DecisionResult {
-	payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
-	if !ok || payload == nil {
-		applogger.Error("WorkCompleted event has invalid payload", "person_id", personID)
-		return DecisionResult{}
-	}
-
-	var background, reason, guidance string
-	// Use originatingaction.Actioncontext if available.
-	if payload.TriggerAction != nil {
-		background = payload.TriggerAction.Background
-		reason = payload.TriggerAction.Reason
-	} else {
-		background = "A work I was doing has completed."
-		reason = "I should let them know the result."
-	}
-
-	if payload.Status == "success" {
-		guidance = fmt.Sprintf("I finished the task: %s. I should let them know the result.", payload.Guidance)
-	} else {
-		guidance = fmt.Sprintf("I couldn't finish the task: %s. I should let them know what happened and why.", payload.Guidance)
-	}
-
-	applogger.Info("Decision made (rule-based, work completed)",
-		"person_id", personID,
-		"work_id", payload.WorkID,
-		"status", payload.Status,
-		"action", action.Chat,
-	)
-
-	return DecisionResult{
-		Actions: []action.Action{{
-			Type:       action.Chat,
-			Background: background,
-			Reason:     reason,
-			ChatPlan:   &action.ChatPlan{Guidance: guidance},
-		}},
 	}
 }
 
@@ -341,7 +299,10 @@ func buildEnergyDynamicSuffix(source SituationSource, currentEnergy int) string 
 	)
 }
 
-// decideWithLLM uses LLM to decide whether to create new work or route to an existing one.
+// decideWithLLM uses the LLM to decide how to handle an external event. It is
+// shared by all event types whose decision is LLM-based (private chat messages
+// and biography events); each event type contributes its own comprehension
+// context via buildComprehensionContext.
 func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sameSessionWorks []*work) DecisionResult {
 	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
@@ -369,6 +330,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 
 	comprehensionContext := buildComprehensionContext(comprehension)
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
+	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID)
 
 	agentDescription := a.Config.CharacterSettings
 	bio := a.Person.Bio
@@ -384,7 +346,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
 		a.Person.Name, agentDescription, bio,
-		eventDescription, comprehensionContext, activeWorksContext,
+		eventDescription, comprehensionContext, activeWorksContext, completedWorksContext,
 		sessionsContext, personsContext,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
@@ -405,7 +367,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 		{Role: "user", Content: prompt},
 	}, llm.JSONSchemaDefinition{
 		Name:        "Decision",
-		Description: "Agent's decision on how to handle a message",
+		Description: "Agent's decision on how to handle an incoming event",
 		Strict:      true,
 		Schema:      schema,
 	})
@@ -434,10 +396,24 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 		"action_count", len(decision.Actions),
 	)
 
-	// Validate the LLM's decision — invalid actions are removed
+	// Validate the LLM's decision — invalid actions are removed.
 	validActions := filterValidActions(decision.Actions, sameSessionWorks, situation)
+
+	// Distinguish a legitimate empty decision from an invalidated one:
+	//   - The LLM returning zero actions is a valid "do nothing" choice
+	//     (e.g. biography at birth, or choosing silence in chat).
+	//   - The LLM returning actions that were all filtered out is a real
+	//     anomaly worth surfacing as an error.
+	if len(decision.Actions) == 0 {
+		applogger.Info("Decision: agent chose to do nothing",
+			"person_id", personID,
+		)
+		return DecisionResult{}
+	}
 	if len(validActions) == 0 {
-		applogger.Error("Decision: no valid actions, ignoring")
+		applogger.Error("Decision: all actions were invalid and filtered out",
+			"person_id", personID,
+		)
 		return DecisionResult{}
 	}
 
@@ -774,6 +750,42 @@ func buildActiveWorksContext(works []*work) string {
 	return fmt.Sprintf("Active works:\n%s\n\n", strings.Join(parts, "\n"))
 }
 
+// buildCompletedWorksContext formats recently completed TaskWorks for the
+// Decide prompt. Unlike active works, completed works have already left the
+// in-memory active set, so they are loaded from the database. Surfacing them
+// lets the Decide LLM see what it has already finished in this session and
+// avoid re-doing (and re-delivering) work it has already completed.
+func buildCompletedWorksContext(personID, sessionID int64) string {
+	var records []model.Work
+	if err := database.DB.Where("person_id = ? AND session_id = ? AND status = ?",
+		personID, sessionID, model.WorkStatusCompleted).
+		Order("id DESC").Limit(5).Find(&records).Error; err != nil {
+		applogger.Error("buildCompletedWorksContext: failed to load completed works",
+			"person_id", personID, "session_id", sessionID, "error", err)
+		return ""
+	}
+	if len(records) == 0 {
+		return ""
+	}
+
+	var parts []string
+	for _, wr := range records {
+		parts = append(parts, fmt.Sprintf("- [Work #%d] %s", wr.ID, truncateWorkDescription(wr.Description)))
+	}
+	return fmt.Sprintf("Completed works in this session:\n%s\n\n", strings.Join(parts, "\n"))
+}
+
+// truncateWorkDescription bounds a work description to a fixed number of runes
+// so the completed-work listing stays compact in the Decide prompt.
+func truncateWorkDescription(s string) string {
+	const maxRunes = 120
+	r := []rune(s)
+	if len(r) <= maxRunes {
+		return s
+	}
+	return string(r[:maxRunes]) + "..."
+}
+
 // readLastNotesEntry reads the most recent note entry and formats it as
 // a progress summary for the Decide LLM. A single notes entry is naturally
 // bounded in size, so no truncation is applied.
@@ -787,26 +799,50 @@ func readLastNotesEntry(personID, sessionID int64) string {
 	return fmt.Sprintf("## [%s] %s\n\n%s", ts, entry.Type.String(), entry.Content)
 }
 
-// buildComprehensionContext formats comprehension results for the Decide prompt.
+// buildComprehensionContext formats the comprehension result for the Decide
+// prompt based on its type. It dispatches by Comprehension.Type so the Decide
+// phase stays decoupled from any single event-type-specific comprehension;
+// each branch renders only the context it actually has.
+func buildComprehensionContext(comprehension *comprehendTypes.Comprehension) string {
+	if comprehension == nil {
+		return ""
+	}
+	switch comprehension.Type {
+	case comprehendTypes.ComprehensionTypeChat:
+		return buildChatComprehensionContext(comprehension.Chat)
+	case comprehendTypes.ComprehensionTypeBiography:
+		// Biography comprehension carries no extra analysis: the origin
+		// statement is already the event description itself.
+		return ""
+	case comprehendTypes.ComprehensionTypeWorkCompleted:
+		// Work-completed comprehension carries no extra analysis: the event
+		// description (guidance plus status) is the understanding itself.
+		return ""
+	default:
+		return ""
+	}
+}
+
+// buildChatComprehensionContext formats comprehension results for the Decide prompt.
 // This provides the LLM with the agent's understanding of the message,
 // enabling informed decision-making instead of guessing from raw text.
-func buildComprehensionContext(comprehension *comprehend.ComprehensionResult) string {
-	if comprehension == nil {
+func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatComprehension) string {
+	if chatComprehension == nil {
 		return ""
 	}
 
 	var parts []string
 
-	if comprehension.PersonState != nil {
-		if comprehension.PersonState.Purpose != "" {
-			parts = append(parts, fmt.Sprintf("Inferred intent: %s", comprehension.PersonState.Purpose))
+	if chatComprehension.PersonState != nil {
+		if chatComprehension.PersonState.Purpose != "" {
+			parts = append(parts, fmt.Sprintf("Inferred intent: %s", chatComprehension.PersonState.Purpose))
 		}
-		if comprehension.PersonState.Situation != "" {
-			parts = append(parts, fmt.Sprintf("Situation context: %s", comprehension.PersonState.Situation))
+		if chatComprehension.PersonState.Situation != "" {
+			parts = append(parts, fmt.Sprintf("Situation context: %s", chatComprehension.PersonState.Situation))
 		}
 	}
 
-	if comprehension.NeedsClarification {
+	if chatComprehension.NeedsClarification {
 		parts = append(parts, "Needs clarification: true (query is vague)")
 	}
 
