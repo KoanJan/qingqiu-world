@@ -33,8 +33,20 @@
   },
   "viewTabs": {
     "chat": "Chat",
-    "activities": "Activities",
-    "received": "Received"
+    "activities": "Activities"
+  },
+  "mine": {
+    "title": "Mine"
+  },
+  "jinshu": {
+    "title": "Jinshu",
+    "received": "Received",
+    "sent": "Sent",
+    "empty": "No jinshu yet",
+    "from": "From",
+    "to": "To",
+    "noTopic": "(No topic)",
+    "files": "Files"
   },
   "agent": {
     "title": "Agent",

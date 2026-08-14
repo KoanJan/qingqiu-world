@@ -2,13 +2,12 @@ package comprehend
 
 import (
 	"context"
+	"fmt"
 
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend/chat"
 	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
-
-	applogger "qingqiu-world-server/internal/logger"
 )
 
 // Comprehend performs the comprehension phase: understanding the incoming
@@ -17,14 +16,18 @@ import (
 // It routes by event type to the appropriate event-type-specific sub-package.
 // For non-message events there is no "other party" to understand, so the event
 // description is used as-is and the full pipeline is skipped.
+//
+// It returns a non-nil Comprehension for every supported event type. For an
+// unsupported event type it returns (nil, error), indicating a programming
+// defect: a new event type was added without a comprehension branch.
 func Comprehend(
 	ctx context.Context,
 	event *eventqueue.AgentEvent,
 	ac *model.AgentConfig,
 	llmConfig *model.LLMConfig,
 	activeWorksSummary string,
-) *types.Comprehension {
-	c := &types.Comprehension{Type: types.ComprehensionTypeInvalid}
+) (*types.Comprehension, error) {
+	c := &types.Comprehension{}
 	switch event.Type {
 	case eventqueue.EventTypeNewPrivateChatMessage:
 		c.Type = types.ComprehensionTypeChat
@@ -41,15 +44,19 @@ func Comprehend(
 		// itself (guidance plus status) — no LLM pass is needed.
 		c.Type = types.ComprehensionTypeWorkCompleted
 		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeScheduled,
+		eventqueue.EventTypeAlarmCreated,
+		eventqueue.EventTypeGroupChatJoined,
+		eventqueue.EventTypeGroupChatLeft,
+		eventqueue.EventTypeSystemNotification:
+		// These events carry no "other party" to understand. Their event
+		// description is used as-is and no LLM pass is performed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
 	default:
-		applogger.Error(
-			"Comprehend error, event type not handle",
-			"event_id", event.EventID,
-			"event_type", event.Type,
-			"person_id", ac.PersonID,
-		)
+		return nil, fmt.Errorf("comprehend: unsupported event type %d (event_id=%d)", event.Type, event.EventID)
 	}
-	return c
+	return c, nil
 }
 
 // SignalNarrative triggers asynchronous per-agent narrative generation for a

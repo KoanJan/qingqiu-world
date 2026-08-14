@@ -59,6 +59,11 @@ var migrations = []migration{
 		description: "Drop works.type column (WorkType removed)",
 		fn:          migrate_0_1_5,
 	},
+	{
+		version:     "0.1.7",
+		description: "Rename agent_deliveries to jinshus (drop session/paths, add topic, rename remark→description)",
+		fn:          migrate_0_1_7,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

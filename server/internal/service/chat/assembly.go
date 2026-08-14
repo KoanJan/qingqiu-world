@@ -155,7 +155,7 @@ func formatTaskResultSection(taskResult *TaskResultForAssembly) string {
 		if taskResult.Result != "" {
 			result = taskResult.Result
 		}
-		return fmt.Sprintf("[Task Execution Result]\nThe following task was completed successfully:\n\n%s\n\n[Delivery Instructions]\nYou must now let the person you are talking to know about the completed task:\n- If files were delivered via deliver_to, the recipient can find them in their Received area — do NOT include file paths or directory locations\n- If the result is information, present it directly in your response\n- Use your character's tone and style\n\n---\n\n", result)
+		return fmt.Sprintf("[Task Execution Result]\nThe following task was completed successfully:\n\n%s\n\n[Delivery Instructions]\nYou must now let the person you are talking to know about the completed task:\n- If files were delivered via send_jinshu, the recipient can find them in their jinshu received area — do NOT include file paths or directory locations\n- If the result is information, present it directly in your response\n- Use your character's tone and style\n\n---\n\n", result)
 	}
 
 	notesSection := ""

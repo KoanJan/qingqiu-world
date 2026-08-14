@@ -7,7 +7,6 @@ import { formatMessageTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar';
 import AgentStatusBar from './AgentStatusBar';
 import ActivityList from './ActivityList';
-import ReceivedPanel from './ReceivedPanel';
 import { MarkdownRenderer } from 'pd-markdown/web';
 import { useSSE } from '../hooks/useSSE';
 import { useMessages } from '../hooks/useMessages';
@@ -28,7 +27,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
   const [agentStatus, setAgentStatus] = useState<number>(PARTICIPANT_STATUS_IDLE);
   const [sessionAgents, setSessionAgents] = useState<SessionAgentStatus[]>([]);
-  const [viewMode, setViewMode] = useState<'chat' | 'activity' | 'received'>('chat');
+  const [viewMode, setViewMode] = useState<'chat' | 'activity'>('chat');
   const [currentUserPersonId, setCurrentUserPersonId] = useState<number>(0);
   const tabContainerRef = useRef<HTMLDivElement>(null);
   const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
@@ -273,21 +272,12 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
             >
               {t('viewTabs.activities')}
             </button>
-            <button
-              ref={el => { tabRefs.current.received = el; }}
-              className={`chat-tab ${viewMode === 'received' ? 'active' : ''}`}
-              onClick={() => setViewMode('received')}
-            >
-              {t('viewTabs.received')}
-            </button>
           </div>
         )}
       </div>
 
       {viewMode === 'activity' ? (
         <ActivityList sessionId={session.id} agents={sessionAgents} />
-      ) : viewMode === 'received' ? (
-        <ReceivedPanel sessionId={session.id} />
       ) : (
         <>
           <div className="chat-messages" ref={chatMessagesRef}>

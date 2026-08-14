@@ -252,25 +252,40 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		return DecisionResult{}
 	case eventqueue.EventTypeScheduled:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
+		plan := &action.ChatPlan{
+			Guidance:  "I should respond to my alarm — this is a self-reminder I set earlier",
+			SessionID: event.SessionID,
+		}
+		// Fast path: a send_message alarm carries pre-computed content that is
+		// committed directly, skipping the LLM chat pipeline.
+		if p, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && p != nil &&
+			p.Action == model.ScheduledEventActionSendMessage && p.ActionContent != "" {
+			plan.Content = p.ActionContent
+		}
 		return DecisionResult{
 			Actions: []action.Action{
 				{
 					Type:     action.Chat,
-					ChatPlan: &action.ChatPlan{Guidance: "I should respond to my alarm — this is a self-reminder I set earlier"},
+					ChatPlan: plan,
 				},
 			},
 		}
+	case eventqueue.EventTypeAlarmCreated:
+		// Control-plane event: the runtime already registered the waiting
+		// goroutine as a side effect before entering the pipeline. There is
+		// nothing to decide cognitively, so produce no actions.
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "alarm_created event")
+		return DecisionResult{}
 	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
-	default:
-		applogger.Error("Unknown event type in Decide",
-			"event_type", event.Type,
-			"person_id", personID,
-		)
-		return DecisionResult{}
 	}
+
+	// Unreachable: Comprehend rejects unsupported event types before Decide is
+	// reached, so the switch above is exhaustive for every type that flows
+	// through the shared pipeline.
+	return DecisionResult{}
 }
 
 // buildEnergyDynamicSuffix constructs the energy info appended at the end of the
@@ -329,6 +344,9 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	}
 
 	comprehensionContext := buildComprehensionContext(comprehension)
+	if event.Type == eventqueue.EventTypeWorkCompleted {
+		comprehensionContext += buildWorkCompletedReplyAnchor(event.SessionID)
+	}
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
 	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID)
 
@@ -821,6 +839,21 @@ func buildComprehensionContext(comprehension *comprehendTypes.Comprehension) str
 	default:
 		return ""
 	}
+}
+
+// buildWorkCompletedReplyAnchor tells the Decide LLM the exact session a
+// work-completed reply must target. The WorkCompleted event carries its origin
+// session in event.SessionID, but the generic sessions list does not mark which
+// session the current event belongs to, so the LLM may otherwise pick a new or
+// unrelated session.
+func buildWorkCompletedReplyAnchor(sessionID int64) string {
+	if sessionID <= 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"\nReply target: this work completed in session_id=%d. Your reply must set chat_plan.session_id=%d (do not use -1).\n\n",
+		sessionID, sessionID,
+	)
 }
 
 // buildChatComprehensionContext formats comprehension results for the Decide prompt.

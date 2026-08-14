@@ -16,6 +16,7 @@
 //   - LOG_LEVEL: Logging level (default: INFO)
 //   - TASK_MAX_ITERATIONS: Maximum iterations for task loop (default: 50)
 //   - WORKSPACE_ROOT: Root directory for task workspace files (default: DATA_ROOT/workspace)
+//   - JINSHU_ROOT: Root directory for person-level jinshu (锦书) files (default: DATA_ROOT/jinshu)
 //   - CONTEXT_WINDOW_ITERATIONS: Number of recent iterations visible to agent (default: 10)
 //   - NOTES_MAX_CHARS: Maximum character limit for agent notes (default: 5000)
 package config
@@ -27,7 +28,7 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.6"
+const AppVersion = "0.1.7"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings
@@ -42,6 +43,7 @@ type Settings struct {
 	TaskMaxIterations     int    // Maximum iterations for task loop
 	WorkspaceRoot         string // Root directory for task workspace files
 	PrivateSpaceRoot      string // Root directory for agent private-space directories
+	JinshuRoot            string // Root directory for person-level jinshu (锦书) files
 	MinIterationWindow    int    // Minimum iterations visible to agent (anchor size)
 	MaxIterationWindow    int    // Maximum iterations before bulk-shrink triggers
 	NotesMaxChars         int    // Maximum character limit for agent notes
@@ -60,6 +62,7 @@ func Init() {
 		TaskMaxIterations:     getEnvInt("TASK_MAX_ITERATIONS", 300),
 		WorkspaceRoot:         expandHome(getEnv("WORKSPACE_ROOT", "")),
 		PrivateSpaceRoot:      expandHome(getEnv("PRIVATE_SPACE_ROOT", "")),
+		JinshuRoot:            expandHome(getEnv("JINSHU_ROOT", "")),
 		MinIterationWindow:    getEnvInt("MIN_ITERATION_WINDOW", 10),
 		MaxIterationWindow:    getEnvInt("MAX_ITERATION_WINDOW", 100),
 		NotesMaxChars:         getEnvInt("NOTES_MAX_CHARS", 10000),
@@ -100,6 +103,17 @@ func (s *Settings) GetPrivateSpaceRoot() string {
 		return s.PrivateSpaceRoot
 	}
 	return filepath.Join(s.DataRoot, "private_space")
+}
+
+// GetJinshuRoot returns the jinshu (锦书) root directory path.
+// Falls back to DATA_ROOT/jinshu if JINSHU_ROOT is not explicitly set.
+// Jinshu is an independent person-level feature, so its files are stored at the
+// same level as workspace and private-space — not under the workspace root.
+func (s *Settings) GetJinshuRoot() string {
+	if s.JinshuRoot != "" {
+		return s.JinshuRoot
+	}
+	return filepath.Join(s.DataRoot, "jinshu")
 }
 
 // GetAvatarsDir returns the directory path for agent avatar images.

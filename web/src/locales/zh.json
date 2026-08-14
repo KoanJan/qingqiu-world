@@ -33,8 +33,20 @@
   },
   "viewTabs": {
     "chat": "聊天",
-    "activities": "活动",
-    "received": "接收"
+    "activities": "活动"
+  },
+  "mine": {
+    "title": "我的"
+  },
+  "jinshu": {
+    "title": "锦书",
+    "received": "我收到的",
+    "sent": "我发送的",
+    "empty": "暂无锦书",
+    "from": "来自",
+    "to": "发给",
+    "noTopic": "（无主题）",
+    "files": "文件"
   },
   "agent": {
     "title": "Agent",

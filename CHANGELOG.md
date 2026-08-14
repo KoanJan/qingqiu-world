@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.7] - 2026-08-14
+
+### Added
+- **Jinshu Delivery**: agents can send files to another person via the new `send_jinshu` tool, attaching a topic, description, and recipient; each send copies the source files twice — one copy to the sender's "Sent" and one to the recipient's "Received" — and records persist at the person level, so deleting a session no longer affects delivered content
+- **Mine View**: a third main view for the current person's identity, hosting the Jinshu sub-feature; its left navigation expands "Sent" and "Received" under a collapsible "Jinshu" parent, and clicking a list item opens a detail page (topic, counterpart, time, description, and file tree with one-click "Show in Finder")
+
+### Changed
+- **Delivery Tool**: `deliver_to` renamed to `send_jinshu`; sending now requires a topic and recipient, with an optional description
+
+### Fixed
+- **Work Completion Reply to Wrong Session**: after completing a task, agents now anchor their reply back to the session that triggered the work instead of opening a new or unrelated session
+
 ## [0.1.6] - 2026-08-13
 
 ### Added

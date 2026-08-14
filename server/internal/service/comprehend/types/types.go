@@ -17,9 +17,13 @@ import (
 type ComprehensionType int
 
 const (
-	// ComprehensionTypeInvalid marks a Comprehension that matched no supported
-	// event type; its Chat payload must not be relied upon.
-	ComprehensionTypeInvalid ComprehensionType = iota
+	// ComprehensionTypeNone marks a comprehension for an event that carries
+	// no cognitive content to interpret (scheduled alarm, alarm creation,
+	// group-chat membership change, system notification). It is the zero
+	// value: a zero-value Comprehension therefore means "nothing was
+	// comprehended", never an error. The event description is used as-is and
+	// no LLM pass is performed.
+	ComprehensionTypeNone ComprehensionType = iota
 	// ComprehensionTypeChat marks a private chat message comprehension.
 	ComprehensionTypeChat
 	// ComprehensionTypeBiography marks a biography event comprehension. A

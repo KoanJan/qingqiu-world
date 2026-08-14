@@ -234,16 +234,23 @@ export interface ActivityEvent {
   agent_id: number;
 }
 
-export interface ReceivedFileEntry {
+export interface JinshuFileEntry {
   name: string;
   path: string;
   local_path?: string;
   size: number;
   is_dir: boolean;
-  children: ReceivedFileEntry[];
+  children: JinshuFileEntry[];
 }
 
-export interface ReceivedDelivery {
-  name: string;
-  files: ReceivedFileEntry[];
+export interface Jinshu {
+  id: number;
+  from_person_id: number;
+  to_person_id: number;
+  from_name: string;
+  to_name: string;
+  topic: string;
+  description: string;
+  created_at: string;
+  files: JinshuFileEntry[];
 }

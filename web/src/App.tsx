@@ -1,5 +1,6 @@
 import { useState, useEffect } from 'react';
 import { Tooltip, Spin, message, Button } from 'antd';
+import { DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import useScrolling from './hooks/useScrolling';
 import useAppearance, { getBackgroundUrl } from './hooks/useAppearance';
@@ -19,6 +20,7 @@ import KnowledgeBaseDetail from './components/KnowledgeBaseDetail';
 import SystemLLMConfigForm from './components/SystemLLMConfigForm';
 import PublicExperienceList from './components/PublicExperienceList';
 import PublicExperienceDetail from './components/PublicExperienceDetail';
+import JinshuPanel from './components/JinshuPanel';
 import ConfigIcon from './components/ConfigIcon';
 import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, initApiClient } from './services/api';
 import { logger } from './logger';
@@ -29,7 +31,10 @@ import './App.css';
 
 // Big view ring: each click of the switch button advances to the next view.
 // To add a new big view, append its identifier to this array.
-const RING = ['chat', 'settings'] as const;
+const RING = ['chat', 'mine', 'settings'] as const;
+
+// Identifier of a big view in the ring.
+type RingKey = typeof RING[number];
 
 // Settings sub-view identifiers (navigation within the settings big view).
 // 'overview' is gone — the two-pane layout keeps a persistent left nav, so
@@ -58,6 +63,13 @@ const SETTINGS_CARDS: { key: SettingsSubview; iconType: IconType }[] = [
   { key: 'user', iconType: 'user' },
 ];
 
+// Mine sub-view identifiers (navigation within the mine big view).
+// Jinshu (锦书) has two children: received and sent.
+type MineSubview = 'jinshu-received' | 'jinshu-sent';
+
+// Jinshu's child navigation items shown under the collapsible "jinshu" parent.
+const MINE_CHILDREN: MineSubview[] = ['jinshu-received', 'jinshu-sent'];
+
 function App() {
   const { t } = useTranslation();
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
@@ -71,10 +83,18 @@ function App() {
   // Visual order of panels in the track. The current panel is always on the
   // left (order 1) so that translateX(-100%) slides it out to the left
   // and reveals the next panel from the right.
-  const [panelOrder, setPanelOrder] = useState<{ chat: number; settings: number }>({ chat: 1, settings: 2 });
+  const [panelOrder, setPanelOrder] = useState<Record<RingKey, number>>({
+    chat: 1,
+    mine: 2,
+    settings: 3,
+  });
   // Current subview within the settings big view. Defaults to 'user' — always
   // available (no embedding dependency), a neutral entry point.
   const [settingsSubview, setSettingsSubview] = useState<SettingsSubview>('user');
+  // Current subview within the mine big view.
+  const [mineSubview, setMineSubview] = useState<MineSubview>('jinshu-received');
+  // Whether the jinshu parent nav group is expanded.
+  const [mineNavOpen, setMineNavOpen] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
   const [systemLLMRefreshKey, setSystemLLMRefreshKey] = useState(0);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
@@ -243,6 +263,11 @@ function App() {
     custom: t('settings.custom'),
   };
 
+  const mineLabelMap: Record<MineSubview, string> = {
+    'jinshu-received': t('jinshu.received'),
+    'jinshu-sent': t('jinshu.sent'),
+  };
+
   // Advance to the next big view in the ring. Always slides left.
   const handleSwitchBigView = () => {
     if (sliding) return;
@@ -259,10 +284,14 @@ function App() {
     if (!sliding) return;
     setSliding(false);
     setNoTransition(true);
-    setPanelOrder({
-      chat: viewIndex === 0 ? 1 : 2,
-      settings: viewIndex === 1 ? 1 : 2,
-    });
+    // Put the now-current view at order 1 (left) and the next view at order 2
+    // (right); the remaining view sits further right, off-screen. This resets
+    // the track so the next switch is another leftward slide.
+    const nextOrder = {} as Record<RingKey, number>;
+    for (let i = 0; i < RING.length; i++) {
+      nextOrder[RING[(viewIndex + i) % RING.length]] = i + 1;
+    }
+    setPanelOrder(nextOrder);
     // Use double rAF to ensure the noTransition frame is painted before
     // re-enabling transitions.
     requestAnimationFrame(() => {
@@ -467,6 +496,16 @@ function App() {
     return renderer ? renderer() : null;
   };
 
+  const renderMinePanel = () => {
+    if (mineSubview === 'jinshu-received') {
+      return <JinshuPanel direction="received" />;
+    }
+    if (mineSubview === 'jinshu-sent') {
+      return <JinshuPanel direction="sent" />;
+    }
+    return null;
+  };
+
   // Wait for appearance settings to load from the backend before rendering
   // anything — this ensures language, background, etc. are correct on first paint.
   if (appearanceLoading) {
@@ -570,6 +609,55 @@ function App() {
                       setCurrentSession(prev => prev ? { ...prev, id: sessionId } : null);
                     }}
                   />
+                </ResizableCard>
+              </div>
+            </div>
+
+            {/* Mine big view: two-pane (left nav + right detail), mirroring
+                the settings big view's sidebar/content treatment. */}
+            <div className="app-bigview-mine" style={{ order: panelOrder.mine }}>
+              <ResizableCard
+                defaultWidth={220}
+                minWidth={180}
+                maxWidth={320}
+                resizeSide="right"
+                className="settings-sidebar-wrapper"
+              >
+                <div className="settings-sidebar">
+                  <div className="settings-sidebar-title">{t('mine.title')}</div>
+                  <nav className="settings-nav">
+                    <div className="settings-nav-group">
+                      <button
+                        type="button"
+                        className="settings-nav-item"
+                        onClick={() => setMineNavOpen(prev => !prev)}
+                      >
+                        <ConfigIcon type="library" size={28} iconSize={14} borderRadius="6px" marginBottom={0} />
+                        <span className="settings-nav-label">{t('jinshu.title')}</span>
+                        <DownOutlined className={`nav-chevron${mineNavOpen ? ' open' : ''}`} />
+                      </button>
+                      {mineNavOpen && (
+                        <div className="settings-nav-children">
+                          {MINE_CHILDREN.map((key) => (
+                            <button
+                              key={key}
+                              type="button"
+                              className={`settings-nav-item settings-nav-child${mineSubview === key ? ' active' : ''}`}
+                              onClick={() => setMineSubview(key)}
+                            >
+                              <span className="settings-nav-label">{mineLabelMap[key]}</span>
+                            </button>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+                  </nav>
+                </div>
+              </ResizableCard>
+
+              <div className="app-content">
+                <ResizableCard flex className="settings-content-wrapper">
+                  {renderMinePanel()}
                 </ResizableCard>
               </div>
             </div>

@@ -4,7 +4,9 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -14,7 +16,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
-	"qingqiu-world-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/jinshu"
 )
 
 // Handler handles core API HTTP requests.
@@ -107,157 +109,120 @@ func (h *Handler) CreateOrUpdateUserProfile(c *gin.Context) {
 	})
 }
 
-// receivedFileEntry represents a file or directory in a delivery tree.
-type receivedFileEntry struct {
-	Name      string              `json:"name"`
-	Path      string              `json:"path"`
-	LocalPath string              `json:"local_path,omitempty"`
-	Size      int64               `json:"size"`
-	IsDir     bool                `json:"is_dir"`
-	Children  []receivedFileEntry `json:"children"`
+// jinshuFileEntry represents a file or directory in a jinshu file tree.
+type jinshuFileEntry struct {
+	Name      string            `json:"name"`
+	Path      string            `json:"path"`
+	LocalPath string            `json:"local_path,omitempty"`
+	Size      int64             `json:"size"`
+	IsDir     bool              `json:"is_dir"`
+	Children  []jinshuFileEntry `json:"children"`
 }
 
-// receivedDeliveryEntry represents one delivery directory with its file tree.
-type receivedDeliveryEntry struct {
-	Name  string              `json:"name"`
-	Files []receivedFileEntry `json:"files"`
+// jinshuEntry represents one jinshu record with its file tree and resolved
+// sender/recipient names for display.
+type jinshuEntry struct {
+	ID           int64             `json:"id"`
+	FromPersonID int64             `json:"from_person_id"`
+	ToPersonID   int64             `json:"to_person_id"`
+	FromName     string            `json:"from_name"`
+	ToName       string            `json:"to_name"`
+	Topic        string            `json:"topic"`
+	Description  string            `json:"description"`
+	CreatedAt    time.Time         `json:"created_at"`
+	Files        []jinshuFileEntry `json:"files"`
 }
 
-// GetReceivedDeliveries lists all delivery directories and their file trees
-// under the user's received/ directory for a given session.
-func (h *Handler) GetReceivedDeliveries(c *gin.Context) {
-	sessionID := getPathID(c)
+// GetSentJinshus lists the current user's sent jinshu records.
+func (h *Handler) GetSentJinshus(c *gin.Context) {
+	h.listJinshus(c, "sent")
+}
 
-	_, err := dops.GetSession(sessionID)
-	if err != nil {
-		response.NotFound(c, "Session not found")
-		return
-	}
+// GetReceivedJinshus lists the current user's received jinshu records.
+func (h *Handler) GetReceivedJinshus(c *gin.Context) {
+	h.listJinshus(c, "received")
+}
 
-	// Get current user's PersonID for received directory
+// listJinshus returns jinshu records for the current user in the given
+// direction ("sent" or "received"), each with its file tree and resolved names.
+func (h *Handler) listJinshus(c *gin.Context, direction string) {
 	userPerson, err := dops.GetCurrentUserPerson()
 	if err != nil {
 		response.BadRequest(c, "No user profile found")
 		return
 	}
 
-	receivedDir := workspace.GetReceivedDir(userPerson.ID, sessionID)
-
-	var deliveries []receivedDeliveryEntry
-
-	entries, err := os.ReadDir(receivedDir)
-	if err != nil {
-		// Directory doesn't exist yet — return empty list
-		response.Success(c, []receivedDeliveryEntry{})
+	query := database.DB.Model(&model.Jinshu{})
+	baseDir := ""
+	switch direction {
+	case "sent":
+		query = query.Where("from_person_id = ?", userPerson.ID)
+		baseDir = jinshu.SentDir(userPerson.ID)
+	case "received":
+		query = query.Where("to_person_id = ?", userPerson.ID)
+		baseDir = jinshu.ReceivedDir(userPerson.ID)
+	default:
+		applogger.Error("listJinshus: unknown direction", "direction", direction)
+		response.InternalError(c, "Invalid direction")
 		return
 	}
 
-	for _, entry := range entries {
-		if !entry.IsDir() {
-			continue
-		}
+	var records []model.Jinshu
+	if err := query.Order("id DESC").Find(&records).Error; err != nil {
+		applogger.Error("failed to list jinshus", "direction", direction, "error", err)
+		response.InternalError(c, "Failed to list jinshus")
+		return
+	}
 
-		deliveryPath := filepath.Join(receivedDir, entry.Name())
-		files := walkDeliveryFiles(deliveryPath)
+	names := resolveJinshuPersonNames(records)
 
-		deliveries = append(deliveries, receivedDeliveryEntry{
-			Name:  entry.Name(),
-			Files: files,
+	entries := make([]jinshuEntry, 0, len(records))
+	for _, r := range records {
+		dir := filepath.Join(baseDir, strconv.FormatInt(r.ID, 10))
+		entries = append(entries, jinshuEntry{
+			ID:           r.ID,
+			FromPersonID: r.FromPersonID,
+			ToPersonID:   r.ToPersonID,
+			FromName:     names[r.FromPersonID],
+			ToName:       names[r.ToPersonID],
+			Topic:        r.Topic,
+			Description:  r.Description,
+			CreatedAt:    r.CreatedAt,
+			Files:        walkJinshuFiles(dir),
 		})
 	}
 
-	response.Success(c, deliveries)
+	response.Success(c, entries)
 }
 
-// walkDeliveryFiles builds a directory tree from the delivery directory.
-func walkDeliveryFiles(dirPath string) []receivedFileEntry {
-	var root []receivedFileEntry
-
-	filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
-		if err != nil {
-			return nil
-		}
-		// Skip the root dir itself
-		if path == dirPath {
-			return nil
-		}
-
-		relPath, _ := filepath.Rel(dirPath, path)
-		parts := strings.Split(filepath.ToSlash(relPath), "/")
-		node := receivedFileEntry{
-			Name:  info.Name(),
-			Path:  filepath.ToSlash(relPath),
-			IsDir: info.IsDir(),
-		}
-		if info.IsDir() {
-			node.Children = []receivedFileEntry{}
-		} else {
-			node.LocalPath = path
-			node.Size = info.Size()
-		}
-
-		// Find or create parent directory nodes along the path
-		current := &root
-		for i := 0; i < len(parts)-1; i++ {
-			dirName := parts[i]
-			// Find existing dir or create one
-			found := false
-			for j := range *current {
-				if (*current)[j].Name == dirName && (*current)[j].IsDir {
-					current = &(*current)[j].Children
-					found = true
-					break
-				}
-			}
-			if !found {
-				dirPath := strings.Join(parts[:i+1], "/")
-				newDir := receivedFileEntry{
-					Name:     dirName,
-					Path:     dirPath,
-					IsDir:    true,
-					Children: []receivedFileEntry{},
-				}
-				*current = append(*current, newDir)
-				current = &(*current)[len(*current)-1].Children
-			}
-		}
-
-		// Add the node itself (file or leaf directory)
-		if !info.IsDir() || len(parts) > 0 {
-			// Only append if not already added as intermediate dir
-			alreadyAdded := false
-			for _, c := range *current {
-				if c.Name == node.Name && c.IsDir == node.IsDir {
-					alreadyAdded = true
-					break
-				}
-			}
-			if !alreadyAdded {
-				*current = append(*current, node)
-			}
-		}
-
-		return nil
-	})
-
-	return root
-}
-
-// GetReceivedFile returns the content of a file in the user's received/ directory.
-// Query params: delivery=N (required), path=xxx (required)
-func (h *Handler) GetReceivedFile(c *gin.Context) {
-	sessionID := getPathID(c)
-	delivery := c.Query("delivery")
-	filePath := c.Query("path")
-
-	if delivery == "" || filePath == "" {
-		response.BadRequest(c, "delivery and path query parameters are required")
-		return
+// resolveJinshuPersonNames resolves names for all sender/recipient persons
+// referenced by the given jinshu records.
+func resolveJinshuPersonNames(records []model.Jinshu) map[int64]string {
+	idSet := make(map[int64]struct{})
+	for _, r := range records {
+		idSet[r.FromPersonID] = struct{}{}
+		idSet[r.ToPersonID] = struct{}{}
 	}
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	names, err := dops.GetPersonNames(ids)
+	if err != nil {
+		applogger.Error("failed to resolve jinshu person names", "error", err)
+		return map[int64]string{}
+	}
+	return names
+}
 
-	var session model.Session
-	if err := database.DB.First(&session, sessionID).Error; err != nil {
-		response.NotFound(c, "Session not found")
+// GetJinshuFile returns the content of a file within a jinshu directory.
+// The requester must be either the sender or the recipient of the jinshu.
+// Query param: path=xxx (required)
+func (h *Handler) GetJinshuFile(c *gin.Context) {
+	id := getPathID(c)
+	filePath := c.Query("path")
+	if filePath == "" {
+		response.BadRequest(c, "path query parameter is required")
 		return
 	}
 
@@ -267,19 +232,28 @@ func (h *Handler) GetReceivedFile(c *gin.Context) {
 		return
 	}
 
-	// Security: validate delivery name contains only safe characters
-	for _, ch := range delivery {
-		if !((ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_') {
-			response.BadRequest(c, "invalid delivery name")
-			return
-		}
+	var record model.Jinshu
+	if err := database.DB.First(&record, id).Error; err != nil {
+		response.NotFound(c, "Jinshu not found")
+		return
 	}
 
-	receivedDir := workspace.GetReceivedDir(userPerson.ID, sessionID)
-	fullPath := filepath.Join(receivedDir, delivery, filepath.Clean(filePath))
+	var baseDir string
+	switch {
+	case record.FromPersonID == userPerson.ID:
+		baseDir = jinshu.SentDir(userPerson.ID)
+	case record.ToPersonID == userPerson.ID:
+		baseDir = jinshu.ReceivedDir(userPerson.ID)
+	default:
+		// Neither sender nor recipient — hide the record's existence.
+		response.NotFound(c, "Jinshu not found")
+		return
+	}
 
-	// Security: ensure the resolved path is within the received/ directory
-	if !strings.HasPrefix(fullPath, receivedDir) {
+	fullPath := filepath.Join(baseDir, strconv.FormatInt(id, 10), filepath.Clean(filePath))
+
+	// Security: ensure the resolved path is within the jinshu base directory.
+	if !strings.HasPrefix(fullPath, baseDir) {
 		response.BadRequest(c, "invalid file path")
 		return
 	}
@@ -297,6 +271,79 @@ func (h *Handler) GetReceivedFile(c *gin.Context) {
 	c.Header("Content-Type", "application/octet-stream")
 	c.Header("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filepath.Base(filePath)))
 	c.Data(200, "application/octet-stream", data)
+}
+
+// walkJinshuFiles builds a directory tree from a jinshu directory.
+// The returned slice is always non-nil so it serializes to [] (never null).
+func walkJinshuFiles(dirPath string) []jinshuFileEntry {
+	root := []jinshuFileEntry{}
+
+	filepath.Walk(dirPath, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return nil
+		}
+		// Skip the root dir itself
+		if path == dirPath {
+			return nil
+		}
+
+		relPath, _ := filepath.Rel(dirPath, path)
+		parts := strings.Split(filepath.ToSlash(relPath), "/")
+		node := jinshuFileEntry{
+			Name:  info.Name(),
+			Path:  filepath.ToSlash(relPath),
+			IsDir: info.IsDir(),
+		}
+		if info.IsDir() {
+			node.Children = []jinshuFileEntry{}
+		} else {
+			node.LocalPath = path
+			node.Size = info.Size()
+		}
+
+		// Find or create parent directory nodes along the path.
+		current := &root
+		for i := 0; i < len(parts)-1; i++ {
+			dirName := parts[i]
+			found := false
+			for j := range *current {
+				if (*current)[j].Name == dirName && (*current)[j].IsDir {
+					current = &(*current)[j].Children
+					found = true
+					break
+				}
+			}
+			if !found {
+				parentRelPath := strings.Join(parts[:i+1], "/")
+				newDir := jinshuFileEntry{
+					Name:     dirName,
+					Path:     parentRelPath,
+					IsDir:    true,
+					Children: []jinshuFileEntry{},
+				}
+				*current = append(*current, newDir)
+				current = &(*current)[len(*current)-1].Children
+			}
+		}
+
+		// Add the node itself (file or leaf directory).
+		if !info.IsDir() || len(parts) > 0 {
+			alreadyAdded := false
+			for _, c := range *current {
+				if c.Name == node.Name && c.IsDir == node.IsDir {
+					alreadyAdded = true
+					break
+				}
+			}
+			if !alreadyAdded {
+				*current = append(*current, node)
+			}
+		}
+
+		return nil
+	})
+
+	return root
 }
 
 // ListMessages handles listing messages in a session.

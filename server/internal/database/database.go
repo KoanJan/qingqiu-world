@@ -132,7 +132,7 @@ func allModels() []any {
 		&model.PublicExperienceVector{},
 		&model.SystemLLMConfig{},
 		&model.UploadedSkill{},
-		&model.AgentDelivery{},
+		&model.Jinshu{},
 		&model.AgentState{},
 		&model.AgentEventBuffer{},
 		&model.AgentBiography{},

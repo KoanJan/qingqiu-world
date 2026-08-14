@@ -160,20 +160,20 @@ func fireScheduledEvent(event *model.ScheduledEvent) {
 	})
 }
 
-// handleAlarmCreated processes an EventTypeAlarmCreated event by loading the
-// scheduled event from the DB and registering a goroutine to wait for it.
-//
-// This is called from the runtime event loop when a tool creates a new alarm.
-func (r *agentRuntime) handleAlarmCreated(eventID int64) {
+// armScheduledEvent loads a scheduled event by ID and arms it for firing: it
+// fires immediately if the trigger time has already passed, otherwise it
+// registers a goroutine that waits until the trigger time. Called from the
+// runtime event loop when a new alarm is created (EventTypeAlarmCreated).
+func armScheduledEvent(eventID int64) {
 	event := &model.ScheduledEvent{}
 	if err := database.DB.First(event, eventID).Error; err != nil {
-		applogger.Error("handleAlarmCreated: failed to load scheduled event",
+		applogger.Error("armScheduledEvent: failed to load scheduled event",
 			"event_id", eventID, "error", err)
 		return
 	}
 
 	if event.Status != model.ScheduledEventStatusPending {
-		applogger.Info("handleAlarmCreated: event not pending, skipping",
+		applogger.Info("armScheduledEvent: event not pending, skipping",
 			"event_id", eventID, "status", event.Status)
 		return
 	}
@@ -181,7 +181,7 @@ func (r *agentRuntime) handleAlarmCreated(eventID int64) {
 	// If the trigger time has already passed (edge case: clock skew or delay),
 	// fire immediately instead of registering a goroutine.
 	if event.TriggerAt.Before(time.Now()) || event.TriggerAt.Equal(time.Now()) {
-		applogger.Info("handleAlarmCreated: trigger time already passed, firing immediately",
+		applogger.Info("armScheduledEvent: trigger time already passed, firing immediately",
 			"event_id", eventID, "trigger_at", event.TriggerAt)
 		fireScheduledEvent(event)
 		return

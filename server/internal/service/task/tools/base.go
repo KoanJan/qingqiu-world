@@ -24,16 +24,16 @@ type ToolName int
 
 // ToolName constants define all known tool identifiers using int enum values.
 const (
-	ToolNameBash               ToolName = iota // bash
-	ToolNameReadTextFile                       // read_text_file
-	ToolNameWriteTextFile                      // write_text_file
-	ToolNameEditTextFile                       // edit_text_file
-	ToolNameWriteNotes                         // write_notes
-	ToolNameWebSearch                          // web_search
-	ToolNameDeliverTo                          // deliver_to
-	ToolNameScanMyExperience                   // scan_my_experience
-	ToolNameRecallMyExperience                 // recall_my_experience
-	ToolNameSearchChatHistories                // search_chat_histories
+	ToolNameBash                ToolName = iota // bash
+	ToolNameReadTextFile                        // read_text_file
+	ToolNameWriteTextFile                       // write_text_file
+	ToolNameEditTextFile                        // edit_text_file
+	ToolNameWriteNotes                          // write_notes
+	ToolNameWebSearch                           // web_search
+	ToolNameSendJinshu                          // send_jinshu
+	ToolNameScanMyExperience                    // scan_my_experience
+	ToolNameRecallMyExperience                  // recall_my_experience
+	ToolNameSearchChatHistories                 // search_chat_histories
 )
 
 // nameStrings maps ToolName values to their string representation for LLM function calling.
@@ -44,7 +44,7 @@ var nameStrings = map[ToolName]string{
 	ToolNameEditTextFile:        "edit_text_file",
 	ToolNameWriteNotes:          "write_notes",
 	ToolNameWebSearch:           "web_search",
-	ToolNameDeliverTo:           "deliver_to",
+	ToolNameSendJinshu:          "send_jinshu",
 	ToolNameScanMyExperience:    "scan_my_experience",
 	ToolNameRecallMyExperience:  "recall_my_experience",
 	ToolNameSearchChatHistories: "search_chat_histories",

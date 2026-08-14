@@ -4,14 +4,13 @@
 //
 //	{workspaceRoot}/{person_id}/{session_id}/
 //	  ├── .meta/       — system-managed files (notes.jsonl, fingerprint.txt)
-//	  ├── output/      — agent's working output directory (read-write)
-//	  └── received/    — files delivered from other persons (read-only copies)
-//	      ├── delivery_1/
-//	      ├── delivery_2/
-//	      └── ...
+//	  └── output/      — agent's working output directory (read-write)
 //
 // Using person_id instead of agent_id unifies the user and agent directory
 // hierarchy under the Person model — no more special "0" value for users.
+//
+// The person-level jinshu (锦书) directory layout is owned by the jinshu
+// package, not here, since jinshu is an independent feature.
 package workspace
 
 import (
@@ -50,13 +49,6 @@ func GetOutputDir(personID, sessionID int64) string {
 	return filepath.Join(GetWorkspacePath(personID, sessionID), "output")
 }
 
-// GetReceivedDir returns the received directory path for files delivered
-// by other persons.
-// Path: {workspaceRoot}/{person_id}/{session_id}/received
-func GetReceivedDir(personID, sessionID int64) string {
-	return filepath.Join(GetWorkspacePath(personID, sessionID), "received")
-}
-
 // InitWorkspace creates the workspace directory structure for a session.
 // Notes (notes.jsonl) are created on first write, not pre-initialized.
 func InitWorkspace(personID, sessionID int64) string {
@@ -66,9 +58,6 @@ func InitWorkspace(personID, sessionID int64) string {
 
 	outputDir := GetOutputDir(personID, sessionID)
 	os.MkdirAll(outputDir, 0755)
-
-	receivedDir := GetReceivedDir(personID, sessionID)
-	os.MkdirAll(receivedDir, 0755)
 
 	return ws
 }

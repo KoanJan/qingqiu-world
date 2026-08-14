@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../logger';
-import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, ReceivedDelivery } from '../types';
+import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, Jinshu } from '../types';
 
 declare global {
   interface Window {
@@ -135,9 +135,14 @@ export const sessionApi = {
   update: (id: number, data: Partial<Session>) => api.put<Session>(`/sessions/${id}`, data),
   delete: (id: number) => api.delete(`/sessions/${id}`),
   getActivities: (id: number) => api.get<ActivityEvent[]>(`/sessions/${id}/activities`),
-  getReceivedDeliveries: (id: number) => api.get<ReceivedDelivery[]>(`/sessions/${id}/received/deliveries`),
-  getReceivedFileUrl: (id: number, delivery: string, path: string) =>
-    `${getDynamicServerBaseUrl()}/api/sessions/${id}/received/file?delivery=${encodeURIComponent(delivery)}&path=${encodeURIComponent(path)}`,
+};
+
+/** API client for jinshu (锦书) sent/received records. */
+export const jinshuApi = {
+  listSent: () => api.get<Jinshu[]>('/jinshus/sent'),
+  listReceived: () => api.get<Jinshu[]>('/jinshus/received'),
+  getFileUrl: (id: number, path: string) =>
+    `${getDynamicServerBaseUrl()}/api/jinshus/${id}/file?path=${encodeURIComponent(path)}`,
 };
 
 /** API client for message operations. */

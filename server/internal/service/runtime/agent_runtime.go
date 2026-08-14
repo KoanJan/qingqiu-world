@@ -185,10 +185,13 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		return false
 	}
 	if event.Type == eventqueue.EventTypeAlarmCreated {
+		// Control-plane side effect: arm the newly created alarm (fire now or
+		// register a waiting goroutine). There is no cognitive content to
+		// decide on, so this stays a side effect; the shared pipeline below
+		// runs and Decide returns no actions for this event type.
 		if p, ok := event.Payload.(*eventqueue.AlarmCreatedPayload); ok {
-			r.handleAlarmCreated(p.ScheduledEventID)
+			armScheduledEvent(p.ScheduledEventID)
 		}
-		return true
 	}
 	if event.Type == eventqueue.EventTypeBiography {
 		// A biography is the agent's own origin record. It records its
@@ -252,19 +255,17 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			return true
 		}
 	}
-	if event.Type == eventqueue.EventTypeScheduled {
-		if p, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && p.Action == model.ScheduledEventActionSendMessage && p.ActionContent != "" {
-			r.handleFastPathSendMessage(event.SessionID, p)
-			return true
-		}
-	}
 	a, err := agent.GetAgent(r.agentPersonID)
 	if err != nil {
 		applogger.Error("handleEvent: failed to load agent", "person_id", r.agentPersonID, "error", err)
 		return true
 	}
 	activeWorksSummary := buildActiveWorksSummary(r.activeWorks, event.SessionID)
-	c := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, activeWorksSummary)
+	c, err := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, activeWorksSummary)
+	if err != nil {
+		applogger.Error("handleEvent: comprehension failed", "person_id", r.agentPersonID, "error", err)
+		return true
+	}
 	situation := buildExternalSituation(event, c, state.Energy, activeWorksSummary)
 	// Do not pass the agent pointer across function boundaries — Decide will
 	// fetch its own copy via agent.GetAgent when it needs agent data.
@@ -405,6 +406,22 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 // chat.Executeaction.Chat and commits the result directly via the message commit
 // channel.
 func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, plan *action.ChatPlan) {
+	event := situation.Matter.Event
+
+	// A work always completes in the session where it was created. Anchor
+	// the reply to that session so the notification never lands in a new or
+	// unrelated conversation, regardless of what the Decide LLM selected.
+	if event != nil && event.Type == eventqueue.EventTypeWorkCompleted && event.SessionID > 0 {
+		if plan.SessionID != event.SessionID {
+			applogger.Info("executeChat: anchoring work-completed reply to origin session",
+				"agent_config_id", r.agentConfigID,
+				"llm_session_id", plan.SessionID,
+				"origin_session_id", event.SessionID,
+			)
+		}
+		plan.SessionID = event.SessionID
+	}
+
 	if plan.SessionID == 0 {
 		applogger.Error("executeChat: session_id is 0 (invalid), skipping",
 			"agent_config_id", r.agentConfigID,
@@ -413,7 +430,6 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 	}
 
 	var targetSessionID int64
-	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
 
 	if plan.UseNewSession() {
@@ -436,6 +452,18 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 		targetSessionID = newSessionID
 	} else {
 		targetSessionID = plan.SessionID
+	}
+
+	// Fast path: scheduled send_message carries pre-computed content. Commit
+	// it directly without loading session context or running the LLM pipeline.
+	if plan.Content != "" {
+		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusWorking)
+		r.messageCommitCh <- &commitRequest{
+			sessionID: targetSessionID,
+			content:   plan.Content,
+		}
+		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusIdle)
+		return
 	}
 
 	session, err := dops.GetSession(targetSessionID)
@@ -641,40 +669,6 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 		}
 	}
 	return nil
-}
-
-// ==========================================================================
-// Fast Path
-// ==========================================================================
-
-// handleFastPathSendMessage handles the fast path for scheduled events with
-// action=send_message. It directly commits a message with pre-computed content
-// through the serialized messageCommitCh, skipping the entire LLM pipeline.
-// No Work or Draft objects are created.
-func (r *agentRuntime) handleFastPathSendMessage(sessionID int64, payload *eventqueue.ScheduledEventPayload) {
-	applogger.Info("Fast path: sending pre-computed message for scheduled event",
-		"agent_config_id", r.agentConfigID,
-		"session_id", sessionID,
-		"scheduled_event_id", payload.ScheduledEventID,
-	)
-
-	// Set status to working before committing
-	r.weakUpdateAgentStatusInSession(sessionID, model.ParticipantStatusWorking)
-
-	// Commit the pre-computed message through the serialized channel.
-	r.messageCommitCh <- &commitRequest{
-		sessionID: sessionID,
-		content:   payload.ActionContent,
-	}
-
-	// Set status back to idle after dispatching the commit.
-	r.weakUpdateAgentStatusInSession(sessionID, model.ParticipantStatusIdle)
-
-	applogger.Info("Fast path message dispatched",
-		"agent_config_id", r.agentConfigID,
-		"session_id", sessionID,
-		"scheduled_event_id", payload.ScheduledEventID,
-	)
 }
 
 // alarmTriggerAtFormat is the only accepted time format for AlarmPlan.TriggerAt.
