@@ -51,6 +51,9 @@ const (
 	// Kept intentionally low (equal to CostPassive) so the agent does not
 	// avoid using its private space due to energy pressure.
 	CostPrivateSpace Cost = 1
+	// CostJinshuRead is the per-iteration cost for the dedicated jinshu-read
+	// loop. Kept equal to CostPassive so reading one's own delivery is cheap.
+	CostJinshuRead Cost = 1
 )
 
 // ErrInsufficientEnergy is returned when energy < cost.

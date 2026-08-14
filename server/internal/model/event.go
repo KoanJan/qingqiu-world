@@ -9,6 +9,7 @@ type EventType int
 const (
 	EventTypeMessage   EventType = iota + 1 // A message in a session (user or agent)
 	EventTypeBiography                      // An agent's origin record (its beginning in the world)
+	EventTypeJinshu                         // A jinshu delivery from one person to another
 )
 
 // Event represents an external event in the unified event table.

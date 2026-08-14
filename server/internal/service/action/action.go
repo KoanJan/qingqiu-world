@@ -41,6 +41,26 @@ const (
 	// serve as the Thoughts payload expressing what the agent wants to do there.
 	// Available during heartbeat. Runs a lightweight ReAct loop.
 	EnterPrivateSpace
+
+	// InspectJinshu reads the contents of a received jinshu through a dedicated
+	// lightweight loop (read + summarize tools only). It is separate from the
+	// full task loop — reading one's own delivery is perception, not a task.
+	InspectJinshu
+
+	// ListReceivedJinshu lists the agent's received jinshu through a paginated keyword
+	// search, so the agent can locate a jinshu_id before inspecting it.
+	ListReceivedJinshu
+
+	// SendJinshu sends files from the agent's private space to another person
+	// as a jinshu. This is the Decide-level "share a deliverable" action,
+	// distinct from EnterPrivateSpace (which is for working inside the space).
+	// Available during heartbeat. No iteration loop — direct delivery.
+	SendJinshu
+
+	// ListSentJinshu lists the agent's sent jinshu through a paginated keyword
+	// search, mirroring ListReceivedJinshu but over outbound deliveries instead of
+	// inbound ones. Available during external events only.
+	ListSentJinshu
 )
 
 // WorkPlan describes a task to be created via CreateTask action.
@@ -50,6 +70,39 @@ const (
 type WorkPlan struct {
 	Guidance string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
 	Metadata *task.Metadata `json:"-"` // System-generated traceability info, not written by LLM
+}
+
+// JinshuPlan describes a received jinshu the agent wants to read via the
+// InspectJinshu action. The dedicated jinshu-read loop uses Guidance as the
+// reading intent.
+type JinshuPlan struct {
+	JinshuID int64  `json:"jinshu_id" jsonschema:"description=ID of the received jinshu to read,required"`
+	Guidance string `json:"guidance" jsonschema:"description=Your internal intention: what you want to understand from this jinshu. Written in first-person.,required"`
+}
+
+// ListReceivedJinshuParams describes a paginated keyword search over the agent's received
+// jinshu, produced by the ListReceivedJinshu action.
+type ListReceivedJinshuParams struct {
+	Query string `json:"query,omitempty" jsonschema:"description=Optional keyword to filter jinshu by topic or description. Omit or empty to list all."`
+	Page  int    `json:"page" jsonschema:"description=Page number (1-based),required"`
+	Limit int    `json:"limit" jsonschema:"description=Results per page (1-50),required"`
+}
+
+// ListSentJinshuParams describes a paginated keyword search over the agent's sent
+// jinshu, produced by the ListSentJinshu action.
+type ListSentJinshuParams struct {
+	Query string `json:"query,omitempty" jsonschema:"description=Optional keyword to filter jinshu by topic or description. Omit or empty to list all."`
+	Page  int    `json:"page" jsonschema:"description=Page number (1-based),required"`
+	Limit int    `json:"limit" jsonschema:"description=Results per page (1-50),required"`
+}
+
+// SendJinshuPlan describes files the agent wants to send from its private
+// space to another person as a jinshu, produced by the SendJinshu action.
+type SendJinshuPlan struct {
+	ToPersonID  int64    `json:"to_person_id" jsonschema:"description=ID of the recipient person,required"`
+	Topic       string   `json:"topic" jsonschema:"description=Short subject/topic for the jinshu,required"`
+	Description string   `json:"description,omitempty" jsonschema:"description=Optional note describing what is being sent and why"`
+	Paths       []string `json:"paths" jsonschema:"description=List of file or directory paths relative to your private-space working directory,required"`
 }
 
 // ChatPlan describes a chat message delivery via the Chat action.
@@ -120,8 +173,12 @@ type BioUpdate struct {
 //   - CreateAlarm:  uses AlarmPlan (trigger_at + message + action + action_content)
 //   - UpdateBio:    uses BioUpdate (new bio text)
 //   - EnterPrivateSpace: uses Background+Reason as Thoughts (no plan struct)
+//   - InspectJinshu: uses JinshuPlan (jinshu_id + guidance)
+//   - ListReceivedJinshu: uses ListReceivedJinshuParams (query + page + limit)
+//   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
+//   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
 type Action struct {
-	Type ActionType `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm), 5=update_bio (update your self-introduction), 6=enter_private_space (enter your private space),enum=0,enum=1,enum=2,enum=3,enum=4,enum=5,enum=6,required"`
+	Type ActionType `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm), 5=update_bio (update your self-introduction), 6=enter_private_space (enter your private space), 7=inspect_jinshu (read a received jinshu's contents), 8=list_received_jinshu (list your received jinshu by keyword+page), 9=send_jinshu (send private-space files to a person as a jinshu), 10=list_sent_jinshu (list your sent jinshu by keyword+page),enum=0,enum=1,enum=2,enum=3,enum=4,enum=5,enum=6,enum=7,enum=8,enum=9,enum=10,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -129,9 +186,13 @@ type Action struct {
 	// Reason: deliberative choice — why this specific action over alternatives.
 	Reason string `json:"reason" jsonschema:"description=Why you chose this specific action rather than alternatives. What led to this choice.,required"`
 
-	ChatPlan     *ChatPlan     `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
-	WorkPlan     *WorkPlan     `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
-	WorkGuidance *WorkGuidance `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
-	AlarmPlan    *AlarmPlan    `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
-	BioUpdate    *BioUpdate    `json:"bio_update,omitempty" jsonschema:"description=When type is update_bio(5): the new bio text"`
+	ChatPlan                 *ChatPlan                 `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
+	WorkPlan                 *WorkPlan                 `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
+	WorkGuidance             *WorkGuidance             `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
+	AlarmPlan                *AlarmPlan                `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
+	BioUpdate                *BioUpdate                `json:"bio_update,omitempty" jsonschema:"description=When type is update_bio(5): the new bio text"`
+	JinshuPlan               *JinshuPlan               `json:"jinshu_plan,omitempty" jsonschema:"description=When type is inspect_jinshu(7): the jinshu reading plan"`
+	ListReceivedJinshuParams *ListReceivedJinshuParams `json:"list_received_jinshu_params,omitempty" jsonschema:"description=When type is list_received_jinshu(8): the paginated jinshu search params"`
+	SendJinshuPlan           *SendJinshuPlan           `json:"send_jinshu_plan,omitempty" jsonschema:"description=When type is send_jinshu(9): the jinshu delivery plan"`
+	ListSentJinshuParams     *ListSentJinshuParams     `json:"list_sent_jinshu_params,omitempty" jsonschema:"description=When type is list_sent_jinshu(10): the paginated sent-jinshu search params"`
 }

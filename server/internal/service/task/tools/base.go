@@ -34,6 +34,9 @@ const (
 	ToolNameScanMyExperience                    // scan_my_experience
 	ToolNameRecallMyExperience                  // recall_my_experience
 	ToolNameSearchChatHistories                 // search_chat_histories
+	ToolNameScanJinshu                          // scan_jinshu
+	ToolNameReadJinshu                          // read_jinshu
+	ToolNameCopyFromJinshu                      // copy_from_jinshu
 )
 
 // nameStrings maps ToolName values to their string representation for LLM function calling.
@@ -48,6 +51,9 @@ var nameStrings = map[ToolName]string{
 	ToolNameScanMyExperience:    "scan_my_experience",
 	ToolNameRecallMyExperience:  "recall_my_experience",
 	ToolNameSearchChatHistories: "search_chat_histories",
+	ToolNameScanJinshu:          "scan_jinshu",
+	ToolNameReadJinshu:          "read_jinshu",
+	ToolNameCopyFromJinshu:      "copy_from_jinshu",
 }
 
 // String returns the string representation of the ToolName for use in LLM function definitions.

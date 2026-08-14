@@ -5,6 +5,8 @@ import (
 	"os"
 	"strings"
 
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/privatespace"
@@ -95,7 +97,88 @@ func buildHeartbeatDescription(personID int64) string {
 	sessionsContext := buildSessionsContext(personID)
 	personsContext := buildContactablePersonsContext(personID)
 	privateSpaceContext := buildPrivateSpaceContext(personID)
-	return sessionsContext + personsContext + privateSpaceContext
+	jinshuContext := buildJinshuContext(personID)
+	return sessionsContext + personsContext + privateSpaceContext + jinshuContext
+}
+
+// jinshuContextRecent bounds how many recent received/sent jinshu records are
+// injected into the heartbeat prompt, matching the session context limit to
+// avoid prompt bloat.
+const jinshuContextRecent = 5
+
+// buildJinshuContext surveys the agent's recent jinshu (锦书) activity. The
+// received section includes the sender and read status; the sent section
+// includes the receiver but intentionally omits read status, which is
+// receiver-only information.
+func buildJinshuContext(personID int64) string {
+	received, err := dops.ListReceivedJinshu(personID, 0, jinshuContextRecent)
+	if err != nil {
+		applogger.Error("buildJinshuContext: failed to list received jinshu",
+			"person_id", personID, "error", err)
+		received = nil
+	}
+
+	sent, err := dops.ListSentJinshu(personID, 0, jinshuContextRecent)
+	if err != nil {
+		applogger.Error("buildJinshuContext: failed to list sent jinshu",
+			"person_id", personID, "error", err)
+		sent = nil
+	}
+
+	// Resolve the referenced sender/receiver names in one batch.
+	idSet := make(map[int64]struct{})
+	for _, r := range received {
+		idSet[r.FromPersonID] = struct{}{}
+	}
+	for _, r := range sent {
+		idSet[r.ToPersonID] = struct{}{}
+	}
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	names, err := dops.GetPersonNames(ids)
+	if err != nil {
+		applogger.Error("buildJinshuContext: failed to resolve person names", "error", err)
+		names = map[int64]string{}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n=== YOUR JINSHU (锦书) ===\n")
+
+	if len(received) == 0 {
+		sb.WriteString("Received: (none)\n")
+	} else {
+		sb.WriteString("Recently received:\n")
+		for _, r := range received {
+			sender := names[r.FromPersonID]
+			if sender == "" {
+				sender = fmt.Sprintf("person_%d", r.FromPersonID)
+			}
+			read := "unread"
+			if r.IsRead {
+				read = "read"
+			}
+			fmt.Fprintf(&sb, "- from %s, topic: %s, %s, %s\n",
+				sender, r.Topic, read, r.CreatedAt.Format("2006-01-02 15:04"))
+		}
+	}
+
+	if len(sent) == 0 {
+		sb.WriteString("Sent: (none)\n")
+	} else {
+		sb.WriteString("Recently sent:\n")
+		for _, r := range sent {
+			receiver := names[r.ToPersonID]
+			if receiver == "" {
+				receiver = fmt.Sprintf("person_%d", r.ToPersonID)
+			}
+			fmt.Fprintf(&sb, "- to %s, topic: %s, %s\n",
+				receiver, r.Topic, r.CreatedAt.Format("2006-01-02 15:04"))
+		}
+	}
+
+	return sb.String()
 }
 
 // buildPrivateSpaceContext surveys the agent's private-space state:

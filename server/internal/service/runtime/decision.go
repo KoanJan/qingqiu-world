@@ -32,7 +32,7 @@ func energyCost(src SituationSource) energy.Cost {
 }
 
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, character_settings, bio, message_content, comprehension_context, activeWorksContext, completedWorksContext, sessionsContext, personsContext, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, message_content, trigger_context, comprehension_context, activeWorksContext, completedWorksContext, sessionsContext, personsContext, energyDynamicSuffix
 //
 // The world rules are described in world.WorldDescriptions (stable prefix).
 // This template only adds the decision-specific instructions and concrete
@@ -97,6 +97,36 @@ Action types (use the integer value for the "type" field):
    - MUST include a "bio_update" object with "bio".
    - bio: A one-sentence self-introduction. Only use this when you feel your current bio is outdated or inaccurate.
 
+7. 6 (enter_private_space) — Enter your private space to recall or review what you have made or kept there, so you can answer questions about your own past actions, promises, or deliverables (e.g., someone asking "didn't you say you'd give me something?").
+   - No plan struct needed. Your "background" and "reason" together express what you want to recall or check.
+   - Your private space is yours alone. You are NOT obliged to do work for anyone there, and you are NOT obliged to reveal or tell anyone about anything in it — you have every right to keep it private, with no duty to share.
+   - Use this only to refresh your own memory or verify your own past output, not to be directed into performing tasks for someone else.
+
+8. 7 (inspect_jinshu) — Read the contents of a received jinshu through a dedicated read loop.
+   - MUST include a "jinshu_plan" object with "jinshu_id" and "guidance".
+   - jinshu_id: The ID of the received jinshu (from the event or from a prior list_received_jinshu result).
+   - guidance: Your internal intention — what you want to understand from this jinshu, written in first-person.
+   - Use this when you actually want to know the jinshu's file contents before reacting (e.g., before replying to the sender).
+
+9. 8 (list_received_jinshu) — Search your received jinshu by keyword with pagination.
+   - MUST include a "list_received_jinshu_params" object with "page" and "limit"; "query" is optional.
+   - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
+   - page: 1-based page number. limit: results per page (1-50).
+   - Use this when the current event references a jinshu but does not give its jinshu_id, so you need to find it first.
+
+10. 9 (send_jinshu) — Send files from your private space to another Person as a jinshu (锦书).
+   - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
+   - to_person_id: The recipient person ID (from the contactable persons list). Must not be yourself.
+   - topic: A short subject/topic for the jinshu.
+   - paths: List of file or directory paths relative to your private-space working directory.
+   - Use this to share a deliverable you already made (e.g., a game, a file) without entering your private space.
+
+11. 10 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
+   - MUST include a "list_sent_jinshu_params" object with "page" and "limit"; "query" is optional.
+   - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
+   - page: 1-based page number. limit: results per page (1-50).
+   - Use this to recall what you have already sent to someone, e.g., to verify whether you actually delivered something before.
+
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request (type=1 create_task), not a route or cancel.
 
 If no action is needed, return an empty actions list.
@@ -118,6 +148,7 @@ Decision rules (apply in order):
 
 Event: %s
 
+%s
 %s%s%s
 %s
 %s
@@ -194,9 +225,18 @@ If you decide to act, you have these kinds of action available:
 4. 6 (enter_private_space) — Enter your private space — a personal, persistent directory that belongs to you alone.
    - No plan struct needed. Your "background" and "reason" together express what you want to do there.
    - Your private space is yours to use as you see fit — there are no prescribed activities.
+   - Everything in your private space is private to you. You are not obliged to reveal or tell anyone about any of it — you have no duty to share, and you may keep it entirely to yourself.
    - You have access to a bash tool to run shell commands within this directory, so you can do anything you want here.
    - The space is persistent — files and records you create now will still be there next time.
    - You have a budget of steps; when you're done, simply stop.
+   - If you only need to hand off files you already made, prefer type=9 (send_jinshu) directly; a send_jinshu tool is also available once inside.
+
+5. 9 (send_jinshu) — Send files from your private space to another Person as a jinshu (锦书).
+   - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
+   - to_person_id: The recipient person ID (from contactable persons). Must not be yourself.
+   - topic: A short subject/topic for the jinshu.
+   - paths: List of file or directory paths relative to your private-space working directory.
+   - Use this to share a deliverable you already made without entering your private space.
 
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
@@ -276,7 +316,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		// nothing to decide cognitively, so produce no actions.
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "alarm_created event")
 		return DecisionResult{}
-	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted:
+	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
@@ -314,6 +354,26 @@ func buildEnergyDynamicSuffix(source SituationSource, currentEnergy int) string 
 	)
 }
 
+// buildTriggerContext renders the event's TriggerAction — the agent's own
+// earlier intention that produced this event — for the Decide prompt. It
+// returns an empty string for externally-originated events with no trigger
+// action, in which case the corresponding template line stays blank.
+func buildTriggerContext(event *eventqueue.AgentEvent) string {
+	ta := event.TriggerAction
+	if ta == nil || (ta.Background == "" && ta.Reason == "") {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("[Triggered by your own earlier intention]")
+	if ta.Background != "" {
+		fmt.Fprintf(&sb, " Background: %s", ta.Background)
+	}
+	if ta.Reason != "" {
+		fmt.Fprintf(&sb, " Reason: %s", ta.Reason)
+	}
+	return sb.String()
+}
+
 // decideWithLLM uses the LLM to decide how to handle an external event. It is
 // shared by all event types whose decision is LLM-based (private chat messages
 // and biography events); each event type contributes its own comprehension
@@ -347,6 +407,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		comprehensionContext += buildWorkCompletedReplyAnchor(event.SessionID)
 	}
+	triggerContext := buildTriggerContext(event)
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
 	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID)
 
@@ -364,7 +425,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
 		a.Person.Name, agentDescription, bio,
-		eventDescription, comprehensionContext, activeWorksContext, completedWorksContext,
+		eventDescription, triggerContext, comprehensionContext, activeWorksContext, completedWorksContext,
 		sessionsContext, personsContext,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
@@ -529,10 +590,11 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 // Pure validation — no modifications, only checks and logging.
 //
 // situation.Source controls which action types are accepted:
-//   - External: all action types valid (subject to per-type checks)
-//   - Internal (heartbeat): only action.Chat and action.CreateAlarm; CreateTask,
-//     RouteTask, and action.CancelTask are rejected because the heartbeat path
-//     has no event to route and no active-works context.
+//   - External: all action types valid (subject to per-type checks).
+//   - Internal (heartbeat): Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
+//     and SendJinshu are allowed; CreateTask, RouteTask, CancelTask,
+//     InspectJinshu, and ListReceivedJinshu are rejected (no event to route, no active
+//     works context, and no incoming jinshu reference in this path).
 //
 // session_id==0 is always illegal — it is the Go zero value and
 // indistinguishable from a missing field in the LLM's JSON output.
@@ -579,11 +641,40 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 				valid = append(valid, act)
 			}
 		case action.EnterPrivateSpace:
-			if situation.Source != SituationSourceInternal {
-				applogger.Error("Decision enter_private_space: rejected in non-heartbeat path")
+			// Entering one's own private space to recall or review past output is
+			// a legitimate act in both paths — it completes cognition rather than
+			// being a work request. Allowed for external events and heartbeats.
+			if isValidEnterPrivateSpaceAction(act) {
+				valid = append(valid, act)
+			}
+		case action.InspectJinshu:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision inspect_jinshu: rejected in heartbeat path")
 				continue
 			}
-			if isValidEnterPrivateSpaceAction(act) {
+			if isValidInspectJinshuAction(act) {
+				valid = append(valid, act)
+			}
+		case action.ListReceivedJinshu:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision list_received_jinshu: rejected in heartbeat path")
+				continue
+			}
+			if isValidListReceivedJinshuAction(act) {
+				valid = append(valid, act)
+			}
+		case action.SendJinshu:
+			// Sharing a deliverable is a legitimate autonomous act as well as a
+			// response to an external request, so it is allowed in both paths.
+			if isValidSendJinshuAction(act) {
+				valid = append(valid, act)
+			}
+		case action.ListSentJinshu:
+			if situation.Source == SituationSourceInternal {
+				applogger.Error("Decision list_sent_jinshu: rejected in heartbeat path")
+				continue
+			}
+			if isValidListSentJinshuAction(act) {
 				valid = append(valid, act)
 			}
 		default:
@@ -725,6 +816,82 @@ func isValidUpdateBioAction(dec action.Action) bool {
 func isValidEnterPrivateSpaceAction(dec action.Action) bool {
 	if dec.Background == "" && dec.Reason == "" {
 		applogger.Error("Decision enter_private_space: missing background and reason, skipping")
+		return false
+	}
+	return true
+}
+
+// isValidInspectJinshuAction checks whether an inspect_jinshu action has a
+// valid JinshuPlan with a jinshu ID and reading guidance.
+func isValidInspectJinshuAction(dec action.Action) bool {
+	if dec.JinshuPlan == nil {
+		applogger.Error("Decision inspect_jinshu: missing jinshu_plan, skipping")
+		return false
+	}
+	if dec.JinshuPlan.JinshuID <= 0 {
+		applogger.Error("Decision inspect_jinshu: missing or invalid jinshu_id, skipping",
+			"jinshu_id", dec.JinshuPlan.JinshuID)
+		return false
+	}
+	if dec.JinshuPlan.Guidance == "" {
+		applogger.Error("Decision inspect_jinshu: missing guidance, skipping")
+		return false
+	}
+	return true
+}
+
+// isValidListReceivedJinshuAction checks whether a list_received_jinshu action has a valid
+// ListReceivedJinshuParams with a sane page and limit.
+func isValidListReceivedJinshuAction(dec action.Action) bool {
+	if dec.ListReceivedJinshuParams == nil {
+		applogger.Error("Decision list_received_jinshu: missing list_received_jinshu_params, skipping")
+		return false
+	}
+	return isValidJinshuPagination("list_received_jinshu", dec.ListReceivedJinshuParams.Page, dec.ListReceivedJinshuParams.Limit)
+}
+
+// isValidListSentJinshuAction checks whether a list_sent_jinshu action has a
+// valid ListSentJinshuParams with a sane page and limit.
+func isValidListSentJinshuAction(dec action.Action) bool {
+	if dec.ListSentJinshuParams == nil {
+		applogger.Error("Decision list_sent_jinshu: missing list_sent_jinshu_params, skipping")
+		return false
+	}
+	return isValidJinshuPagination("list_sent_jinshu", dec.ListSentJinshuParams.Page, dec.ListSentJinshuParams.Limit)
+}
+
+// isValidJinshuPagination checks the shared page/limit bounds for the jinshu
+// list actions and logs a type-specific error on failure.
+func isValidJinshuPagination(actionName string, page, limit int) bool {
+	if page < 1 {
+		applogger.Error("Decision "+actionName+": invalid page, skipping", "page", page)
+		return false
+	}
+	if limit < 1 || limit > 50 {
+		applogger.Error("Decision "+actionName+": invalid limit, skipping", "limit", limit)
+		return false
+	}
+	return true
+}
+
+// isValidSendJinshuAction checks whether a send_jinshu action has a valid
+// SendJinshuPlan: a positive recipient, a topic, and at least one path.
+func isValidSendJinshuAction(dec action.Action) bool {
+	if dec.SendJinshuPlan == nil {
+		applogger.Error("Decision send_jinshu: missing send_jinshu_plan, skipping")
+		return false
+	}
+	if dec.SendJinshuPlan.ToPersonID <= 0 {
+		applogger.Error("Decision send_jinshu: missing or invalid to_person_id, skipping",
+			"to_person_id", dec.SendJinshuPlan.ToPersonID)
+		return false
+	}
+	if dec.SendJinshuPlan.Topic == "" {
+		applogger.Error("Decision send_jinshu: missing topic, skipping")
+		return false
+	}
+	if len(dec.SendJinshuPlan.Paths) == 0 {
+		applogger.Error("Decision send_jinshu: missing paths, skipping")
 		return false
 	}
 	return true

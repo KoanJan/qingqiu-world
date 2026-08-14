@@ -70,6 +70,31 @@ func RecordBiographyEvent(biographyID int64) (int64, error) {
 	return createEvent(model.EventTypeBiography, biographyID)
 }
 
+// RecordJinshuEvent creates a memory event record for a jinshu delivery and
+// enqueues async embedding generation. content is the jinshu topic + description,
+// which is semantically retrievable like a message.
+//
+// The event type is EventTypeJinshu and ref_id points to the Jinshu record.
+// Observations are created by the receiving agent runtime after it processes
+// the corresponding eventqueue event.
+func RecordJinshuEvent(jinshuID int64, content string) (int64, error) {
+	eventID, err := createEvent(model.EventTypeJinshu, jinshuID)
+	if err != nil {
+		return 0, err
+	}
+
+	if embeddingSvc != nil {
+		select {
+		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		default:
+			applogger.Error("Embedding queue full, embedding generation skipped",
+				"event_id", eventID)
+		}
+	}
+
+	return eventID, nil
+}
+
 // ---------------------------------------------------------------------------
 // internal — embedding background loop
 // ---------------------------------------------------------------------------

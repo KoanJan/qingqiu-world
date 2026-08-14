@@ -2,14 +2,13 @@ package tools
 
 import (
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"strings"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
@@ -24,11 +23,9 @@ import (
 const sessionContextMessageLimit = 5
 
 // SendJinshuTool sends files from the agent's output/ directory to another
-// person as a jinshu (锦书). A single send copies the source files twice: one
-// copy into the sender's sent/{id}/ directory and one into the recipient's
-// received/{id}/ directory, both under the jinshu root keyed by person id. The
-// jinshu record's auto-increment id doubles as the directory name, so the file
-// location is derivable without storing paths.
+// person as a jinshu (锦书). The actual record creation and file copying are
+// delegated to the shared jinshu.Send core; this tool only resolves the
+// session-scoped source directory and merges session context.
 type SendJinshuTool struct {
 	personID      int64
 	sessionID     int64
@@ -89,27 +86,17 @@ func (s *SendJinshuTool) Schema() llm.FunctionDefinition {
 	}
 }
 
-// resolveReceiver looks up the receiver name in the persons table and returns the person_id.
-func resolveReceiver(name string) (personID int64, err error) {
-	var person model.Person
-	if err := database.DB.Where("name = ?", name).First(&person).Error; err != nil {
-		return 0, fmt.Errorf("recipient '%s' not found", name)
-	}
-	return person.ID, nil
-}
-
-// Execute copies files from the agent's output directory into both the sender's
-// sent/ and the recipient's received/ jinshu directories, and records a Jinshu
-// row whose id names both target directories.
+// Execute resolves the source paths relative to output/, builds the Files map,
+// and delegates the delivery to the shared jinshu.Send core.
 func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 	receiverName, ok := args["receiver"].(string)
 	if !ok || receiverName == "" {
 		return "", fmt.Errorf("receiver must be a non-empty string")
 	}
 
-	targetPersonID, err := resolveReceiver(receiverName)
+	targetPerson, err := dops.GetPersonByName(receiverName)
 	if err != nil {
-		return "", err
+		return "", fmt.Errorf("recipient '%s' not found", receiverName)
 	}
 
 	topic, ok := args["topic"].(string)
@@ -130,7 +117,8 @@ func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 	// Validate each source path and resolve it relative to output/.
 	outputDir := workspace.GetOutputDir(s.personID, s.sessionID)
 	sessionRoot := workspace.GetWorkspacePath(s.personID, s.sessionID)
-	var relPaths []string
+	files := make(map[string]string, len(paths))
+	relPaths := make([]string, 0, len(paths))
 	for _, p := range paths {
 		resolved, err := servicetools.ResolvePath(p, sessionRoot, outputDir)
 		if err != nil {
@@ -143,6 +131,7 @@ func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		if err != nil {
 			return "", fmt.Errorf("failed to resolve relative path for '%s': %w", p, err)
 		}
+		files[relPath] = resolved
 		relPaths = append(relPaths, relPath)
 	}
 
@@ -150,41 +139,15 @@ func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 	// record remains self-describing after the source session is deleted.
 	description = mergeDescription(description, buildSessionContext(s.sessionID))
 
-	// Write the record first to obtain the auto-increment id used as the
-	// directory name under both target directories.
-	record := model.Jinshu{
+	record, err := jinshu.Send(jinshu.SendParams{
 		FromPersonID: s.personID,
-		ToPersonID:   targetPersonID,
+		ToPersonID:   targetPerson.ID,
 		Topic:        topic,
 		Description:  description,
-	}
-	if err := database.DB.Create(&record).Error; err != nil {
-		return "", fmt.Errorf("failed to create jinshu record: %w", err)
-	}
-
-	// Copy source files twice: sender's sent/ and recipient's received/.
-	id := strconv.FormatInt(record.ID, 10)
-	targetDirs := []string{
-		filepath.Join(jinshu.SentDir(s.personID), id),
-		filepath.Join(jinshu.ReceivedDir(targetPersonID), id),
-	}
-	for _, dir := range targetDirs {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			return "", fmt.Errorf("failed to create jinshu directory: %w", err)
-		}
-	}
-
-	for _, relPath := range relPaths {
-		src := filepath.Join(outputDir, relPath)
-		for _, dir := range targetDirs {
-			dst := filepath.Join(dir, relPath)
-			if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-				return "", fmt.Errorf("failed to create target directory: %w", err)
-			}
-			if err := copyPath(src, dst); err != nil {
-				return "", fmt.Errorf("failed to copy '%s': %w", relPath, err)
-			}
-		}
+		Files:        files,
+	})
+	if err != nil {
+		return "", err
 	}
 
 	result := fmt.Sprintf("Sent %d file(s) to %s (jinshu #%d, topic: %s): %s",
@@ -309,69 +272,4 @@ func loadPersonNames(ids []int64) map[int64]string {
 		names[p.ID] = p.Name
 	}
 	return names
-}
-
-// copyPath copies a file or directory tree from src to dst.
-// If src is a directory, its contents are copied recursively.
-func copyPath(src, dst string) error {
-	srcInfo, err := os.Stat(src)
-	if err != nil {
-		return err
-	}
-
-	if srcInfo.IsDir() {
-		return copyDirectory(src, dst)
-	}
-	return copyFile(src, dst)
-}
-
-// copyDirectory recursively copies a directory tree from src to dst.
-func copyDirectory(src, dst string) error {
-	if err := os.MkdirAll(dst, 0755); err != nil {
-		return err
-	}
-
-	entries, err := os.ReadDir(src)
-	if err != nil {
-		return err
-	}
-
-	for _, entry := range entries {
-		srcPath := filepath.Join(src, entry.Name())
-		dstPath := filepath.Join(dst, entry.Name())
-
-		if entry.IsDir() {
-			if err := copyDirectory(srcPath, dstPath); err != nil {
-				return err
-			}
-		} else {
-			if err := copyFile(srcPath, dstPath); err != nil {
-				return err
-			}
-		}
-	}
-	return nil
-}
-
-// copyFile copies a single file from src to dst, preserving permissions.
-func copyFile(src, dst string) error {
-	srcFile, err := os.Open(src)
-	if err != nil {
-		return err
-	}
-	defer srcFile.Close()
-
-	srcInfo, err := srcFile.Stat()
-	if err != nil {
-		return err
-	}
-
-	dstFile, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, srcInfo.Mode())
-	if err != nil {
-		return err
-	}
-	defer dstFile.Close()
-
-	_, err = io.Copy(dstFile, srcFile)
-	return err
 }

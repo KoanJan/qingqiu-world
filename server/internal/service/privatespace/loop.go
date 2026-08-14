@@ -35,6 +35,8 @@ TOOLS AVAILABLE:
 - write_file: Create or overwrite files within your private space.
 - edit_file: Make precise text replacements in existing files.
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
+- send_jinshu: Send files from your private space to another person as a jinshu (锦书).
+- copy_from_jinshu: Copy files from a jinshu you received into your private-space working directory.
 
 GUIDELINES:
 - You have a limited number of steps. When you're done with what you wanted to do, simply stop — you can continue next time.
@@ -97,6 +99,8 @@ func NewLoop(
 	l.registerTool(privspacetools.NewWriteFileTool(rootDir, workDir))
 	l.registerTool(privspacetools.NewEditFileTool(rootDir, workDir))
 	l.registerTool(privspacetools.NewWriteLogTool(personID, AppendLog))
+	l.registerTool(privspacetools.NewSendJinshuTool(personID, rootDir, workDir))
+	l.registerTool(privspacetools.NewCopyFromJinshuTool(personID, rootDir, workDir))
 
 	return l
 }

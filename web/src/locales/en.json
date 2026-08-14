@@ -46,7 +46,21 @@
     "from": "From",
     "to": "To",
     "noTopic": "(No topic)",
-    "files": "Files"
+    "files": "Files",
+    "topic": "Topic",
+    "description": "Description",
+    "send": "Send Jinshu",
+    "receiver": "Receiver",
+    "receiverPlaceholder": "Select receiver",
+    "topicPlaceholder": "Topic",
+    "descriptionPlaceholder": "Description (optional)",
+    "selectFiles": "Select files",
+    "sendButton": "Send",
+    "sendSuccess": "Jinshu sent successfully",
+    "sendFailed": "Failed to send jinshu",
+    "receiverRequired": "Please select a receiver",
+    "topicRequired": "Please enter a topic",
+    "filesRequired": "Please select at least one file"
   },
   "agent": {
     "title": "Agent",

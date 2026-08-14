@@ -141,6 +141,18 @@ export const sessionApi = {
 export const jinshuApi = {
   listSent: () => api.get<Jinshu[]>('/jinshus/sent'),
   listReceived: () => api.get<Jinshu[]>('/jinshus/received'),
+  send: (data: { to_person_id: number; topic: string; description?: string; files: File[] }) => {
+    const formData = new FormData();
+    formData.append('to_person_id', String(data.to_person_id));
+    formData.append('topic', data.topic);
+    if (data.description) formData.append('description', data.description);
+    data.files.forEach((file) => formData.append('files', file));
+    return api.post<Jinshu>('/jinshus', formData, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+  },
+  markRead: (id: number) =>
+    api.post<{ id: number; is_read: boolean }>(`/jinshus/${id}/read`),
   getFileUrl: (id: number, path: string) =>
     `${getDynamicServerBaseUrl()}/api/jinshus/${id}/file?path=${encodeURIComponent(path)}`,
 };

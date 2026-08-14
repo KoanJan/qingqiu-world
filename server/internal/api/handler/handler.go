@@ -120,7 +120,8 @@ type jinshuFileEntry struct {
 }
 
 // jinshuEntry represents one jinshu record with its file tree and resolved
-// sender/recipient names for display.
+// sender/recipient names for display. IsRead is populated only for received
+// jinshu (the read flag is receiver-only information).
 type jinshuEntry struct {
 	ID           int64             `json:"id"`
 	FromPersonID int64             `json:"from_person_id"`
@@ -129,6 +130,7 @@ type jinshuEntry struct {
 	ToName       string            `json:"to_name"`
 	Topic        string            `json:"topic"`
 	Description  string            `json:"description"`
+	IsRead       *bool             `json:"is_read,omitempty"`
 	CreatedAt    time.Time         `json:"created_at"`
 	Files        []jinshuFileEntry `json:"files"`
 }
@@ -179,6 +181,11 @@ func (h *Handler) listJinshus(c *gin.Context, direction string) {
 	entries := make([]jinshuEntry, 0, len(records))
 	for _, r := range records {
 		dir := filepath.Join(baseDir, strconv.FormatInt(r.ID, 10))
+		var isRead *bool
+		if direction == "received" {
+			v := r.IsRead
+			isRead = &v
+		}
 		entries = append(entries, jinshuEntry{
 			ID:           r.ID,
 			FromPersonID: r.FromPersonID,
@@ -187,6 +194,7 @@ func (h *Handler) listJinshus(c *gin.Context, direction string) {
 			ToName:       names[r.ToPersonID],
 			Topic:        r.Topic,
 			Description:  r.Description,
+			IsRead:       isRead,
 			CreatedAt:    r.CreatedAt,
 			Files:        walkJinshuFiles(dir),
 		})
@@ -344,6 +352,136 @@ func walkJinshuFiles(dirPath string) []jinshuFileEntry {
 	})
 
 	return root
+}
+
+// Jinshu upload limits. These are intentionally generous since jinshu is used
+// to deliver real work products, but they still bound a single request.
+const (
+	maxJinshuFileSize  = 100 * 1024 * 1024 // 100MB per file
+	maxJinshuTotalSize = 200 * 1024 * 1024 // 200MB total upload
+)
+
+// SendJinshu creates a jinshu from the current user to another person.
+// The request is multipart/form-data with to_person_id, topic, an optional
+// description, and one or more files under the "files" field.
+func (h *Handler) SendJinshu(c *gin.Context) {
+	userPerson, err := dops.GetCurrentUserPerson()
+	if err != nil {
+		response.BadRequest(c, "No user profile found")
+		return
+	}
+
+	toPersonID, err := strconv.ParseInt(c.PostForm("to_person_id"), 10, 64)
+	if err != nil || toPersonID <= 0 {
+		response.BadRequest(c, "to_person_id is required")
+		return
+	}
+	if toPersonID == userPerson.ID {
+		response.BadRequest(c, "Cannot send jinshu to yourself")
+		return
+	}
+	if _, err := dops.GetPerson(toPersonID); err != nil {
+		response.BadRequest(c, "Recipient not found")
+		return
+	}
+
+	topic := strings.TrimSpace(c.PostForm("topic"))
+	if topic == "" {
+		response.BadRequest(c, "topic is required")
+		return
+	}
+
+	form, err := c.MultipartForm()
+	if err != nil {
+		response.BadRequest(c, "Invalid multipart form")
+		return
+	}
+	headers := form.File["files"]
+	if len(headers) == 0 {
+		response.BadRequest(c, "At least one file is required")
+		return
+	}
+
+	tmpDir, err := os.MkdirTemp("", "jinshu-upload-")
+	if err != nil {
+		response.InternalError(c, "Failed to create temp directory")
+		return
+	}
+	defer os.RemoveAll(tmpDir)
+
+	files := make(map[string]string, len(headers))
+	var totalSize int64
+	for _, header := range headers {
+		if header.Size > maxJinshuFileSize {
+			response.BadRequest(c, fmt.Sprintf("File %q exceeds the per-file size limit", header.Filename))
+			return
+		}
+		totalSize += header.Size
+		if totalSize > maxJinshuTotalSize {
+			response.BadRequest(c, "Total upload size exceeds the limit")
+			return
+		}
+
+		name := filepath.Base(header.Filename)
+		if name == "." || name == "/" || name == "" {
+			response.BadRequest(c, "Invalid filename")
+			return
+		}
+		if _, exists := files[name]; exists {
+			response.BadRequest(c, fmt.Sprintf("Duplicate filename %q", name))
+			return
+		}
+
+		dst := filepath.Join(tmpDir, name)
+		if err := c.SaveUploadedFile(header, dst); err != nil {
+			response.InternalError(c, "Failed to save uploaded file")
+			return
+		}
+		files[name] = dst
+	}
+
+	record, err := jinshu.Send(jinshu.SendParams{
+		FromPersonID: userPerson.ID,
+		ToPersonID:   toPersonID,
+		Topic:        topic,
+		Description:  c.PostForm("description"),
+		Files:        files,
+	})
+	if err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, record)
+}
+
+// MarkJinshuRead marks a received jinshu as read. Only the recipient may mark
+// a jinshu read, since the read flag is receiver-only information.
+func (h *Handler) MarkJinshuRead(c *gin.Context) {
+	id := getPathID(c)
+
+	userPerson, err := dops.GetCurrentUserPerson()
+	if err != nil {
+		response.BadRequest(c, "No user profile found")
+		return
+	}
+
+	record, err := dops.GetJinshu(id)
+	if err != nil {
+		response.NotFound(c, "Jinshu not found")
+		return
+	}
+	if record.ToPersonID != userPerson.ID {
+		response.NotFound(c, "Jinshu not found")
+		return
+	}
+
+	if err := dops.MarkJinshuRead(id); err != nil {
+		response.InternalError(c, err.Error())
+		return
+	}
+
+	response.Success(c, gin.H{"id": id, "is_read": true})
 }
 
 // ListMessages handles listing messages in a session.

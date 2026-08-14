@@ -1,11 +1,11 @@
 import React, { useEffect, useRef, useState } from 'react';
-import { Spin, Empty } from 'antd';
-import { CaretRightOutlined, CaretDownOutlined, FolderOpenOutlined, FolderOutlined, FileOutlined, DesktopOutlined } from '@ant-design/icons';
+import { Spin, Empty, Select, Input, Upload, Button, Form, message } from 'antd';
+import { CaretRightOutlined, CaretDownOutlined, FolderOpenOutlined, FolderOutlined, FileOutlined, DesktopOutlined, UploadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import { jinshuApi } from '../services/api';
+import { jinshuApi, agentApi } from '../services/api';
 import { logger } from '../logger';
 import PanelDetail from './PanelDetail';
-import type { Jinshu, JinshuFileEntry } from '../types';
+import type { Jinshu, JinshuFileEntry, Agent } from '../types';
 import { formatFileSize } from '../utils/format';
 import { formatMessageTime } from '../utils/time';
 
@@ -127,6 +127,113 @@ const JinshuDetailContent: React.FC<{
   );
 };
 
+// JinshuSendForm renders the form for sending a jinshu from the current user
+// to an agent. Receivers are loaded from /api/agents (agent id == person id).
+const JinshuSendForm: React.FC<{
+  onBack: () => void;
+  onDone: () => void;
+}> = ({ onBack, onDone }) => {
+  const { t } = useTranslation();
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [files, setFiles] = useState<File[]>([]);
+  const [sending, setSending] = useState(false);
+
+  useEffect(() => {
+    agentApi
+      .list()
+      .then((res) => setAgents(res.data))
+      .catch((error) => logger.error('Failed to load agents for jinshu', error));
+  }, []);
+
+  const fileList = files.map((file, index) => ({
+    uid: String(index),
+    name: file.name,
+    status: 'done' as const,
+  }));
+
+  const handleSubmit = async (values: { receiver: number; topic: string; description?: string }) => {
+    if (files.length === 0) {
+      message.error(t('jinshu.filesRequired'));
+      return;
+    }
+
+    setSending(true);
+    try {
+      await jinshuApi.send({
+        to_person_id: values.receiver,
+        topic: values.topic.trim(),
+        description: values.description?.trim() || undefined,
+        files,
+      });
+      message.success(t('jinshu.sendSuccess'));
+      onDone();
+    } catch (error) {
+      logger.error('Failed to send jinshu', error);
+      message.error(t('jinshu.sendFailed'));
+    } finally {
+      setSending(false);
+    }
+  };
+
+  return (
+    <Form
+      layout="vertical"
+      className="jinshu-send-form"
+      onFinish={handleSubmit}
+    >
+      <Form.Item
+        label={t('jinshu.receiver')}
+        name="receiver"
+        rules={[{ required: true, message: t('jinshu.receiverRequired') }]}
+      >
+        <Select
+          placeholder={t('jinshu.receiverPlaceholder')}
+          options={agents.map((a) => ({ value: a.id, label: a.name }))}
+          showSearch
+          optionFilterProp="label"
+        />
+      </Form.Item>
+
+      <Form.Item
+        label={t('jinshu.topic')}
+        name="topic"
+        rules={[{ required: true, message: t('jinshu.topicRequired') }]}
+      >
+        <Input placeholder={t('jinshu.topicPlaceholder')} />
+      </Form.Item>
+
+      <Form.Item label={t('jinshu.description')} name="description">
+        <Input.TextArea placeholder={t('jinshu.descriptionPlaceholder')} rows={4} />
+      </Form.Item>
+
+      <Form.Item label={t('jinshu.files')} required>
+        <Upload
+          multiple
+          fileList={fileList}
+          beforeUpload={(file) => {
+            setFiles((prev) => [...prev, file]);
+            return false;
+          }}
+          onRemove={(file) => {
+            const index = Number(file.uid);
+            setFiles((prev) => prev.filter((_, i) => i !== index));
+            return true;
+          }}
+        >
+          <Button icon={<UploadOutlined />}>{t('jinshu.selectFiles')}</Button>
+        </Upload>
+      </Form.Item>
+
+      <div className="jinshu-send-actions">
+        <Button onClick={onBack}>{t('common.cancel')}</Button>
+        <Button type="primary" htmlType="submit" loading={sending}>
+          {t('jinshu.sendButton')}
+        </Button>
+      </div>
+    </Form>
+  );
+};
+
 interface JinshuPanelProps {
   direction: Direction;
 }
@@ -136,6 +243,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
   const [items, setItems] = useState<Jinshu[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Jinshu | null>(null);
+  const [showSend, setShowSend] = useState(false);
   const prevDataRef = useRef<string>('');
 
   const load = async (isPoll: boolean = false) => {
@@ -164,8 +272,9 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
   };
 
   useEffect(() => {
-    // Reset detail selection and cached data when switching direction.
+    // Reset detail selection, send form, and cached data when switching direction.
     setSelected(null);
+    setShowSend(false);
     prevDataRef.current = '';
     load(false);
     const timer = setInterval(() => load(true), 10000);
@@ -184,6 +293,28 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
     }
   };
 
+  // After a successful send, return to the list and refresh it.
+  const handleSendDone = () => {
+    setShowSend(false);
+    prevDataRef.current = '';
+    load(false);
+  };
+
+  // Open a jinshu detail and mark received jinshu as read (receiver-only flag).
+  const handleSelect = async (item: Jinshu) => {
+    setSelected(item);
+    if (direction === 'received' && item.is_read === false) {
+      try {
+        await jinshuApi.markRead(item.id);
+        const markRead = (it: Jinshu) => (it.id === item.id ? { ...it, is_read: true } : it);
+        setItems((prev) => prev.map(markRead));
+        setSelected((prev) => (prev && prev.id === item.id ? { ...prev, is_read: true } : prev));
+      } catch (error) {
+        logger.error('Failed to mark jinshu read', error);
+      }
+    }
+  };
+
   const listTitle = direction === 'sent' ? t('jinshu.sent') : t('jinshu.received');
 
   if (loading) {
@@ -192,6 +323,17 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
         <div className="jinshu-empty">
           <Spin size="large" />
         </div>
+      </PanelDetail>
+    );
+  }
+
+  if (showSend) {
+    return (
+      <PanelDetail title={t('jinshu.send')} onBack={() => setShowSend(false)}>
+        <JinshuSendForm
+          onBack={() => setShowSend(false)}
+          onDone={handleSendDone}
+        />
       </PanelDetail>
     );
   }
@@ -209,7 +351,10 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
   }
 
   return (
-    <PanelDetail title={listTitle}>
+    <PanelDetail
+      title={listTitle}
+      onAdd={direction === 'sent' ? () => setShowSend(true) : undefined}
+    >
       {items.length === 0 ? (
         <div className="jinshu-empty">
           <Empty description={t('jinshu.empty')} />
@@ -224,7 +369,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
                 <div className="received-delivery-row">
                   <button
                     className="received-delivery-header"
-                    onClick={() => setSelected(item)}
+                    onClick={() => handleSelect(item)}
                   >
                     <span className="jinshu-topic">{item.topic || t('jinshu.noTopic')}</span>
                     <span className="jinshu-counterpart">

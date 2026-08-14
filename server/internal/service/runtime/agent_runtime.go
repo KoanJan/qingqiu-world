@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -17,6 +18,7 @@ import (
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/privatespace"
 	"qingqiu-world-server/internal/service/task"
@@ -213,6 +215,22 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			"event_id", event.EventID,
 		)
 	}
+	if event.Type == eventqueue.EventTypeNewJinshuReceived {
+		// A jinshu is an observable world event like a chat message. Record the
+		// observation here; the read flag is marked after Decide below, meaning
+		// the recipient has cognitively processed the delivery.
+		if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
+			applogger.Error("failed to create jinshu observation",
+				"person_id", r.agentPersonID,
+				"event_id", event.EventID,
+				"error", err,
+			)
+		}
+		applogger.Info("jinshu event observed",
+			"person_id", r.agentPersonID,
+			"event_id", event.EventID,
+		)
+	}
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
 		if !ok || payload == nil {
@@ -273,6 +291,15 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.Chat.ReadMessageRange[1] > c.Chat.ReadMessageRange[0] {
 		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.Chat.ReadMessageRange[1]); err != nil {
 			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.Chat.ReadMessageRange[1], "error", err)
+		}
+	}
+	if event.Type == eventqueue.EventTypeNewJinshuReceived {
+		// The recipient has finished Decide, so the jinshu is now cognitively
+		// processed. Mark it read (receiver-only flag).
+		if p, ok := event.Payload.(*eventqueue.JinshuReceivedPayload); ok && p != nil {
+			if err := dops.MarkJinshuRead(p.JinshuID); err != nil {
+				applogger.Error("failed to mark jinshu read", "jinshu_id", p.JinshuID, "person_id", r.agentPersonID, "error", err)
+			}
 		}
 	}
 	if len(d.Actions) > 0 {
@@ -352,6 +379,30 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				thoughts += act.Reason
 			}
 			r.handleEnterPrivateSpace(thoughts)
+		case action.InspectJinshu:
+			if act.JinshuPlan == nil {
+				applogger.Error("inspect_jinshu action has no jinshu plan", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			go r.handleInspectJinshu(act.JinshuPlan)
+		case action.ListReceivedJinshu:
+			if act.ListReceivedJinshuParams == nil {
+				applogger.Error("list_received_jinshu action has no list_received_jinshu_params", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			go r.handleListReceivedJinshu(act)
+		case action.SendJinshu:
+			if act.SendJinshuPlan == nil {
+				applogger.Error("send_jinshu action has no send_jinshu plan", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			go r.handleSendJinshu(act)
+		case action.ListSentJinshu:
+			if act.ListSentJinshuParams == nil {
+				applogger.Error("list_sent_jinshu action has no list_sent_jinshu_params", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			go r.handleListSentJinshu(act)
 		}
 	}
 }
@@ -399,6 +450,325 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 			r.privateSpaceLoop.Run(ctx)
 		}()
 	}
+}
+
+// handleInspectJinshu runs the dedicated jinshu-read loop and reflows the
+// result back to the agent as a JinshuReadCompleted event, so the agent can
+// decide how to react to the contents it just read.
+func (r *agentRuntime) handleInspectJinshu(plan *action.JinshuPlan) {
+	record, err := jinshu.GetReceived(r.agentPersonID, plan.JinshuID)
+	if err != nil {
+		applogger.Error("inspect_jinshu: failed to load received jinshu",
+			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
+		r.sendJinshuReadCompleted(plan.JinshuID, "", "", "", err)
+		return
+	}
+
+	fromName := ""
+	if from, err := dops.GetPerson(record.FromPersonID); err != nil {
+		applogger.Error("inspect_jinshu: failed to load sender",
+			"person_id", record.FromPersonID, "error", err)
+	} else {
+		fromName = from.Name
+	}
+
+	entries, err := jinshu.ListReceivedFiles(r.agentPersonID, plan.JinshuID)
+	if err != nil {
+		applogger.Error("inspect_jinshu: failed to list received files",
+			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
+	}
+
+	a, err := agent.GetAgent(r.agentPersonID)
+	if err != nil {
+		applogger.Error("inspect_jinshu: failed to load agent",
+			"person_id", r.agentPersonID, "error", err)
+		r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, "", err)
+		return
+	}
+
+	loop := jinshu.NewReadLoop(jinshu.ReadConfig{
+		PersonID:      r.agentPersonID,
+		ReceivedDir:   jinshu.ReceivedDirFor(r.agentPersonID, plan.JinshuID),
+		FileList:      formatJinshuFileEntries(entries),
+		LLMConfig:     &a.LLM,
+		JinshuID:      plan.JinshuID,
+		Guidance:      plan.Guidance,
+		MaxIterations: 0, // Use default
+	})
+
+	summary, err := loop.Run(context.Background())
+	if err != nil {
+		applogger.Error("inspect_jinshu: read loop failed",
+			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
+		r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, "", err)
+		return
+	}
+
+	r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, summary, nil)
+}
+
+// handleListReceivedJinshu runs the paginated keyword search over the agent's received
+// jinshu and reflows the result back as a JinshuListed event so the agent can
+// pick a jinshu_id to inspect.
+func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
+	params := act.ListReceivedJinshuParams
+
+	page := params.Page
+	if page < 1 {
+		page = 1
+	}
+	limit := params.Limit
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	records, err := dops.SearchReceivedJinshu(r.agentPersonID, params.Query, (page-1)*limit, limit)
+	if err != nil {
+		applogger.Error("list_received_jinshu: search failed",
+			"person_id", r.agentPersonID, "query", params.Query, "error", err)
+		r.sendJinshuListed(params.Query, page, nil, act.Background, act.Reason)
+		return
+	}
+
+	// Resolve sender names in one batch.
+	idSet := make(map[int64]struct{})
+	for _, rec := range records {
+		idSet[rec.FromPersonID] = struct{}{}
+	}
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	names, err := dops.GetPersonNames(ids)
+	if err != nil {
+		applogger.Error("list_received_jinshu: failed to resolve sender names", "error", err)
+		names = map[int64]string{}
+	}
+
+	items := make([]eventqueue.JinshuListItem, 0, len(records))
+	for _, rec := range records {
+		fromName := names[rec.FromPersonID]
+		if fromName == "" {
+			fromName = fmt.Sprintf("person_%d", rec.FromPersonID)
+		}
+		items = append(items, eventqueue.JinshuListItem{
+			JinshuID:  rec.ID,
+			FromName:  fromName,
+			Topic:     rec.Topic,
+			IsRead:    rec.IsRead,
+			CreatedAt: rec.CreatedAt.Format("2006-01-02 15:04"),
+		})
+	}
+
+	r.sendJinshuListed(params.Query, page, items, act.Background, act.Reason)
+}
+
+// sendJinshuListed dispatches the list result back to the agent's own event
+// queue for a fresh Decide pass, carrying the triggering action's thoughts.
+func (r *agentRuntime) sendJinshuListed(query string, page int, items []eventqueue.JinshuListItem, background, reason string) {
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeJinshuListed,
+		SessionID: 0, // Jinshu is person-level, not session-scoped.
+		EventID:   0,
+		Payload: &eventqueue.JinshuListedPayload{
+			Query:   query,
+			Page:    page,
+			Results: items,
+		},
+		TriggerAction: &eventqueue.TriggerAction{
+			Background: background,
+			Reason:     reason,
+		},
+	})
+}
+
+// handleListSentJinshu runs the paginated keyword search over the agent's sent
+// jinshu and reflows the result back as a JinshuSentListed event so the agent
+// can recall what it has already delivered.
+func (r *agentRuntime) handleListSentJinshu(act action.Action) {
+	params := act.ListSentJinshuParams
+
+	page := params.Page
+	if page < 1 {
+		page = 1
+	}
+	limit := params.Limit
+	if limit < 1 {
+		limit = 10
+	}
+	if limit > 50 {
+		limit = 50
+	}
+
+	records, err := dops.SearchSentJinshu(r.agentPersonID, params.Query, (page-1)*limit, limit)
+	if err != nil {
+		applogger.Error("list_sent_jinshu: search failed",
+			"person_id", r.agentPersonID, "query", params.Query, "error", err)
+		r.sendJinshuSentListed(params.Query, page, nil, act.Background, act.Reason)
+		return
+	}
+
+	// Resolve recipient names in one batch.
+	idSet := make(map[int64]struct{})
+	for _, rec := range records {
+		idSet[rec.ToPersonID] = struct{}{}
+	}
+	ids := make([]int64, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	names, err := dops.GetPersonNames(ids)
+	if err != nil {
+		applogger.Error("list_sent_jinshu: failed to resolve recipient names", "error", err)
+		names = map[int64]string{}
+	}
+
+	items := make([]eventqueue.JinshuSentListItem, 0, len(records))
+	for _, rec := range records {
+		toName := names[rec.ToPersonID]
+		if toName == "" {
+			toName = fmt.Sprintf("person_%d", rec.ToPersonID)
+		}
+		items = append(items, eventqueue.JinshuSentListItem{
+			JinshuID:  rec.ID,
+			ToName:    toName,
+			Topic:     rec.Topic,
+			CreatedAt: rec.CreatedAt.Format("2006-01-02 15:04"),
+		})
+	}
+
+	r.sendJinshuSentListed(params.Query, page, items, act.Background, act.Reason)
+}
+
+// sendJinshuSentListed dispatches the sent-list result back to the agent's own
+// event queue for a fresh Decide pass, carrying the triggering action's thoughts.
+func (r *agentRuntime) sendJinshuSentListed(query string, page int, items []eventqueue.JinshuSentListItem, background, reason string) {
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeJinshuSentListed,
+		SessionID: 0, // Jinshu is person-level, not session-scoped.
+		EventID:   0,
+		Payload: &eventqueue.JinshuSentListedPayload{
+			Query:   query,
+			Page:    page,
+			Results: items,
+		},
+		TriggerAction: &eventqueue.TriggerAction{
+			Background: background,
+			Reason:     reason,
+		},
+	})
+}
+
+// handleSendJinshu delivers private-space files to another person as a jinshu
+// and reflows the outcome back as a JinshuSent event so the agent knows whether
+// the delivery succeeded.
+func (r *agentRuntime) handleSendJinshu(act action.Action) {
+	plan := act.SendJinshuPlan
+
+	if plan.ToPersonID == r.agentPersonID {
+		applogger.Error("send_jinshu: recipient is self, skipping",
+			"agent_config_id", r.agentConfigID)
+		r.sendJinshuSent(0, "", plan.Topic, "failure", "cannot send a jinshu to yourself", act.Background, act.Reason)
+		return
+	}
+
+	toName := ""
+	if to, err := dops.GetPerson(plan.ToPersonID); err != nil {
+		applogger.Error("send_jinshu: failed to load recipient",
+			"to_person_id", plan.ToPersonID, "error", err)
+		toName = fmt.Sprintf("person_%d", plan.ToPersonID)
+	} else {
+		toName = to.Name
+	}
+
+	workDir := privatespace.GetWorkDirPath(r.agentPersonID)
+	files, _, err := jinshu.ResolveWorkDirFiles(workDir, plan.Paths)
+	if err != nil {
+		applogger.Error("send_jinshu: failed to resolve paths",
+			"agent_config_id", r.agentConfigID, "error", err)
+		r.sendJinshuSent(0, toName, plan.Topic, "failure", err.Error(), act.Background, act.Reason)
+		return
+	}
+
+	record, err := jinshu.Send(jinshu.SendParams{
+		FromPersonID: r.agentPersonID,
+		ToPersonID:   plan.ToPersonID,
+		Topic:        plan.Topic,
+		Description:  plan.Description,
+		Files:        files,
+	})
+	if err != nil {
+		applogger.Error("send_jinshu: send failed",
+			"agent_config_id", r.agentConfigID, "error", err)
+		r.sendJinshuSent(0, toName, plan.Topic, "failure", err.Error(), act.Background, act.Reason)
+		return
+	}
+
+	r.sendJinshuSent(record.ID, toName, record.Topic, "success", "", act.Background, act.Reason)
+}
+
+// sendJinshuSent dispatches the delivery outcome back to the agent's own event
+// queue for a fresh Decide pass, carrying the triggering action's thoughts.
+func (r *agentRuntime) sendJinshuSent(jinshuID int64, toName, topic, status, errMsg, background, reason string) {
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeJinshuSent,
+		SessionID: 0, // Jinshu is person-level, not session-scoped.
+		EventID:   0,
+		Payload: &eventqueue.JinshuSentPayload{
+			JinshuID: jinshuID,
+			ToName:   toName,
+			Topic:    topic,
+			Status:   status,
+			Error:    errMsg,
+		},
+		TriggerAction: &eventqueue.TriggerAction{
+			Background: background,
+			Reason:     reason,
+		},
+	})
+}
+
+// sendJinshuReadCompleted dispatches the read result back to the agent's own
+// event queue for a fresh Decide pass.
+func (r *agentRuntime) sendJinshuReadCompleted(jinshuID int64, fromName, topic, summary string, readErr error) {
+	payload := &eventqueue.JinshuReadCompletedPayload{
+		JinshuID: jinshuID,
+		FromName: fromName,
+		Topic:    topic,
+		Summary:  summary,
+		Status:   "success",
+	}
+	if readErr != nil {
+		payload.Status = "failure"
+		payload.Error = readErr.Error()
+	}
+
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
+		Type:      eventqueue.EventTypeJinshuReadCompleted,
+		SessionID: 0, // Jinshu is person-level, not session-scoped.
+		EventID:   0,
+		Payload:   payload,
+	})
+}
+
+// formatJinshuFileEntries renders the jinshu file listing for the loop's
+// initial prompt so the agent knows which paths it can read.
+func formatJinshuFileEntries(entries []jinshu.FileEntry) string {
+	if len(entries) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, e := range entries {
+		if e.IsDir {
+			fmt.Fprintf(&sb, "%s/\n", e.Path)
+		} else {
+			fmt.Fprintf(&sb, "%s (%d bytes)\n", e.Path, e.Size)
+		}
+	}
+	return sb.String()
 }
 
 // executeaction.Chat handles a action.Chat action as a lightweight async operation.
@@ -611,7 +981,7 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		comprehension: comprehension,
 		guidanceCh:    make(chan task.GuidanceDirective, 8),
 		done:          make(chan struct{}),
-		triggerAction: &action.Action{
+		triggerAction: &eventqueue.TriggerAction{
 			Background: dec.Background,
 			Reason:     dec.Reason,
 		},
@@ -657,8 +1027,8 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 		}
 	case eventqueue.EventTypeWorkCompleted:
 		trigger := "a previous work completed"
-		if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil && payload.TriggerAction != nil {
-			trigger = payload.TriggerAction.Background
+		if event.TriggerAction != nil {
+			trigger = event.TriggerAction.Background
 		}
 		return &task.Metadata{
 			SourceType: task.SourceTypeWorkCompleted,

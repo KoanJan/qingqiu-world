@@ -36,8 +36,9 @@ type work struct {
 	guidanceCh    chan task.GuidanceDirective    // Channel for sending guidance/cancel directives to TaskLoop
 	done          chan struct{}                  // Closed when work finishes (normal or abandoned)
 
-	// triggerAction carries the originating Action for the WorkCompleted event.
-	triggerAction *action.Action
+	// triggerAction carries the originating Action's cognitive context for the
+	// WorkCompleted event (provenance only — Background and Reason).
+	triggerAction *eventqueue.TriggerAction
 
 	// startedAt is set when work begins running, read by buildActiveWorksContext
 	// so the Decide LLM can see how long a work has been running.
@@ -76,15 +77,15 @@ func (w *work) Run(ctx context.Context) {
 		}
 
 		eventqueue.SendEvent(w.agent.agentConfigID, &eventqueue.AgentEvent{
-			Type:      eventqueue.EventTypeWorkCompleted,
-			SessionID: w.sessionID,
+			Type:          eventqueue.EventTypeWorkCompleted,
+			SessionID:     w.sessionID,
+			TriggerAction: w.triggerAction,
 			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:        w.ID,
-				Guidance:      w.plan.Guidance,
-				Status:        status,
-				TaskOutput:    output,
-				TaskError:     taskErr,
-				TriggerAction: w.triggerAction,
+				WorkID:     w.ID,
+				Guidance:   w.plan.Guidance,
+				Status:     status,
+				TaskOutput: output,
+				TaskError:  taskErr,
 			},
 		})
 	}()

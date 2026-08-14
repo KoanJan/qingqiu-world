@@ -14,6 +14,7 @@ type Jinshu struct {
 	ToPersonID   int64     `gorm:"not null;index:idx_jinshu_to;column:to_person_id" json:"to_person_id"`
 	Topic        string    `gorm:"type:varchar(255);not null;default:'';column:topic" json:"topic"`
 	Description  string    `gorm:"type:text;not null;default:'';column:description" json:"description"`
+	IsRead       bool      `gorm:"not null;default:false;column:is_read" json:"is_read"` // Receiver-only read flag (only visible to the recipient)
 	CreatedAt    time.Time `gorm:"not null;autoCreateTime;column:created_at" json:"created_at"`
 }
 

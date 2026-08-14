@@ -46,7 +46,21 @@
     "from": "来自",
     "to": "发给",
     "noTopic": "（无主题）",
-    "files": "文件"
+    "files": "文件",
+    "topic": "主题",
+    "description": "描述",
+    "send": "发送锦书",
+    "receiver": "收件人",
+    "receiverPlaceholder": "选择收件人",
+    "topicPlaceholder": "主题",
+    "descriptionPlaceholder": "描述（可选）",
+    "selectFiles": "选择文件",
+    "sendButton": "发送",
+    "sendSuccess": "锦书发送成功",
+    "sendFailed": "锦书发送失败",
+    "receiverRequired": "请选择收件人",
+    "topicRequired": "请输入主题",
+    "filesRequired": "请至少选择一个文件"
   },
   "agent": {
     "title": "Agent",

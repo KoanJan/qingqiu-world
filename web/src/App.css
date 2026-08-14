@@ -1326,6 +1326,17 @@
   height: 100%;
 }
 
+.jinshu-send-form {
+  max-width: 560px;
+}
+
+.jinshu-send-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 4px;
+}
+
 .received-list {
   display: flex;
   flex-direction: column;

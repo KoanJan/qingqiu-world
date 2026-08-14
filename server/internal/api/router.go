@@ -92,8 +92,10 @@ func SetupRouter() *gin.Engine {
 
 		jinshus := api.Group("/jinshus")
 		{
+			jinshus.POST("", h.SendJinshu)
 			jinshus.GET("/sent", h.GetSentJinshus)
 			jinshus.GET("/received", h.GetReceivedJinshus)
+			jinshus.POST("/:id/read", h.MarkJinshuRead)
 			jinshus.GET("/:id/file", h.GetJinshuFile)
 		}
 

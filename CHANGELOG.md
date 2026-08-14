@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.8] - 2026-08-15
+
+### Added
+- **Jinshu Perception Actions**: agents can now reason over jinshu directly at the decision layer — `inspect_jinshu` reads a received jinshu's files through a dedicated lightweight loop, while `list_received_jinshu` and `list_sent_jinshu` paginate keyword searches over inbound and outbound deliveries respectively; each result reflows back into Decide for the next step
+- **Send Jinshu Action**: a new `send_jinshu` action delivers private-space files or directories to another person as a jinshu without entering the private space; success/failure flows back as an event so the agent knows whether the send actually happened
+- **Trigger-Action Grounding**: events produced by an agent's own actions now carry their originating background/reason into the next Decide pass, keeping follow-up decisions anchored to the original intent
+- **Private-Space Recall**: `enter_private_space` is now also available when responding to external events, letting an agent look back at what it made or kept there (e.g., "didn't you say you'd give me something?"); prompts now state that everything in the private space is the agent's to keep private with no obligation to reveal it
+
 ## [0.1.7] - 2026-08-14
 
 ### Added

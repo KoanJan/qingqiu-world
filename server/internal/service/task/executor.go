@@ -374,6 +374,9 @@ func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, 
 		tools.NewRecallExperienceTool(personID),
 		tools.NewSendJinshuTool(personID, sessionID),
 		tools.NewSearchChatHistoriesTool(personID),
+		tools.NewScanJinshuTool(personID),
+		tools.NewReadJinshuTool(personID),
+		tools.NewCopyFromJinshuTool(personID, sessionID),
 	}
 
 	if searchConfig != nil && searchConfig.IsAvailable() {

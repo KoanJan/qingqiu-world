@@ -251,6 +251,7 @@ export interface Jinshu {
   to_name: string;
   topic: string;
   description: string;
+  is_read?: boolean;
   created_at: string;
   files: JinshuFileEntry[];
 }

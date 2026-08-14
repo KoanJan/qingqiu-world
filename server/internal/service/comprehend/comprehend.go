@@ -44,6 +44,36 @@ func Comprehend(
 		// itself (guidance plus status) — no LLM pass is needed.
 		c.Type = types.ComprehensionTypeWorkCompleted
 		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeNewJinshuReceived:
+		// A jinshu is a delivery from another person, but it is not a chat
+		// message inside a session. Its comprehension is the event description
+		// itself (sender, topic, description) — no LLM pass is needed here.
+		// The agent can decide to inspect it via the dedicated read loop.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeJinshuReadCompleted:
+		// The agent's own summary after reading a jinshu. There is no other
+		// party to interpret, so the event description (the summary) is used
+		// as-is; no LLM pass is needed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeJinshuListed:
+		// The paginated jinshu search result produced by the agent's own
+		// ListReceivedJinshu action. The event description carries the list directly,
+		// so no LLM pass is needed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeJinshuSent:
+		// The result of the agent's own SendJinshu action. The event description
+		// already states success/failure, so no LLM pass is needed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeJinshuSentListed:
+		// The paginated sent-jinshu search result produced by the agent's own
+		// ListSentJinshu action. The event description carries the list directly,
+		// so no LLM pass is needed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeScheduled,
 		eventqueue.EventTypeAlarmCreated,
 		eventqueue.EventTypeGroupChatJoined,
