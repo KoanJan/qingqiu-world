@@ -26,6 +26,7 @@ import (
 
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
 	taskcontext "qingqiu-world-server/internal/service/task/context"
@@ -175,7 +176,7 @@ func Execute(params TaskParams) *TaskResult {
 	}
 	toolDescStr := strings.Join(toolDescLines, "\n")
 
-	systemPrompt := buildSystemPrompt(params.Background, params.Metadata)
+	systemPrompt := buildSystemPrompt(params.Background, params.Metadata, buildKBSection(params.PersonID))
 
 	workspaceDir := workspace.GetWorkspacePath(params.PersonID, params.SessionID)
 	outputDir := workspace.GetOutputDir(params.PersonID, params.SessionID)
@@ -264,7 +265,7 @@ func Execute(params TaskParams) *TaskResult {
 // static instruction blocks. Directives (from Decide phase and routeWork)
 // are managed separately by ContextManager and injected into the last user
 // message to preserve LLM prefix caching on the system prompt.
-func buildSystemPrompt(background string, metadata *Metadata) string {
+func buildSystemPrompt(background string, metadata *Metadata, kbSection string) string {
 	parts := []string{
 		"[Background]",
 		background,
@@ -276,6 +277,14 @@ func buildSystemPrompt(background string, metadata *Metadata) string {
 			"",
 			"[Metadata]",
 			metadata.String(),
+		)
+	}
+
+	// Inject the authorized knowledge base inventory if the agent has any.
+	if kbSection != "" {
+		parts = append(parts,
+			"",
+			kbSection,
 		)
 	}
 
@@ -355,10 +364,37 @@ func buildSystemPrompt(background string, metadata *Metadata) string {
 	return strings.Join(parts, "\n")
 }
 
+// buildKBSection renders the authorized knowledge base inventory for the task
+// system prompt. KB contents are reachable only through scan_kb /
+// list_kb_documents (retrieval, never raw file reads). Returns an empty string
+// when the agent has no authorized KBs so the section is omitted entirely.
+func buildKBSection(personID int64) string {
+	kbs, err := dops.ListAuthorizedKBs(personID)
+	if err != nil {
+		applogger.Error("failed to load authorized KBs for task prompt", "person_id", personID, "error", err)
+		return ""
+	}
+	if len(kbs) == 0 {
+		return ""
+	}
+
+	var b strings.Builder
+	b.WriteString("[Knowledge Bases]\n")
+	b.WriteString("Authorized knowledge bases (use scan_kb to search them, list_kb_documents to list their documents):\n")
+	for _, k := range kbs {
+		if k.Description != "" {
+			b.WriteString(fmt.Sprintf("- KB #%d %q: %s\n", k.ID, k.Name, k.Description))
+		} else {
+			b.WriteString(fmt.Sprintf("- KB #%d %q\n", k.ID, k.Name))
+		}
+	}
+	return b.String()
+}
+
 // buildToolList creates the list of available tools for the task loop.
 // Always includes read_text_file, write_text_file, edit_text_file, bash,
-// write_notes, scan_my_experience, and recall_my_experience;
-// adds web_search if search config is available.
+// write_notes, scan_my_experience, recall_my_experience, scan_kb and
+// list_kb_documents; adds web_search if search config is available.
 //
 // Note: wake_me_when was promoted to a top-level Action (ActionCreateAlarm)
 // in 0.1.3 — setting an alarm is a world action, not a workspace operation.
@@ -377,6 +413,8 @@ func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, 
 		tools.NewScanJinshuTool(personID),
 		tools.NewReadJinshuTool(personID),
 		tools.NewCopyFromJinshuTool(personID, sessionID),
+		tools.NewScanKBTool(personID),
+		tools.NewListKBDocumentsTool(personID),
 	}
 
 	if searchConfig != nil && searchConfig.IsAvailable() {

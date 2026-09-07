@@ -1,9 +1,13 @@
-// Package tools provides reusable, path-based tool implementations for agent
-// operations. Tools accept directory paths directly (not person/session IDs)
-// and are free of domain-specific interfaces like Tool/ToolName/Schema.
+// Package tools provides reusable tool implementations for agent operations.
+// File tools accept directory paths directly (not person/session IDs), and all
+// cores are free of domain-specific interfaces like Tool/ToolName/Schema.
+// The knowledge-base cores are person-scoped by nature: they resolve the
+// authorized inventory through an injected KBAuthorizer instead of a person ID
+// (see AuthorizedKBsFor), keeping person identity in the wrapper packages.
 //
 // Higher-level packages (task/tools, privatespace/tools) wrap these cores with
-// their own interface contracts.
+// their own interface contracts. Shared LLM-facing parameter descriptions are
+// exported by the kb cores as plain data so wording stays single-sourced.
 package tools
 
 import (

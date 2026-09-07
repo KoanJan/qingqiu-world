@@ -112,11 +112,15 @@ func resolveEntityDirections(observations []model.AgentObservation) map[entityDi
 		eventMap[e.ID] = e
 	}
 
-	// Collect unique message ref_ids (only for message-type events)
+	// Collect unique ref_ids per event type
 	msgIDs := make(map[int64]bool)
+	workIDs := make(map[int64]bool)
 	for _, e := range events {
-		if e.EventType == model.EventTypeMessage {
+		switch e.EventType {
+		case model.EventTypeMessage:
 			msgIDs[e.RefID] = true
+		case model.EventTypeWorkCompleted:
+			workIDs[e.RefID] = true
 		}
 	}
 
@@ -126,18 +130,43 @@ func resolveEntityDirections(observations []model.AgentObservation) map[entityDi
 	for id := range msgIDs {
 		mids = append(mids, id)
 	}
-	if len(mids) == 0 {
-		return nil
-	}
-	if err := database.DB.Where("id IN ?", mids).Find(&messages).Error; err != nil {
-		applogger.Error("resolveEntityDirections: failed to load messages", "error", err)
-		return nil
-	}
 	msgMap := make(map[int64]model.Message)
 	sessionIDs := make(map[int64]bool)
-	for _, m := range messages {
-		msgMap[m.ID] = m
-		sessionIDs[m.SessionID] = true
+	if len(mids) > 0 {
+		if err := database.DB.Where("id IN ?", mids).Find(&messages).Error; err != nil {
+			applogger.Error("resolveEntityDirections: failed to load messages", "error", err)
+		}
+		for _, m := range messages {
+			msgMap[m.ID] = m
+			sessionIDs[m.SessionID] = true
+		}
+	}
+
+	// Batch-load works
+	var works []model.Work
+	wids := make([]int64, 0, len(workIDs))
+	for id := range workIDs {
+		wids = append(wids, id)
+	}
+	workMap := make(map[int64]model.Work)
+	if len(wids) > 0 {
+		if err := database.DB.Where("id IN ?", wids).Find(&works).Error; err != nil {
+			applogger.Error("resolveEntityDirections: failed to load works", "error", err)
+		}
+		for _, w := range works {
+			// Autonomous works (session 0) have no session entity to
+			// attribute to — skip them so no "session #0" profile is
+			// ever generated.
+			if w.SessionID == 0 {
+				continue
+			}
+			workMap[w.ID] = w
+			sessionIDs[w.SessionID] = true
+		}
+	}
+
+	if len(msgMap) == 0 && len(workMap) == 0 {
+		return nil
 	}
 
 	// Batch-load sessions
@@ -183,30 +212,50 @@ func resolveEntityDirections(observations []model.AgentObservation) map[entityDi
 
 	for _, o := range observations {
 		ev, ok := eventMap[o.EventID]
-		if !ok || ev.EventType != model.EventTypeMessage {
-			continue
-		}
-
-		msg, ok := msgMap[ev.RefID]
 		if !ok {
 			continue
 		}
 
-		// Direction 1: Session
-		{
-			dir := entityDirection{EntityType: model.EntityTypeSession, EntityID: msg.SessionID}
-			if dedup[dir] == nil {
-				dedup[dir] = make(map[int64]bool)
+		switch ev.EventType {
+		case model.EventTypeMessage:
+			msg, ok := msgMap[ev.RefID]
+			if !ok {
+				continue
 			}
-			if !dedup[dir][o.ID] {
-				dedup[dir][o.ID] = true
-				counts[dir]++
-			}
-		}
 
-		// Direction 2: Person (sender of the message)
-		{
-			dir := entityDirection{EntityType: model.EntityTypePerson, EntityID: msg.PersonID}
+			// Direction 1: Session
+			{
+				dir := entityDirection{EntityType: model.EntityTypeSession, EntityID: msg.SessionID}
+				if dedup[dir] == nil {
+					dedup[dir] = make(map[int64]bool)
+				}
+				if !dedup[dir][o.ID] {
+					dedup[dir][o.ID] = true
+					counts[dir]++
+				}
+			}
+
+			// Direction 2: Person (sender of the message)
+			{
+				dir := entityDirection{EntityType: model.EntityTypePerson, EntityID: msg.PersonID}
+				if dedup[dir] == nil {
+					dedup[dir] = make(map[int64]bool)
+				}
+				if !dedup[dir][o.ID] {
+					dedup[dir][o.ID] = true
+					counts[dir]++
+				}
+			}
+
+		case model.EventTypeWorkCompleted:
+			// A completed work was executed on behalf of its session, so it
+			// contributes to the session direction only — the actor is the
+			// agent itself, not another person.
+			work, ok := workMap[ev.RefID]
+			if !ok {
+				continue
+			}
+			dir := entityDirection{EntityType: model.EntityTypeSession, EntityID: work.SessionID}
 			if dedup[dir] == nil {
 				dedup[dir] = make(map[int64]bool)
 			}
@@ -443,32 +492,52 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 		eventIDs = append(eventIDs, o.EventID)
 	}
 
-	// Load events (only message-type)
+	// Load events (message-type and work-completion-type)
 	var events []model.Event
-	if err := database.DB.Where("id IN ? AND event_type = ?", eventIDs, model.EventTypeMessage).Find(&events).Error; err != nil {
+	if err := database.DB.Where("id IN ?", eventIDs).Find(&events).Error; err != nil {
 		applogger.Error("loadProfileEvidences: failed to load events", "error", err)
 	}
 	eventMap := make(map[int64]model.Event)
-	refIDs := make([]int64, 0, len(events))
+	msgRefIDs := make([]int64, 0, len(events))
+	workRefIDs := make([]int64, 0, len(events))
 	for _, e := range events {
 		eventMap[e.ID] = e
-		refIDs = append(refIDs, e.RefID)
+		switch e.EventType {
+		case model.EventTypeMessage:
+			msgRefIDs = append(msgRefIDs, e.RefID)
+		case model.EventTypeWorkCompleted:
+			workRefIDs = append(workRefIDs, e.RefID)
+		}
 	}
-	if len(refIDs) == 0 {
+	if len(msgRefIDs) == 0 && len(workRefIDs) == 0 {
 		return nil
 	}
 
 	// Load messages
 	var messages []model.Message
-	if err := database.DB.Where("id IN ?", refIDs).Find(&messages).Error; err != nil {
-		applogger.Error("loadProfileEvidences: failed to load messages", "error", err)
-		return nil
-	}
 	msgMap := make(map[int64]model.Message)
 	sessionIDs := make(map[int64]bool)
-	for _, m := range messages {
-		msgMap[m.ID] = m
-		sessionIDs[m.SessionID] = true
+	if len(msgRefIDs) > 0 {
+		if err := database.DB.Where("id IN ?", msgRefIDs).Find(&messages).Error; err != nil {
+			applogger.Error("loadProfileEvidences: failed to load messages", "error", err)
+		}
+		for _, m := range messages {
+			msgMap[m.ID] = m
+			sessionIDs[m.SessionID] = true
+		}
+	}
+
+	// Load works
+	var works []model.Work
+	workMap := make(map[int64]model.Work)
+	if len(workRefIDs) > 0 {
+		if err := database.DB.Where("id IN ?", workRefIDs).Find(&works).Error; err != nil {
+			applogger.Error("loadProfileEvidences: failed to load works", "error", err)
+		}
+		for _, w := range works {
+			workMap[w.ID] = w
+			sessionIDs[w.SessionID] = true
+		}
 	}
 
 	sids := make([]int64, 0, len(sessionIDs))
@@ -516,29 +585,45 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 		if !ok {
 			continue
 		}
-		msg, ok := msgMap[ev.RefID]
-		if !ok {
-			continue
-		}
 
-		matches := false
-		switch entityType {
-		case model.EntityTypeSession:
-			matches = msg.SessionID == entityID
-		case model.EntityTypePerson:
-			matches = msg.PersonID == entityID
-		}
+		switch ev.EventType {
+		case model.EventTypeMessage:
+			msg, ok := msgMap[ev.RefID]
+			if !ok {
+				continue
+			}
 
-		if !matches {
-			continue
-		}
+			matches := false
+			switch entityType {
+			case model.EntityTypeSession:
+				matches = msg.SessionID == entityID
+			case model.EntityTypePerson:
+				matches = msg.PersonID == entityID
+			}
+			if !matches {
+				continue
+			}
 
-		// Resolve the label for this message based on who sent it.
-		roleLabel := agentName // default: this agent's message
-		if personName, ok := personNameMap[msg.PersonID]; ok && personName != agentName {
-			roleLabel = personName
+			// Resolve the label for this message based on who sent it.
+			roleLabel := agentName // default: this agent's message
+			if personName, ok := personNameMap[msg.PersonID]; ok && personName != agentName {
+				roleLabel = personName
+			}
+			evidences = append(evidences, fmt.Sprintf("[%s] %s", roleLabel, msg.Content))
+
+		case model.EventTypeWorkCompleted:
+			work, ok := workMap[ev.RefID]
+			if !ok {
+				continue
+			}
+			// Work events only contribute to the session direction: they
+			// describe what the agent itself did for that session.
+			if entityType != model.EntityTypeSession || work.SessionID != entityID {
+				continue
+			}
+			evidences = append(evidences, fmt.Sprintf("[%s] [work] %s (status: %s)",
+				agentName, work.Description, workStatusLabel(work.Status)))
 		}
-		evidences = append(evidences, fmt.Sprintf("[%s] %s", roleLabel, msg.Content))
 
 		if len(evidences) >= profileTopK {
 			break
@@ -546,6 +631,21 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 	}
 
 	return evidences
+}
+
+// workStatusLabel renders a work status as a short human-readable label for
+// profile evidence text.
+func workStatusLabel(status int) string {
+	switch status {
+	case model.WorkStatusCompleted:
+		return "completed"
+	case model.WorkStatusFailed:
+		return "failed"
+	case model.WorkStatusAbandoned:
+		return "abandoned"
+	default:
+		return "running"
+	}
 }
 
 // getAgentConfigByPersonID retrieves the agent config model by person_id.

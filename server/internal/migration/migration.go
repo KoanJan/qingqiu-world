@@ -64,6 +64,11 @@ var migrations = []migration{
 		description: "Rename agent_deliveries to jinshus (drop session/paths, add topic, rename remark→description)",
 		fn:          migrate_0_1_7,
 	},
+	{
+		version:     "0.1.9",
+		description: "Migrate agent_configs.knowledge_base_ids bindings into kb_access grants, then drop the column",
+		fn:          migrate_0_1_9,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

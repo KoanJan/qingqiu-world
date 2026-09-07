@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-09-08
+
+### Added
+- **Global Knowledge Base**: knowledge bases decoupled from agents and promoted to global resources; access is granted per agent from the KB side (management UI + APIs), with existing agent-KB bindings migrated into access grants automatically
+- **KB Tools**: `scan_kb` and `list_kb_documents` for task execution and the private space, with authorization validated live on every call
+- **Experience Memory**: completed and failed works are recorded as episodic memory; private-space sessions end with a first-person digest (file contents stay private); comprehension now includes a session-level works section so agents know what they ran and what failed
+
+### Fixed
+- **Standalone Alarms Silently Dropped**: self-set alarms now wake the agent through the autonomous decision path instead of being swallowed by session-less chat execution
+- **Multi-KB Search Unordered**: multi-KB results are now globally ranked by score and truncated to topK at the kb layer
+- **Experience Reflection Timeout**: raised from 60s to 2 minutes — the old limit killed every reflection mid-generation
+- **Alarm Message Voice**: alarm reminders constrained to first person
+
 ## [0.1.8] - 2026-08-15
 
 ### Added

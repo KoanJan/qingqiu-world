@@ -60,7 +60,7 @@ Guard your energy carefully. Do not let it run too low — once it's gone, all y
 
 Decide what to do with this event. Return a list of actions — each action is independent and self-contained.
 
-Every action MUST include "background" and "reason" at theaction.Actionlevel:
+Every action MUST include "background" and "reason" at the action level:
 - background: What situation triggered this decision. Provide enough context so your future self understands why you acted.
 - reason: Why you chose this specific action rather than alternatives.
 
@@ -89,7 +89,7 @@ Action types (use the integer value for the "type" field):
 5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
-   - message:action.Actioninstruction for your future self — what you should DO when the alarm fires. Write as a command.
+   - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
 
@@ -195,7 +195,7 @@ Letting your energy drop to zero is dangerous. You will lose all ability to perc
 
 You may decide to do nothing. Doing nothing is a legitimate choice — the world continues regardless. Do not invent reasons to act; only act when you actually have something to say, ask, or follow up on.
 
-Every action MUST include "background" and "reason" at theaction.Actionlevel:
+Every action MUST include "background" and "reason" at the action level:
 - background: What situation or observation triggered this intention.
 - reason: Why you chose this specific action rather than alternatives (including doing nothing).
 
@@ -214,7 +214,7 @@ If you decide to act, you have these kinds of action available:
 2. 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
-   - message:action.Actioninstruction for your future self — what you should DO when the alarm fires. Write as a command.
+   - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
 
@@ -291,6 +291,31 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "non-message event")
 		return DecisionResult{}
 	case eventqueue.EventTypeScheduled:
+		// A session-anchored alarm (session_id > 0) replies in its origin
+		// session via the rule-based chat path below. A standalone alarm
+		// (session_id == 0) — e.g. one the agent set for itself during a
+		// heartbeat — is a pure self-reminder: the agent wakes up and gets a
+		// full autonomous decision opportunity, exactly like a heartbeat. It
+		// may start a conversation, act in any of its sessions, or do nothing
+		// at all. Routing it to executeChat with session_id=0 would silently
+		// drop the alarm (executeChat rejects a zero session).
+		if event.SessionID == 0 {
+			applogger.Info("Decision made (autonomous)", "person_id", personID, "reason", "standalone alarm")
+			description := buildHeartbeatDescription(personID)
+			if p, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && p != nil && p.Message != "" {
+				description += "\n\nYour alarm just went off. The reminder you left for yourself:\n" + p.Message
+			}
+			// Energy mirrors the heartbeat path: Recovery is idempotent and
+			// handleEvent has already checked the passive threshold above.
+			state, err := energy.RecoverEnergy(personID)
+			if err != nil {
+				applogger.Error("standalone alarm: energy recovery failed",
+					"person_id", personID, "error", err)
+				return DecisionResult{}
+			}
+			// ActiveWorksSummary stays empty, same as handleHeartbeat.
+			return decideHeartbeat(ctx, buildHeartbeatSituation(description, state.Energy, ""), personID)
+		}
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
 		plan := &action.ChatPlan{
 			Guidance:  "I should respond to my alarm — this is a self-reminder I set earlier",
@@ -315,6 +340,12 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		// goroutine as a side effect before entering the pipeline. There is
 		// nothing to decide cognitively, so produce no actions.
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "alarm_created event")
+		return DecisionResult{}
+	case eventqueue.EventTypePSCompleted:
+		// Observation-only: the digest was already turned into a memory
+		// observation by handleEvent, and its content needs no reaction. The
+		// decision phase has nothing to act on.
+		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "private-space digest observation-only")
 		return DecisionResult{}
 	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed:
 		// Proceed to LLM-based decision
@@ -935,17 +966,19 @@ func buildActiveWorksContext(works []*work) string {
 	return fmt.Sprintf("Active works:\n%s\n\n", strings.Join(parts, "\n"))
 }
 
-// buildCompletedWorksContext formats recently completed TaskWorks for the
-// Decide prompt. Unlike active works, completed works have already left the
-// in-memory active set, so they are loaded from the database. Surfacing them
-// lets the Decide LLM see what it has already finished in this session and
-// avoid re-doing (and re-delivering) work it has already completed.
+// buildCompletedWorksContext formats recently finished TaskWorks for the
+// Decide prompt. Unlike active works, finished works have already left the
+// in-memory active set, so they are loaded from the database. Both completed
+// and failed works are shown: failures matter as much as successes, since the
+// Decide LLM should avoid re-issuing a task that just failed. Surfacing them
+// lets the Decide LLM see what it has already done in this session and avoid
+// re-doing (and re-delivering) work it has already finished.
 func buildCompletedWorksContext(personID, sessionID int64) string {
 	var records []model.Work
-	if err := database.DB.Where("person_id = ? AND session_id = ? AND status = ?",
-		personID, sessionID, model.WorkStatusCompleted).
+	if err := database.DB.Where("person_id = ? AND session_id = ? AND status IN (?, ?)",
+		personID, sessionID, model.WorkStatusCompleted, model.WorkStatusFailed).
 		Order("id DESC").Limit(5).Find(&records).Error; err != nil {
-		applogger.Error("buildCompletedWorksContext: failed to load completed works",
+		applogger.Error("buildCompletedWorksContext: failed to load finished works",
 			"person_id", personID, "session_id", sessionID, "error", err)
 		return ""
 	}
@@ -955,9 +988,20 @@ func buildCompletedWorksContext(personID, sessionID int64) string {
 
 	var parts []string
 	for _, wr := range records {
-		parts = append(parts, fmt.Sprintf("- [Work #%d] %s", wr.ID, truncateWorkDescription(wr.Description)))
+		parts = append(parts, fmt.Sprintf("- [Work #%d, %s] %s",
+			wr.ID, workOutcomeLabel(wr.Status), truncateWorkDescription(wr.Description)))
 	}
-	return fmt.Sprintf("Completed works in this session:\n%s\n\n", strings.Join(parts, "\n"))
+	return fmt.Sprintf("Finished works in this session:\n%s\n\n", strings.Join(parts, "\n"))
+}
+
+// workOutcomeLabel renders a finished work's status as a short label for the
+// Decide prompt. Unfinished statuses should never appear here because the
+// query only selects completed/failed works.
+func workOutcomeLabel(status int) string {
+	if status == model.WorkStatusFailed {
+		return "failed"
+	}
+	return "completed"
 }
 
 // truncateWorkDescription bounds a work description to a fixed number of runes

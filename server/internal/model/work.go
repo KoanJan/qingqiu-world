@@ -6,6 +6,7 @@ import "time"
 const (
 	WorkStatusRunning   = 0  // Work is currently executing
 	WorkStatusCompleted = 1  // Work finished successfully
+	WorkStatusFailed    = 2  // Work finished but the task reported failure
 	WorkStatusAbandoned = -1 // Work was abandoned (e.g., user correction, cancellation)
 )
 

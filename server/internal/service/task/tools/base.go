@@ -3,7 +3,9 @@
 // All tools must implement the Tool interface, which requires a unique name,
 // a short description for the system prompt, a function definition schema,
 // and an execute method. Tools are registered by name and provide their
-// schema for LLM tool calling.
+// schema for LLM tool calling. Reusable domain-agnostic tool cores live in
+// service/tools; this package binds them to task-specific contracts and
+// person-scoped authorization.
 //
 // Available tools:
 //   - ReadTextFileTool: Read text file contents with line offset/limit
@@ -14,6 +16,9 @@
 //   - WebSearchTool: Search the web for information (Tavily provider)
 //   - ScanExperienceTool: Search private experiences by keyword (progressive disclosure step 1)
 //   - RecallExperienceTool: Read the full content of a specific experience (progressive disclosure step 2)
+//   - ScanKBTool: Semantic search over authorized knowledge bases with optional
+//     KB/document metadata filters (KB contents are never exposed as raw files)
+//   - ListKBDocumentsTool: List the documents of one authorized knowledge base
 package tools
 
 import "qingqiu-world-server/internal/service/llm"
@@ -37,6 +42,8 @@ const (
 	ToolNameScanJinshu                          // scan_jinshu
 	ToolNameReadJinshu                          // read_jinshu
 	ToolNameCopyFromJinshu                      // copy_from_jinshu
+	ToolNameScanKB                              // scan_kb
+	ToolNameListKBDocuments                     // list_kb_documents
 )
 
 // nameStrings maps ToolName values to their string representation for LLM function calling.
@@ -54,6 +61,8 @@ var nameStrings = map[ToolName]string{
 	ToolNameScanJinshu:          "scan_jinshu",
 	ToolNameReadJinshu:          "read_jinshu",
 	ToolNameCopyFromJinshu:      "copy_from_jinshu",
+	ToolNameScanKB:              "scan_kb",
+	ToolNameListKBDocuments:     "list_kb_documents",
 }
 
 // String returns the string representation of the ToolName for use in LLM function definitions.

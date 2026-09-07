@@ -17,6 +17,12 @@ import (
 	"qingqiu-world-server/internal/service/workspace"
 )
 
+// reflectionTimeout bounds one reflection LLM call. The reflection output is
+// a large structured JSON and the model generates at ~40 tokens/s, so 60s
+// was not enough (observed as repeated deadline-exceeded retries). Aligned
+// with digestTimeout.
+const reflectionTimeout = 2 * time.Minute
+
 // reflectOutput is the structured output from the LLM during reflection.
 type reflectOutput struct {
 	Title       string `json:"title" jsonschema:"description=Transferable lesson stated as a general principle"`
@@ -138,7 +144,7 @@ func CheckReflection(ctx context.Context, personID int64) {
 // On LLM or parse failure, the fingerprint is NOT written, so the next
 // heartbeat will retry.
 func reflectSession(ctx context.Context, personID, sessionID int64, notesContent, currentFingerprint, fpFile string) {
-	ctx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, reflectionTimeout)
 	defer cancel()
 
 	// Load agent config LLM config from DB

@@ -1,7 +1,6 @@
 package dops
 
 import (
-	"encoding/json"
 	"fmt"
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
@@ -84,7 +83,9 @@ func GetAIPersons() ([]model.Person, error) {
 
 // CreateAIPerson creates a Person (type=AI) and an AgentConfig in a single transaction.
 // Returns the created AgentConfig and Person.
-func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int64, avatar string, knowledgeBaseIDs []int64) (*model.AgentConfig, *model.Person, error) {
+// KB access is no longer configured here: since 0.1.9 KBs are global resources
+// and per-agent grants live in the kb_access table.
+func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int64, avatar string) (*model.AgentConfig, *model.Person, error) {
 	var agent *model.AgentConfig
 	var person *model.Person
 
@@ -99,19 +100,12 @@ func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int6
 			return fmt.Errorf("create person: %w", err)
 		}
 
-		kbIDsJSON := "[]"
-		if len(knowledgeBaseIDs) > 0 {
-			data, _ := json.Marshal(knowledgeBaseIDs)
-			kbIDsJSON = string(data)
-		}
-
 		a := model.AgentConfig{
 			PersonID:          p.ID,
 			CharacterSettings: characterSettings,
 			LLMConfigID:       llmConfigID,
-			KnowledgeBaseIDs:  kbIDsJSON,
 		}
-		if err := tx.Select("PersonID", "CharacterSettings", "LLMConfigID", "KnowledgeBaseIDs").Create(&a).Error; err != nil {
+		if err := tx.Select("PersonID", "CharacterSettings", "LLMConfigID").Create(&a).Error; err != nil {
 			return fmt.Errorf("create agent: %w", err)
 		}
 
@@ -165,6 +159,15 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 			return err
 		}
 
+		// Delete KB access grants (application-level cascade, no FK)
+		removed, err := DeleteAccessByPerson(tx, personID)
+		if err != nil {
+			return err
+		}
+		if removed > 0 {
+			applogger.Info("Removed KB access grants on AI person deletion", "person_id", personID, "count", removed)
+		}
+
 		// Delete agent config and person
 		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentConfig{}).Error; err != nil {
 			return err
@@ -211,7 +214,6 @@ type AIPersonUpdates struct {
 	CharacterSettings *string
 	LLMConfigID       *int64
 	Avatar            *string
-	KnowledgeBaseIDs  *[]int64
 }
 
 func (m *AIPersonUpdates) getAgentConfigUpdates() map[string]any {
@@ -221,10 +223,6 @@ func (m *AIPersonUpdates) getAgentConfigUpdates() map[string]any {
 	}
 	if m.LLMConfigID != nil {
 		updates["llm_config_id"] = *m.LLMConfigID
-	}
-	if m.KnowledgeBaseIDs != nil {
-		data, _ := json.Marshal(*m.KnowledgeBaseIDs)
-		updates["knowledge_base_ids"] = string(data)
 	}
 	return updates
 }

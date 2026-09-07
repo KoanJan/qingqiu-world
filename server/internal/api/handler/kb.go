@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -18,6 +19,7 @@ import (
 	"qingqiu-world-server/internal/api/response"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // CreateKnowledgeBase handles creating a new knowledge base.
@@ -260,6 +262,55 @@ func (h *Handler) SearchMultiKB(c *gin.Context) {
 		return
 	}
 	response.Success(c, results)
+}
+
+// ListKBAccess handles listing the agents granted access to a knowledge base.
+func (h *Handler) ListKBAccess(c *gin.Context) {
+	kbID := getPathID(c)
+	persons, err := dops.ListGrantedPersons(kbID)
+	if err != nil {
+		applogger.Error("ListKBAccess: failed to list granted persons", "kb_id", kbID, "error", err)
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.Success(c, schema.NewKBAccessPersonList(persons))
+}
+
+// GrantKBAccess handles granting an agent access to a knowledge base.
+// The request body carries the target person_id.
+func (h *Handler) GrantKBAccess(c *gin.Context) {
+	kbID := getPathID(c)
+	var req schema.KBAccessGrant
+	if err := c.ShouldBindJSON(&req); err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	if err := dops.GrantKBAccess(kbID, req.PersonID); err != nil {
+		// Existence/type validation failures surface as gorm.ErrRecordNotFound
+		// from the wrapped dops layer; they are client errors, the rest internal.
+		if errors.Is(err, gorm.ErrRecordNotFound) {
+			response.BadRequest(c, err.Error())
+			return
+		}
+		applogger.Error("GrantKBAccess: failed to grant access", "kb_id", kbID, "person_id", req.PersonID, "error", err)
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessMessage(c, "KB access granted", nil)
+}
+
+// RevokeKBAccess handles revoking an agent's access to a knowledge base.
+// The agent to revoke is identified by the pid path parameter.
+func (h *Handler) RevokeKBAccess(c *gin.Context) {
+	kbID := getPathID(c)
+	personID := getPathIDByParam(c, "pid")
+	if err := dops.RevokeKBAccess(kbID, personID); err != nil {
+		applogger.Error("RevokeKBAccess: failed to revoke access", "kb_id", kbID, "person_id", personID, "error", err)
+		response.InternalError(c, err.Error())
+		return
+	}
+	response.SuccessMessage(c, "KB access revoked", nil)
 }
 
 // isImageFile checks if the file extension indicates an image.

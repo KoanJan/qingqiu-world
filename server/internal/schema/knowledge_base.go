@@ -68,3 +68,32 @@ func (req *KnowledgeBaseUpdate) BuildUpdates() map[string]interface{} {
 	}
 	return updates
 }
+
+// KBAccessGrant represents the input for granting an agent access to a KB.
+type KBAccessGrant struct {
+	PersonID int64 `json:"person_id" binding:"required"`
+}
+
+// KBAccessPerson represents a granted agent (AI person) in the KB access list.
+type KBAccessPerson struct {
+	ID        int64     `json:"id"`
+	Name      string    `json:"name"`
+	Avatar    string    `json:"avatar"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+}
+
+// NewKBAccessPersonList converts a list of model.Person to KBAccessPerson list.
+func NewKBAccessPersonList(persons []model.Person) []*KBAccessPerson {
+	result := make([]*KBAccessPerson, 0, len(persons))
+	for i := range persons {
+		result = append(result, &KBAccessPerson{
+			ID:        persons[i].ID,
+			Name:      persons[i].Name,
+			Avatar:    persons[i].Avatar,
+			CreatedAt: persons[i].CreatedAt,
+			UpdatedAt: persons[i].UpdatedAt,
+		})
+	}
+	return result
+}

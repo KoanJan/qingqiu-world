@@ -8,7 +8,6 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -73,11 +72,11 @@ func ComprehendMessage(
 	// concurrent work
 	wg := sync.WaitGroup{}
 
-	if sessionInfo.MessageCount >= int64(sessionInfo.WindowSize) || len(sessionInfo.KBIDs) > 0 {
+	if sessionInfo.MessageCount >= int64(sessionInfo.WindowSize) || len(sessionInfo.AuthorizedKBs) > 0 {
 		wg.Go(func() {
 			// Step 1: Query preprocessing (conditional — same conditions as before)
-			// Runs when V >= N (for context engineering) or when knowledge bases
-			// are configured (for KB retrieval optimization).
+			// Runs when V >= N (for context engineering) or when the agent holds
+			// KB grants (for agentic KB retrieval decisions).
 			preprocessingHistory := getPreprocessingHistory(sessionInfo.SessionID, sessionInfo.WindowSize)
 			preprocessingResult := PreprocessQuery(
 				ctx,
@@ -85,6 +84,7 @@ func ComprehendMessage(
 				eventDescription,
 				preprocessingHistory,
 				ac.CharacterSettings,
+				sessionInfo.AuthorizedKBs,
 				sessionInfo.WindowSize,
 			)
 			result.NeedsClarification = preprocessingResult.NeedsClarification
@@ -101,26 +101,32 @@ func ComprehendMessage(
 				}
 			}
 
-			// Step 3: Knowledge base retrieval
-			if len(sessionInfo.KBIDs) > 0 && preprocessingResult.KnowledgeBaseQuery != "" {
-				result.KBRetrieval = &types.KBRetrieval{Query: preprocessingResult.KnowledgeBaseQuery}
-				kbResults, err := kb.SearchMultiKB(ctx, sessionInfo.KBIDs, result.KBRetrieval.Query, kb.DefaultSearchTopK)
-				if err != nil {
-					applogger.Error("chat.ComprehendMessage: KB retrieval failed",
-						"session_id", sessionInfo.SessionID,
-						"error", err,
-					)
-				} else {
-					for _, kr := range kbResults {
-						result.KBRetrieval.Segments = append(result.KBRetrieval.Segments, types.Segment{
-							Content: kr.Content,
-							Source:  types.SourceKnowledgeBase,
-						})
+			// Step 3: Knowledge base retrieval. The preprocessing LLM decides
+			// whether to search and which KBs to target; the selected IDs are
+			// re-validated against the authorized set before searching
+			// (defense in depth — the prompt already restricts the choices).
+			if len(sessionInfo.AuthorizedKBs) > 0 && preprocessingResult.KnowledgeBaseQuery != "" {
+				selectedKBIDs := filterAuthorizedKBIDs(preprocessingResult.KnowledgeBaseIDs, sessionInfo.AuthorizedKBs)
+				if len(selectedKBIDs) > 0 {
+					result.KBRetrieval = &types.KBRetrieval{Query: preprocessingResult.KnowledgeBaseQuery}
+					kbResults, err := kb.SearchMultiKB(ctx, selectedKBIDs, result.KBRetrieval.Query, kb.DefaultSearchTopK)
+					if err != nil {
+						applogger.Error("chat.ComprehendMessage: KB retrieval failed",
+							"session_id", sessionInfo.SessionID,
+							"error", err,
+						)
+					} else {
+						for _, kr := range kbResults {
+							result.KBRetrieval.Segments = append(result.KBRetrieval.Segments, types.Segment{
+								Content: kr.Content,
+								Source:  types.SourceKnowledgeBase,
+							})
+						}
+						applogger.Info("chat.ComprehendMessage: KB retrieved segments",
+							"session_id", sessionInfo.SessionID,
+							"count", len(kbResults),
+						)
 					}
-					applogger.Info("chat.ComprehendMessage: KB retrieved segments",
-						"session_id", sessionInfo.SessionID,
-						"count", len(kbResults),
-					)
 				}
 			}
 		})
@@ -157,6 +163,29 @@ func ComprehendMessage(
 	)
 
 	return eventDescription, result
+}
+
+// filterAuthorizedKBIDs keeps only the KB IDs that appear in the authorized
+// set. The routing prompt already restricts the LLM's choices, but this is
+// defense in depth: out-of-scope IDs are dropped with a warning instead of
+// being searched.
+func filterAuthorizedKBIDs(selected []int64, authorized []types.KBDescriptor) []int64 {
+	if len(selected) == 0 {
+		return nil
+	}
+	authorizedSet := make(map[int64]struct{}, len(authorized))
+	for _, item := range authorized {
+		authorizedSet[item.ID] = struct{}{}
+	}
+	kept := make([]int64, 0, len(selected))
+	for _, id := range selected {
+		if _, ok := authorizedSet[id]; !ok {
+			applogger.Warn("chat.filterAuthorizedKBIDs: dropping unauthorized KB ID from preprocessing decision", "kb_id", id)
+			continue
+		}
+		kept = append(kept, id)
+	}
+	return kept
 }
 
 func getRecentMessagesBefore(sessionID, maxMessageID int64, limit int) []model.Message {
@@ -295,19 +324,22 @@ func buildSessionInfo(sessionID int64, ac *model.AgentConfig) *types.SessionInfo
 	}
 	info.MessageCount = messageCount
 
-	// Get knowledge base IDs for this agent config
-	if ac.KnowledgeBaseIDs != "" && ac.KnowledgeBaseIDs != "[]" {
-		var ids []int64
-		if err := json.Unmarshal([]byte(ac.KnowledgeBaseIDs), &ids); err == nil {
-			var validIDs []int64
-			for _, id := range ids {
-				var kb model.KnowledgeBase
-				if err := database.DB.First(&kb, id).Error; err == nil {
-					validIDs = append(validIDs, id)
-				}
-			}
-			info.KBIDs = validIDs
-		}
+	// Load the KBs this agent is granted to access (kb_access table). The
+	// inventory is both the LLM's retrieval-decision input and the
+	// enforcement set for search. On load failure, KB retrieval is disabled
+	// for this turn (degraded, never silent).
+	authorizedKBs, err := dops.ListAuthorizedKBs(ac.PersonID)
+	if err != nil {
+		applogger.Error("chat.buildSessionInfo: failed to load authorized KBs, KB retrieval disabled for this turn",
+			"session_id", sessionID, "person_id", ac.PersonID, "error", err)
+	}
+	info.AuthorizedKBs = make([]types.KBDescriptor, 0, len(authorizedKBs))
+	for _, kbEntity := range authorizedKBs {
+		info.AuthorizedKBs = append(info.AuthorizedKBs, types.KBDescriptor{
+			ID:          kbEntity.ID,
+			Name:        kbEntity.Name,
+			Description: kbEntity.Description,
+		})
 	}
 
 	return info

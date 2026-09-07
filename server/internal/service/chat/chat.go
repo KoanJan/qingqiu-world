@@ -19,16 +19,12 @@ package chat
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
-	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/task"
-
-	applogger "qingqiu-world-server/internal/logger"
 )
 
 // User-friendly error message for unexpected failures
@@ -165,31 +161,4 @@ func formatAlarmNotification(t *Trigger) string {
 		t.Alarm.SelfReminder,
 		ref,
 	)
-}
-
-// getKnowledgeBaseIDs returns the knowledge base IDs associated with the agent.
-func getKnowledgeBaseIDs(ac *model.AgentConfig) []int64 {
-	if ac.KnowledgeBaseIDs == "" || ac.KnowledgeBaseIDs == "[]" {
-		applogger.Info("Agent has no KBs configured", "agent_config_id", ac.ID, "knowledge_base_ids", ac.KnowledgeBaseIDs)
-		return nil
-	}
-
-	var ids []int64
-	if err := json.Unmarshal([]byte(ac.KnowledgeBaseIDs), &ids); err != nil {
-		applogger.Error("Failed to parse agent config knowledge_base_ids", "agent_config_id", ac.ID, "raw", ac.KnowledgeBaseIDs, "error", err)
-		return nil
-	}
-
-	var validIDs []int64
-	for _, id := range ids {
-		var kb model.KnowledgeBase
-		if err := database.DB.First(&kb, id).Error; err == nil {
-			validIDs = append(validIDs, id)
-		} else {
-			applogger.Error("KB ID not found in database", "agent_config_id", ac.ID, "kb_id", id, "error", err)
-		}
-	}
-
-	applogger.Info("Agent config KB IDs resolved", "agent_config_id", ac.ID, "raw_ids", ids, "valid_ids", validIDs)
-	return validIDs
 }

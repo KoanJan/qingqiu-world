@@ -116,6 +116,7 @@ func allModels() []any {
 		&model.SearchConfig{},
 		&model.DBVersion{},
 		&model.KnowledgeBase{},
+		&model.KBAccess{},
 		&model.Document{},
 		&model.DocumentChunk{},
 		&model.Work{},
@@ -136,6 +137,7 @@ func allModels() []any {
 		&model.AgentState{},
 		&model.AgentEventBuffer{},
 		&model.AgentBiography{},
+		&model.PSDigest{},
 	}
 }
 

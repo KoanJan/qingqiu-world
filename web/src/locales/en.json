@@ -77,8 +77,6 @@
     "embeddingConfigId": "Embedding Model",
     "embeddingConfigIdPlaceholder": "Please select Embedding config (optional)",
     "defaultEmbedding": "Not used",
-    "knowledgeBaseIds": "Knowledge Bases",
-    "knowledgeBaseIdsPlaceholder": "Select associated knowledge bases (optional)",
     "noDescription": "No description",
     "createSuccess": "Agent created successfully",
     "createFailed": "Failed to create agent",
@@ -263,7 +261,16 @@
     "confirmDeleteDocTitle": "Confirm Delete",
     "confirmDeleteDoc": "Are you sure you want to delete this document?",
     "deleteDocSuccess": "Document deleted successfully",
-    "deleteDocFailed": "Failed to delete document"
+    "deleteDocFailed": "Failed to delete document",
+    "accessTitle": "Authorized Agents",
+    "accessHint": "Granted agents can search this knowledge base during chats",
+    "accessSelectPlaceholder": "Select an agent to grant",
+    "accessGrant": "Grant",
+    "accessGrantSuccess": "Access granted",
+    "accessGrantFailed": "Failed to grant access",
+    "accessRevokeSuccess": "Access revoked",
+    "accessRevokeFailed": "Failed to revoke access",
+    "accessNoCandidates": "All agents are already granted"
   },
   "embeddingRequired": {
     "title": "One more step",
@@ -293,14 +300,18 @@
       "bash": "Run command",
       "web_search": "Search web",
       "write_notes": "Write notes",
-      "wake_me_when": "Set alarm",
       "scan_my_experience": "Scan experience",
       "recall_my_experience": "Recall experience",
       "read_text_file": "Read file",
       "write_text_file": "Write file",
       "edit_text_file": "Edit file",
-      "deliver_to": "Deliver files",
-      "search_chat_histories": "Search chat history"
+      "search_chat_histories": "Search chat history",
+      "send_jinshu": "Send Jinshu",
+      "scan_jinshu": "Browse Jinshu",
+      "read_jinshu": "Read Jinshu",
+      "copy_from_jinshu": "Extract Jinshu files",
+      "scan_kb": "Search knowledge base",
+      "list_kb_documents": "List KB documents"
     }
   },
   "publicExperience": {

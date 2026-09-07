@@ -86,7 +86,7 @@ type HistorySearch struct {
 	Segments []Segment
 }
 
-// KBRetrieval describes a completed vector retrieval from configured knowledge bases.
+// KBRetrieval describes a completed vector retrieval from authorized knowledge bases.
 type KBRetrieval struct {
 	Query    string
 	Segments []Segment
@@ -107,13 +107,26 @@ type SessionInfo struct {
 	SessionID    int64
 	MessageCount int64
 	WindowSize   int
-	KBIDs        []int64
+	// AuthorizedKBs lists the knowledge bases the agent is granted to access,
+	// loaded from kb_access at session-build time. It is both the LLM's
+	// decision input (which KBs may be searched) and the enforcement set for
+	// retrieval (only granted KBs can actually be searched).
+	AuthorizedKBs []KBDescriptor
 	// PartnerName is the name of the conversation partner — the other
 	// participant in this session, resolved from participant_sessions.
 	// This is the actual person the agent is talking to (human in user-agent
 	// sessions, another agent in A2A sessions), replacing a former hardcoded
 	// human-user assumption that broke A2A addressing.
 	PartnerName string
+}
+
+// KBDescriptor is the minimal knowledge-base metadata used by the
+// comprehension phase: the authorized-KB inventory injected into the
+// retrieval-decision prompt and the allowed set for search validation.
+type KBDescriptor struct {
+	ID          int64
+	Name        string
+	Description string
 }
 
 // Segment source constants.

@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"qingqiu-world-server/internal/database"
@@ -12,7 +13,9 @@ import (
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/service/tools"
 )
 
 // work represents a unit of task execution for an agent.
@@ -54,31 +57,76 @@ func (w *work) Run(ctx context.Context) {
 	defer close(w.done)      // Signal completion regardless of how work exits
 
 	defer func() {
-		// Only transition to Completed if still Running.
-		// If abandon() already set Abandoned, this update is a no-op.
+		// Finalize the DB status from the real outcome: a task-reported
+		// failure must not be recorded as Completed. The update only applies
+		// when the work is still Running — abandon() may have already set
+		// Abandoned, in which case this is a no-op.
+		finalStatus := model.WorkStatusCompleted
+		if w.taskResult != nil && w.taskResult.Status != "success" {
+			finalStatus = model.WorkStatusFailed
+		}
 		if err := database.DB.Model(&model.Work{}).
 			Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
-			Update("status", model.WorkStatusCompleted).Error; err != nil {
+			Update("status", finalStatus).Error; err != nil {
 			applogger.Error("work: failed to update work status", "work_id", w.ID, "error", err)
+		}
+
+		// Re-read the final status from DB. abandon() may have set Abandoned
+		// while taskResult is nil (e.g. cancelled before the pipeline), so the
+		// in-memory result alone cannot be trusted to derive the outcome.
+		var workRow model.Work
+		if err := database.DB.Select("status").First(&workRow, w.ID).Error; err != nil {
+			applogger.Error("work: failed to load final status for memory event",
+				"work_id", w.ID, "error", err)
+		}
+
+		// Derive the outcome from the real final DB status, not from taskResult
+		// alone, so abandoned works are never misreported as success.
+		status := "success"
+		var output, taskErr string
+		switch workRow.Status {
+		case model.WorkStatusAbandoned:
+			status = "abandoned"
+		case model.WorkStatusFailed:
+			status = "failure"
+			if w.taskResult != nil {
+				taskErr = w.taskResult.Error
+			}
+		default:
+			if w.taskResult != nil {
+				output = w.taskResult.Output
+			}
+		}
+
+		// Episodic gist for the memory event. The works row only carries
+		// description and status, so this text is the retrievable content.
+		// TaskOutput is used as-is (head-truncated) without re-summarization.
+		gist := fmt.Sprintf("Guidance: %s\nStatus: %s\nDuration: %s",
+			w.plan.Guidance, status, time.Since(w.startedAt).Truncate(time.Second))
+		if output != "" {
+			truncated, _ := tools.TruncateHead(output, tools.DefaultTruncateBytes)
+			gist += "\nOutput: " + truncated
+		}
+		if taskErr != "" {
+			truncated, _ := tools.TruncateHead(taskErr, tools.DefaultTruncateBytes)
+			gist += "\nError: " + truncated
+		}
+
+		// Persist the episodic memory event; eventID links the eventqueue
+		// event to the memory event so the runtime can create an observation.
+		eventID, err := memory.RecordWorkCompletedEvent(w.ID, gist)
+		if err != nil {
+			applogger.Error("work: failed to record work-completed memory event",
+				"work_id", w.ID, "error", err)
 		}
 
 		// Send work completed event to the agent's event queue.
 		// The agent processes this through the same Comprehend->Decide pipeline
 		// as external events, deciding whether to inform the user.
-		status := "success"
-		var output, taskErr string
-		if w.taskResult != nil {
-			if w.taskResult.Status != "success" {
-				status = "failure"
-				taskErr = w.taskResult.Error
-			} else {
-				output = w.taskResult.Output
-			}
-		}
-
 		eventqueue.SendEvent(w.agent.agentConfigID, &eventqueue.AgentEvent{
 			Type:          eventqueue.EventTypeWorkCompleted,
 			SessionID:     w.sessionID,
+			EventID:       eventID,
 			TriggerAction: w.triggerAction,
 			Payload: &eventqueue.WorkCompletedPayload{
 				WorkID:     w.ID,

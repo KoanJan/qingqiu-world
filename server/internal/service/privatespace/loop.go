@@ -37,6 +37,8 @@ TOOLS AVAILABLE:
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
 - send_jinshu: Send files from your private space to another person as a jinshu (锦书).
 - copy_from_jinshu: Copy files from a jinshu you received into your private-space working directory.
+- scan_kb: Semantic search over your authorized knowledge bases.
+- list_kb_documents: List the documents of one of your authorized knowledge bases.
 
 GUIDELINES:
 - You have a limited number of steps. When you're done with what you wanted to do, simply stop — you can continue next time.
@@ -101,6 +103,8 @@ func NewLoop(
 	l.registerTool(privspacetools.NewWriteLogTool(personID, AppendLog))
 	l.registerTool(privspacetools.NewSendJinshuTool(personID, rootDir, workDir))
 	l.registerTool(privspacetools.NewCopyFromJinshuTool(personID, rootDir, workDir))
+	l.registerTool(privspacetools.NewScanKBTool(personID))
+	l.registerTool(privspacetools.NewListKBDocumentsTool(personID))
 
 	return l
 }
@@ -133,6 +137,10 @@ func (l *Loop) IsRunning() bool {
 func (l *Loop) Run(ctx context.Context) {
 	l.running = true
 	defer func() { l.running = false }()
+	// Registered after the running-reset defer, so it executes first (LIFO):
+	// IsRunning() stays true while the digest is being produced, which
+	// prevents an overlapping Run from resetting l.messages mid-digest.
+	defer l.generateDigest()
 
 	applogger.Info("PrivateSpace loop starting",
 		"person_id", l.personID,

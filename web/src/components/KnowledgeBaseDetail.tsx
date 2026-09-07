@@ -1,15 +1,16 @@
 import React, { useEffect, useState } from 'react';
-import { Button, Upload, Tag, message, Empty } from 'antd';
-import { UploadOutlined, DeleteOutlined, FileTextOutlined } from '@ant-design/icons';
+import { Button, Upload, Tag, message, Empty, Select } from 'antd';
+import { UploadOutlined, DeleteOutlined, FileTextOutlined, UserAddOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import type { KnowledgeBase, Document } from '../types';
+import type { KnowledgeBase, Document, Agent, KBAccessPerson } from '../types';
 import { DOC_STATUS_FAILED, DOC_STATUS_DELETED } from '../types';
-import { kbApi } from '../services/api';
+import { kbApi, agentApi } from '../services/api';
 import { logger } from '../logger';
 import { confirmDelete } from '../utils/confirm';
 import { formatRelativeTime } from '../utils/time';
 import { formatFileSize } from '../utils/format';
 import { isAllowedFileExtension } from '../constants/fileTypes';
+import AgentAvatar from './AgentAvatar';
 
 /**
  * Props for the KnowledgeBaseDetail component.
@@ -32,13 +33,18 @@ const DOC_STATUS_MAP: Record<number, { color: string; labelKey: string }> = {
 
 /**
  * KnowledgeBaseDetail component displays the detail view of a knowledge base.
- * Shows document list, upload functionality, and document management actions.
+ * Shows document list, upload functionality, document management actions,
+ * and the authorized agent list (agents allowed to search this KB).
  */
 const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
   const { t } = useTranslation();
   const [documents, setDocuments] = useState<Document[]>([]);
   const [loading, setLoading] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [accessList, setAccessList] = useState<KBAccessPerson[]>([]);
+  const [agents, setAgents] = useState<Agent[]>([]);
+  const [selectedPersonId, setSelectedPersonId] = useState<number | undefined>(undefined);
+  const [granting, setGranting] = useState(false);
 
   /**
    * Loads the document list for the current knowledge base.
@@ -56,8 +62,35 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
     }
   };
 
+  /**
+   * Loads the authorized agent list for the current knowledge base.
+   */
+  const loadAccess = async () => {
+    try {
+      const response = await kbApi.listAccess(kb.id);
+      setAccessList(response.data);
+    } catch (error) {
+      logger.error('Failed to load KB access list:', error);
+      message.error(t('messages.loadFailed'));
+    }
+  };
+
+  /**
+   * Loads all agents as candidates for granting access.
+   */
+  const loadAgents = async () => {
+    try {
+      const response = await agentApi.list();
+      setAgents(response.data);
+    } catch (error) {
+      logger.error('Failed to load agents:', error);
+    }
+  };
+
   useEffect(() => {
     loadDocuments();
+    loadAccess();
+    loadAgents();
   }, [kb.id]);
 
   /**
@@ -71,7 +104,7 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
       message.error(t('kb.unsupportedFileType'));
       return false;
     }
-    
+
     setUploading(true);
     try {
       await kbApi.uploadDocument(kb.id, file);
@@ -109,6 +142,44 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
     });
   };
 
+  /**
+   * Grants search access to the selected agent.
+   */
+  const handleGrant = async () => {
+    if (!selectedPersonId) return;
+    setGranting(true);
+    try {
+      await kbApi.grantAccess(kb.id, selectedPersonId);
+      message.success(t('kb.accessGrantSuccess'));
+      setSelectedPersonId(undefined);
+      loadAccess();
+    } catch (error) {
+      logger.error('Failed to grant KB access:', error);
+      message.error(t('kb.accessGrantFailed'));
+    } finally {
+      setGranting(false);
+    }
+  };
+
+  /**
+   * Revokes the search access of an authorized agent.
+   * @param personId - The agent (AI person) ID to revoke
+   */
+  const handleRevokeAccess = async (personId: number) => {
+    try {
+      await kbApi.revokeAccess(kb.id, personId);
+      message.success(t('kb.accessRevokeSuccess'));
+      setAccessList(accessList.filter(p => p.id !== personId));
+    } catch (error) {
+      logger.error('Failed to revoke KB access:', error);
+      message.error(t('kb.accessRevokeFailed'));
+    }
+  };
+
+  // Agents not yet granted are the candidates for granting.
+  const grantedIds = new Set(accessList.map(p => p.id));
+  const candidates = agents.filter(a => !grantedIds.has(a.id));
+
   return (
     <div className="kb-detail">
       <div className="kb-detail-header">
@@ -144,6 +215,49 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
         </Upload>
         <div className="kb-upload-hint">
           {t('kb.uploadHint')}
+        </div>
+      </div>
+
+      <div className="kb-detail-access">
+        <div className="kb-access-title">{t('kb.accessTitle')}</div>
+        <div className="kb-access-hint">{t('kb.accessHint')}</div>
+        {accessList.length > 0 && (
+          <div className="kb-access-list">
+            {accessList.map(person => (
+              <div key={person.id} className="kb-access-item">
+                <AgentAvatar avatar={person.avatar} size={20} iconSize={10} borderRadius="50%" />
+                <span>{person.name}</span>
+                <Button
+                  type="text"
+                  size="small"
+                  danger
+                  icon={<DeleteOutlined />}
+                  onClick={() => handleRevokeAccess(person.id)}
+                  style={{ width: 20, minWidth: 20, height: 20, padding: 0, fontSize: 11 }}
+                />
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="kb-access-grant-row">
+          <Select
+            size="small"
+            style={{ width: 220 }}
+            placeholder={candidates.length === 0 ? t('kb.accessNoCandidates') : t('kb.accessSelectPlaceholder')}
+            value={selectedPersonId}
+            onChange={(v) => setSelectedPersonId(v)}
+            disabled={candidates.length === 0}
+            options={candidates.map(a => ({ value: a.id, label: a.name }))}
+          />
+          <Button
+            size="small"
+            icon={<UserAddOutlined />}
+            onClick={handleGrant}
+            loading={granting}
+            disabled={!selectedPersonId}
+          >
+            {t('kb.accessGrant')}
+          </Button>
         </div>
       </div>
 

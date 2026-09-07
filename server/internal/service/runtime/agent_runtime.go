@@ -237,10 +237,41 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			applogger.Error("invalid work completed event payload", "agent_config_id", r.agentConfigID)
 			return true
 		}
+		// The work's completion is an episodic memory of the agent's own
+		// action — record the observation so heartbeat consolidation can
+		// absorb it into profiles.
+		if event.EventID > 0 {
+			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
+				applogger.Error("failed to create work observation",
+					"person_id", r.agentPersonID,
+					"event_id", event.EventID,
+					"error", err,
+				)
+			}
+		}
 		r.activeWorks = removeWorkByID(r.activeWorks, payload.WorkID)
 		if !r.hasActiveWorkInSession(event.SessionID) {
 			r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
 		}
+	}
+	if event.Type == eventqueue.EventTypePSCompleted {
+		// A private-space digest is the agent's own session reflection. Record
+		// the observation here, then fall through to the shared pipeline — its
+		// comprehension is non-LLM (none-type) and Decide returns no actions,
+		// so this is effectively observation-only.
+		if event.EventID > 0 {
+			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
+				applogger.Error("failed to create private-space digest observation",
+					"person_id", r.agentPersonID,
+					"event_id", event.EventID,
+					"error", err,
+				)
+			}
+		}
+		applogger.Info("private-space digest event observed",
+			"person_id", r.agentPersonID,
+			"event_id", event.EventID,
+		)
 	}
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
 		if event.EventID > 0 {
@@ -278,7 +309,7 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		applogger.Error("handleEvent: failed to load agent", "person_id", r.agentPersonID, "error", err)
 		return true
 	}
-	activeWorksSummary := buildActiveWorksSummary(r.activeWorks, event.SessionID)
+	activeWorksSummary := buildActiveWorksSummary(r.activeWorks, r.agentPersonID, event.SessionID)
 	c, err := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, activeWorksSummary)
 	if err != nil {
 		applogger.Error("handleEvent: comprehension failed", "person_id", r.agentPersonID, "error", err)
@@ -1071,11 +1102,23 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation
 	if plan.Action == "send_message" {
 		action = model.ScheduledEventActionSendMessage
 	}
-	if action == model.ScheduledEventActionSendMessage && plan.ActionContent == "" {
-		applogger.Error("action.CreateAlarm: 'send_message' action requires action_content, skipping",
-			"agent_config_id", r.agentConfigID,
-		)
-		return
+	if action == model.ScheduledEventActionSendMessage {
+		if plan.ActionContent == "" {
+			applogger.Error("action.CreateAlarm: 'send_message' action requires action_content, skipping",
+				"agent_config_id", r.agentConfigID,
+			)
+			return
+		}
+		// A send_message alarm commits pre-computed content directly into its
+		// origin session. Without a session anchor there is nowhere to deliver
+		// it — such an alarm would be silently dropped at trigger time
+		// (executeChat rejects a zero session), so reject it here instead.
+		if sessionID == 0 {
+			applogger.Error("action.CreateAlarm: 'send_message' action requires a session anchor, skipping",
+				"agent_config_id", r.agentConfigID,
+			)
+			return
+		}
 	}
 
 	record := model.ScheduledEvent{

@@ -7,9 +7,11 @@ type EventType int
 // Event type constants. Each type represents a different kind of external event
 // that agents can observe. New types are added as the system evolves.
 const (
-	EventTypeMessage   EventType = iota + 1 // A message in a session (user or agent)
-	EventTypeBiography                      // An agent's origin record (its beginning in the world)
-	EventTypeJinshu                         // A jinshu delivery from one person to another
+	EventTypeMessage       EventType = iota + 1 // A message in a session (user or agent)
+	EventTypeBiography                          // An agent's origin record (its beginning in the world)
+	EventTypeJinshu                             // A jinshu delivery from one person to another
+	EventTypeWorkCompleted                      // A work's completion record (episodic gist of what the agent did)
+	EventTypePSDigest                           // A private-space session digest (decisions and ideas from one loop run)
 )
 
 // Event represents an external event in the unified event table.

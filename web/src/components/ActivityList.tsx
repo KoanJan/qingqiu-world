@@ -19,14 +19,18 @@ const toolIcon: Record<string, React.ReactNode> = {
   bash: '>_',
   web_search: '🔍',
   write_notes: '📝',
-  wake_me_when: '⏰',
   scan_my_experience: '🧠',
   recall_my_experience: '🧠',
   read_text_file: '🔍',
   write_text_file: '📝',
   edit_text_file: '📝',
-  deliver_to: '📦',
   search_chat_histories: '🔍',
+  send_jinshu: '✉️',
+  scan_jinshu: '📮',
+  read_jinshu: '📖',
+  copy_from_jinshu: '📋',
+  scan_kb: '📚',
+  list_kb_documents: '📑',
 };
 
 /**

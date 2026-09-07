@@ -67,7 +67,7 @@
 // # Deletion (DeleteKnowledgeBase)
 //
 // When a KB is deleted:
-//   - All agent configs referencing this KB have their knowledge_base_ids pruned.
+//   - All kb_access grants referencing this KB are removed (dops.DeleteAccessByKB).
 //   - The indexManager is released from memory.
 //   - The KB directory (files + vectors.db + index.bin) is removed.
 //   - DocumentChunk and Document rows are deleted from the main DB.

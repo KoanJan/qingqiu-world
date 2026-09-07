@@ -47,6 +47,11 @@ const (
 	// EventTypeJinshuSentListed represents the result of a paginated keyword
 	// search over the agent's sent jinshu, produced by the ListSentJinshu action.
 	EventTypeJinshuSentListed
+	// EventTypePSCompleted represents the agent's private-space loop session
+	// ending. The payload carries a digest of what was explored and decided,
+	// so the agent's global cognition can encode the session into long-term
+	// memory.
+	EventTypePSCompleted
 )
 
 // AgentEvent represents an event that should be processed by an agent.
@@ -181,6 +186,12 @@ func (e AgentEvent) FormatDescription() string {
 				r.JinshuID, r.ToName, r.Topic, r.CreatedAt)
 		}
 		return sb.String()
+	case EventTypePSCompleted:
+		p, ok := e.Payload.(*PSCompletedPayload)
+		if !ok || p == nil {
+			return "[Private space digest]"
+		}
+		return fmt.Sprintf("[Private space digest] %s", p.Digest)
 	default:
 		return ""
 	}
@@ -231,6 +242,16 @@ type WorkCompletedPayload struct {
 	Status     string // "success" or "failure"
 	TaskOutput string // Task execution output (for TaskWork success)
 	TaskError  string // Task execution error (for TaskWork failure)
+}
+
+// PSCompletedPayload is the payload type for EventTypePSCompleted events.
+// When the private-space loop terminates (any exit path), the loop generates
+// a session digest — focusing on decisions and ideas, never private file
+// contents — so the agent's global cognition can encode the session into
+// long-term memory.
+type PSCompletedPayload struct {
+	DigestID int64  // ID of the PSDigest record
+	Digest   string // Natural-language session digest
 }
 
 // AlarmCreatedPayload is the payload type for EventTypeAlarmCreated events.

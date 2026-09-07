@@ -1175,6 +1175,49 @@
   white-space: nowrap;
 }
 
+/* KB access management — authorized agents */
+.kb-detail-access {
+  margin-bottom: 16px;
+}
+
+.kb-access-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 2px;
+}
+
+.kb-access-hint {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+  margin-bottom: 8px;
+}
+
+.kb-access-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+
+.kb-access-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 8px;
+  border: 1px solid #e5e7eb;
+  border-radius: 16px;
+  background-color: #fafafa;
+  font-size: 12px;
+  color: var(--color-text-primary);
+}
+
+.kb-access-grant-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
 /* Activity List — flat timeline */
 .activity-list {
   display: flex;

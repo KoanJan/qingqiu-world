@@ -77,8 +77,6 @@
     "embeddingConfigId": "Embedding模型",
     "embeddingConfigIdPlaceholder": "请选择Embedding配置（可选）",
     "defaultEmbedding": "不使用",
-    "knowledgeBaseIds": "知识库",
-    "knowledgeBaseIdsPlaceholder": "选择关联的知识库（可选）",
     "noDescription": "暂无描述",
     "createSuccess": "创建Agent成功",
     "createFailed": "创建Agent失败",
@@ -263,7 +261,16 @@
     "confirmDeleteDocTitle": "确认删除",
     "confirmDeleteDoc": "确定要删除这个文档吗？",
     "deleteDocSuccess": "文档删除成功",
-    "deleteDocFailed": "文档删除失败"
+    "deleteDocFailed": "文档删除失败",
+    "accessTitle": "授权 Agent",
+    "accessHint": "被授权的 Agent 可在对话中搜索此知识库",
+    "accessSelectPlaceholder": "选择要授权的 Agent",
+    "accessGrant": "授权",
+    "accessGrantSuccess": "授权成功",
+    "accessGrantFailed": "授权失败",
+    "accessRevokeSuccess": "已撤销授权",
+    "accessRevokeFailed": "撤销授权失败",
+    "accessNoCandidates": "所有 Agent 均已授权"
   },
   "embeddingRequired": {
     "title": "还差一步",
@@ -293,14 +300,18 @@
       "bash": "执行命令",
       "web_search": "搜索网页",
       "write_notes": "记录笔记",
-      "wake_me_when": "定下闹钟",
       "scan_my_experience": "搜索经验",
       "recall_my_experience": "回忆经验",
       "read_text_file": "查看文件",
       "write_text_file": "写入文件",
       "edit_text_file": "编辑文件",
-      "deliver_to": "交付文件",
-      "search_chat_histories": "搜索聊天记录"
+      "search_chat_histories": "搜索聊天记录",
+      "send_jinshu": "发送锦书",
+      "scan_jinshu": "浏览锦书",
+      "read_jinshu": "阅读锦书",
+      "copy_from_jinshu": "提取锦书文件",
+      "scan_kb": "检索知识库",
+      "list_kb_documents": "查看知识库文档"
     }
   },
   "publicExperience": {

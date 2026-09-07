@@ -167,6 +167,9 @@ func SetupRouter() *gin.Engine {
 			kbGroup.DELETE("/:id/documents/:doc_id", h.DeleteDocument)
 			kbGroup.POST("/:id/search", h.SearchKB)
 			kbGroup.POST("/search", h.SearchMultiKB)
+			kbGroup.GET("/:id/access", h.ListKBAccess)
+			kbGroup.POST("/:id/access", h.GrantKBAccess)
+			kbGroup.DELETE("/:id/access/:pid", h.RevokeKBAccess)
 		}
 	}
 

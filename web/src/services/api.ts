@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../logger';
-import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, Jinshu } from '../types';
+import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityEvent, Jinshu, KBAccessPerson } from '../types';
 
 declare global {
   interface Window {
@@ -258,6 +258,12 @@ export const kbApi = {
     api.post<SearchResult[]>(`/kb/${kbId}/search`, { query, top_k: topK }),
   searchMulti: (kbIds: number[], query: string, topK?: number) =>
     api.post<SearchResult[]>('/kb/search', { kb_ids: kbIds, query, top_k: topK }),
+  // KB access grants: agents allowed to search this KB (kb_access table).
+  listAccess: (kbId: number) => api.get<KBAccessPerson[]>(`/kb/${kbId}/access`),
+  grantAccess: (kbId: number, personId: number) =>
+    api.post<void>(`/kb/${kbId}/access`, { person_id: personId }),
+  revokeAccess: (kbId: number, personId: number) =>
+    api.delete<void>(`/kb/${kbId}/access/${personId}`),
 };
 
 /** API client for system-level LLM configuration. */

@@ -353,21 +353,33 @@ func (cm *ChatModel) ChatWithJSONSchema(ctx context.Context, messages []Message,
 	cap, found := cm.lookupCapability()
 	if found {
 		if cap.SupportsJSONSchema == 1 {
-			return cm.tryJSONSchema(ctx, messages, schemaDef)
+			result, err := cm.tryJSONSchema(ctx, messages, schemaDef)
+			if err == nil && !isValidJSONContent(result) {
+				// Gateway accepted response_format but returned free-form text:
+				// json_schema is silently ignored. Correct the cached capability
+				// and retry once via the function_call emulation.
+				cm.saveCapability(0)
+				applogger.Warn("json_schema response format silently ignored by model, correcting cache and falling back to function_call",
+					"model", cm.modelID, "base_url", cm.baseURL)
+				return cm.tryFunctionCallJSON(ctx, messages, schemaDef)
+			}
+			return result, err
 		}
 		applogger.Debug("json_schema not supported by model, using function_call fallback",
 			"model", cm.modelID, "base_url", cm.baseURL)
 		return cm.tryFunctionCallJSON(ctx, messages, schemaDef)
 	}
 
-	// First use of this model: try json_schema and record the result
+	// First use of this model: try json_schema and record the result.
+	// Success requires a valid JSON payload: some OpenAI-compatible gateways
+	// accept the response_format parameter but ignore it, returning free-form text.
 	result, err := cm.tryJSONSchema(ctx, messages, schemaDef)
-	if err == nil {
+	if err == nil && isValidJSONContent(result) {
 		cm.saveCapability(1)
 		return result, nil
 	}
 
-	if isResponseFormatError(err) {
+	if err == nil || isResponseFormatError(err) {
 		applogger.Error("json_schema not supported, caching and falling back to function_call",
 			"model", cm.modelID, "base_url", cm.baseURL)
 		cm.saveCapability(0)

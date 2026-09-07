@@ -34,7 +34,6 @@ type pipeline struct {
 	// Loaded in loadMessages
 	messageCount int64
 	windowSize   int
-	kbIDs        []int64
 	// partnerName is the conversation partner's name — the other participant
 	// in this session (human in user-agent sessions, another agent in A2A
 	// sessions). partnerPersonID is that partner's person ID, used to scope
@@ -54,7 +53,7 @@ type pipeline struct {
 }
 
 // loadMessages loads the trigger message from the database (when applicable),
-// and initializes session-level parameters (message count, window size, KB IDs).
+// and initializes session-level parameters (message count, window size).
 //
 // The Trigger is set by the caller and only supplemented here:
 //   - TriggerMessage: loads the message by readMessageRange[1].
@@ -95,7 +94,6 @@ func (p *pipeline) loadMessages() error {
 		applogger.Error("loadMessages: failed to get agent", "person_id", p.aiPersonID, "error", err)
 		return err
 	}
-	p.kbIDs = getKnowledgeBaseIDs(&a.Config)
 
 	// Resolve the conversation partner — the other participant in this
 	// session — so context assembly and person-state description refer to the
@@ -114,7 +112,6 @@ func (p *pipeline) loadMessages() error {
 		"read_message_range", p.readMessageRange,
 		"message_count", p.messageCount,
 		"window_size", p.windowSize,
-		"kb_count", len(p.kbIDs),
 	)
 	return nil
 }

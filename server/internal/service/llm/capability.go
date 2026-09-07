@@ -7,6 +7,7 @@
 package llm
 
 import (
+	"encoding/json"
 	"strings"
 	"sync"
 
@@ -88,4 +89,11 @@ func (cm *ChatModel) saveCapability(supportsJSONSchema int) {
 // the fallback (function_call) is functionally equivalent.
 func isResponseFormatError(err error) bool {
 	return strings.Contains(strings.ToLower(err.Error()), "response_format")
+}
+
+// isValidJSONContent reports whether the model output is a usable JSON payload.
+// Some OpenAI-compatible gateways accept response_format=json_schema but silently
+// ignore it and return free-form text; such output must be treated as unsupported.
+func isValidJSONContent(content string) bool {
+	return json.Valid([]byte(strings.TrimSpace(content)))
 }

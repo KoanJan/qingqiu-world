@@ -1,7 +1,7 @@
 // Package tools provides the tool interface and implementations for the
-// private-space loop. Reusable path-based tool cores are in service/tools;
-// this package wraps them with privatespace-specific Tool contracts,
-// sandbox configuration, and log support.
+// private-space loop. Reusable tool cores are in service/tools; this package
+// wraps them with privatespace-specific Tool contracts, sandbox
+// configuration, and log support.
 package tools
 
 import "qingqiu-world-server/internal/service/llm"

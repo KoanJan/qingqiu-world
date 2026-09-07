@@ -95,6 +95,58 @@ func RecordJinshuEvent(jinshuID int64, content string) (int64, error) {
 	return eventID, nil
 }
 
+// RecordWorkCompletedEvent creates a memory event record for a completed work
+// and enqueues async embedding generation. content is the episodic gist of the
+// work (guidance, status, output/error, duration) assembled by the producer —
+// the works table row itself only carries the description and status, so the
+// gist text passed here is the full retrievable content.
+//
+// The event type is EventTypeWorkCompleted and ref_id points to the Work
+// record. Observations are created by the agent runtime after it processes
+// the corresponding eventqueue event.
+func RecordWorkCompletedEvent(workID int64, content string) (int64, error) {
+	eventID, err := createEvent(model.EventTypeWorkCompleted, workID)
+	if err != nil {
+		return 0, err
+	}
+
+	if embeddingSvc != nil {
+		select {
+		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		default:
+			applogger.Error("Embedding queue full, embedding generation skipped",
+				"event_id", eventID)
+		}
+	}
+
+	return eventID, nil
+}
+
+// RecordPSDigestEvent creates a memory event record for a private-space
+// session digest and enqueues async embedding generation. content is the
+// digest text persisted in the ps_digests table.
+//
+// The event type is EventTypePSDigest and ref_id points to the PSDigest
+// record. Observations are created by the agent runtime after it processes
+// the corresponding eventqueue event.
+func RecordPSDigestEvent(digestID int64, content string) (int64, error) {
+	eventID, err := createEvent(model.EventTypePSDigest, digestID)
+	if err != nil {
+		return 0, err
+	}
+
+	if embeddingSvc != nil {
+		select {
+		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		default:
+			applogger.Error("Embedding queue full, embedding generation skipped",
+				"event_id", eventID)
+		}
+	}
+
+	return eventID, nil
+}
+
 // ---------------------------------------------------------------------------
 // internal — embedding background loop
 // ---------------------------------------------------------------------------

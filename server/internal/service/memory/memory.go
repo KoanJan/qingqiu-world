@@ -182,7 +182,8 @@ func propagateRetrievalHit(obs *model.AgentObservation, delta float64) {
 }
 
 // getEventSessionID returns the session_id for an event.
-// For message events, this comes from the messages table.
+// For message events this comes from the messages table; for work-completion
+// events it comes from the works table. Other event types have no session.
 func getEventSessionID(eventID int64) int64 {
 	var event model.Event
 	if err := database.DB.First(&event, eventID).Error; err != nil {
@@ -195,6 +196,14 @@ func getEventSessionID(eventID int64) int64 {
 			return 0
 		}
 		return msg.SessionID
+	}
+
+	if event.EventType == model.EventTypeWorkCompleted {
+		var work model.Work
+		if err := database.DB.First(&work, event.RefID).Error; err != nil {
+			return 0
+		}
+		return work.SessionID
 	}
 
 	return 0

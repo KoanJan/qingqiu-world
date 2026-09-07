@@ -74,6 +74,12 @@ func Comprehend(
 		// so no LLM pass is needed.
 		c.Type = types.ComprehensionTypeNone
 		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypePSCompleted:
+		// A private-space digest is the agent's own activity summary, not a
+		// message from another party. Its comprehension is the event
+		// description (the digest) as-is — no LLM pass is needed.
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeScheduled,
 		eventqueue.EventTypeAlarmCreated,
 		eventqueue.EventTypeGroupChatJoined,

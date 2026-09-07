@@ -26,7 +26,7 @@ func (h *Handler) CreateAgent(c *gin.Context) {
 
 	entity, person, err := dops.CreateAIPerson(
 		req.Name, req.Description, req.CharacterSettings,
-		req.LLMConfigID, req.Avatar, req.KnowledgeBaseIDs,
+		req.LLMConfigID, req.Avatar,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
@@ -100,7 +100,6 @@ func (h *Handler) UpdateAgent(c *gin.Context) {
 		CharacterSettings: req.CharacterSettings,
 		LLMConfigID:       req.LLMConfigID,
 		Avatar:            req.Avatar,
-		KnowledgeBaseIDs:  req.KnowledgeBaseIDs,
 	}
 	if err = dops.UpdateAIPerson(aiPersonUpdates); err != nil {
 		applogger.Error("UpdateAIPerson: transaction failed", "person_id", personID, "error", err)

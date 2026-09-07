@@ -65,7 +65,6 @@ export interface Agent {
   character_settings: string;
   llm_config_id: number;
   avatar: string;
-  knowledge_base_ids: number[];
   created_at: string;
   updated_at: string | null;
 }
@@ -117,6 +116,16 @@ export interface KnowledgeBase {
   document_count: number;
   vector_count: number;
   deleted_count: number;
+  created_at: string;
+  updated_at: string;
+}
+
+// KBAccessPerson is a granted agent (AI person) in the KB access list,
+// matching the backend schema.KBAccessPerson.
+export interface KBAccessPerson {
+  id: number;
+  name: string;
+  avatar: string;
   created_at: string;
   updated_at: string;
 }

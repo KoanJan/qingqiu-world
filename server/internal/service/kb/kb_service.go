@@ -9,7 +9,6 @@ package kb
 import (
 	"context"
 	"database/sql"
-	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -107,25 +106,11 @@ func CreateKnowledgeBase(kb *model.KnowledgeBase) error {
 
 // DeleteKnowledgeBase deletes a knowledge base and all its data.
 func DeleteKnowledgeBase(kbID int64) error {
-	var configs []model.AgentConfig
-	if err := database.DB.Find(&configs).Error; err != nil {
-		return fmt.Errorf("failed to load agent configs for KB cleanup: %w", err)
-	}
-	for _, ac := range configs {
-		var ids []int64
-		if err := jsonUnmarshal(ac.KnowledgeBaseIDs, &ids); err != nil {
-			applogger.Error("failed to unmarshal agent config knowledge base IDs during KB deletion", "agent_config_id", ac.ID, "error", err)
-			continue
-		}
-		for i, id := range ids {
-			if id == kbID {
-				ids = append(ids[:i], ids[i+1:]...)
-				if err := database.DB.Model(&ac).Update("knowledge_base_ids", jsonMarshal(ids)).Error; err != nil {
-					applogger.Error("failed to update agent config KB IDs after KB deletion", "agent_config_id", ac.ID, "error", err)
-				}
-				break
-			}
-		}
+	// Remove KB access grants (application-level cascade, no FK).
+	if removed, err := dops.DeleteAccessByKB(kbID); err != nil {
+		return fmt.Errorf("failed to clean up KB access grants: %w", err)
+	} else if removed > 0 {
+		applogger.Info("Removed KB access grants on KB deletion", "kb_id", kbID, "count", removed)
 	}
 
 	releaseindexManager(kbID)
@@ -315,7 +300,7 @@ func SearchKB(ctx context.Context, kbID int64, query string, topK int) ([]schema
 
 // SearchMultiKB searches across multiple knowledge bases.
 func SearchMultiKB(ctx context.Context, kbIDs []int64, query string, topK int) ([]schema.SearchResult, error) {
-	return searchMultiKB(ctx, kbIDs, query, topK)
+	return searchMultiKB(ctx, kbIDs, query, topK, "")
 }
 
 func createVectorsDB(path string) error {
@@ -334,13 +319,4 @@ func createVectorsDB(path string) error {
 		)
 	`)
 	return err
-}
-
-func jsonUnmarshal(data string, v interface{}) error {
-	return json.Unmarshal([]byte(data), v)
-}
-
-func jsonMarshal(v interface{}) string {
-	b, _ := json.Marshal(v)
-	return string(b)
 }

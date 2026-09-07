@@ -14,7 +14,7 @@ import (
 const (
 	memoryDensityCheckInterval = 6 // Every 6 heartbeat ticks
 	reflectionCheckInterval    = 1 // Every 1 heartbeat ticks
-	learningCheckInterval      = 1 // Every 30 heartbeat ticks (low frequency — learning is a long-term decision)
+	learningCheckInterval      = 1 // Every 1 heartbeat tick (learning stays current with profile changes)
 )
 
 // handleHeartbeat processes a heartbeat tick for periodic maintenance and
