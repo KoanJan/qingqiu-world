@@ -22,9 +22,13 @@ type KnowledgeBase struct {
 	Description   string                 `gorm:"type:text;not null;default:''" json:"description"`
 	IndexType     KnowledgeBaseIndexType `gorm:"not null;default:0" json:"index_type"` // 0=flat, 1=switching, 2=hnsw
 	IndexFilePath string                 `gorm:"type:varchar(500);not null;default:''" json:"index_file_path"`
-	DocumentCount int                    `gorm:"not null;default:0" json:"document_count"`
-	VectorCount   int                    `gorm:"not null;default:0" json:"vector_count"`
-	DeletedCount  int                    `gorm:"not null;default:0" json:"deleted_count"`
+	// KeywordRatio is the weight (alpha) of the BM25 keyword score in hybrid
+	// retrieval: score = (1-ratio)*vector + ratio*keyword. 0 = vector only,
+	// 1 = keyword only.
+	KeywordRatio  float64 `gorm:"not null;default:0.3" json:"keyword_ratio"`
+	DocumentCount int     `gorm:"not null;default:0" json:"document_count"`
+	VectorCount   int     `gorm:"not null;default:0" json:"vector_count"`
+	DeletedCount  int     `gorm:"not null;default:0" json:"deleted_count"`
 	CreatedAt     time.Time              `gorm:"not null;autoCreateTime" json:"created_at"`
 	UpdatedAt     time.Time              `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }

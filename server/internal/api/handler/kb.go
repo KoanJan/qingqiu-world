@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -88,6 +89,13 @@ func (h *Handler) UpdateKnowledgeBase(c *gin.Context) {
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
 		return
+	}
+
+	if req.KeywordRatio != nil {
+		if _, err := validateKeywordRatio(*req.KeywordRatio); err != nil {
+			response.BadRequest(c, err.Error())
+			return
+		}
 	}
 
 	id := getPathID(c)
@@ -323,4 +331,13 @@ func isImageFile(filename string) bool {
 		}
 	}
 	return false
+}
+
+// validateKeywordRatio checks that a hybrid-retrieval keyword weight is a
+// usable ratio within [0, 1].
+func validateKeywordRatio(v float64) (float64, error) {
+	if math.IsNaN(v) || v < 0 || v > 1 {
+		return 0, fmt.Errorf("keyword_ratio must be within [0, 1], got %v", v)
+	}
+	return v, nil
 }

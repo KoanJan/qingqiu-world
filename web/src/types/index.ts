@@ -111,6 +111,8 @@ export interface KnowledgeBase {
   id: number;
   name: string;
   description: string;
+  /** Weight (alpha) of the BM25 keyword score in hybrid retrieval, within [0, 1]. */
+  keyword_ratio: number;
   index_type: number; // 0=flat, 1=switching, 2=hnsw
   index_file_path: string;
   document_count: number;

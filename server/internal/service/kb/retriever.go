@@ -36,27 +36,51 @@ const (
 	candidateFetchFactor = 4
 	// maxFilteredFetchK caps the enlarged fetch to bound latency on large KBs.
 	maxFilteredFetchK = 200
+
+	// DefaultKeywordRatio is the default weight (alpha) of the keyword (BM25)
+	// score in hybrid retrieval when a KB has no explicit configuration.
+	DefaultKeywordRatio = 0.3
 )
 
+// getKeywordRatio loads the per-KB keyword score weight (alpha) used by
+// hybrid retrieval: score = (1-alpha)*vector + alpha*keyword. The value is
+// clamped to [0, 1]. On load failure it falls back to the default and logs;
+// a missing configuration must not break retrieval.
+func getKeywordRatio(kbID int64) float64 {
+	var kb model.KnowledgeBase
+	if err := database.DB.Select("keyword_ratio").First(&kb, kbID).Error; err != nil {
+		applogger.Warn("search: failed to load keyword ratio, using default", "kb_id", kbID, "error", err)
+		return DefaultKeywordRatio
+	}
+	ratio := kb.KeywordRatio
+	if ratio < 0 || ratio > 1 {
+		applogger.Warn("search: keyword ratio out of range, clamping", "kb_id", kbID, "ratio", ratio)
+		if ratio < 0 {
+			ratio = 0
+		} else {
+			ratio = 1
+		}
+	}
+	return ratio
+}
+
 // searchOneKB searches a single knowledge base for relevant chunks.
+// Retrieval is hybrid: the vector path (cosine similarity) and the keyword
+// path (BM25) each produce a candidate list, both lists are normalized by
+// their maximum score and blended with the per-KB keyword ratio alpha:
+// score = (1-alpha)*vecNorm + alpha*kwNorm. alpha=0/1 degrades to pure
+// vector/keyword search and skips the unused path entirely.
 // When docIDs is non-empty, results are restricted to chunks of these
 // documents (metadata filter); extra candidates are fetched before truncating
 // to topK so the filter does not starve the result set.
 func searchOneKB(ctx context.Context, kbID int64, query string, topK int, docIDs []int64) ([]schema.SearchResult, error) {
-	embService, err := getEmbeddingService()
-	if err != nil {
-		return nil, err
+	// Normalize an unset or non-positive topK to the default so callers
+	// passing 0 still get meaningful results.
+	if topK <= 0 {
+		topK = DefaultSearchTopK
 	}
 
-	queryVec, err := embService.EmbedSingle(ctx, query)
-	if err != nil {
-		return nil, fmt.Errorf("failed to embed query: %w", err)
-	}
-
-	mgr, err := getOrCreateIndexManager(kbID)
-	if err != nil {
-		return nil, fmt.Errorf("failed to get index manager: %w", err)
-	}
+	alpha := getKeywordRatio(kbID)
 
 	fetchK := topK
 	if len(docIDs) > 0 {
@@ -66,30 +90,105 @@ func searchOneKB(ctx context.Context, kbID int64, query string, topK int, docIDs
 		}
 	}
 
-	candidates, err := mgr.Search(queryVec, fetchK)
-	if err != nil {
-		return nil, fmt.Errorf("search failed: %w", err)
-	}
-
+	// Soft-deleted chunks must be excluded from both retrieval paths.
 	var deletedChunkIDs []int64
 	if err := database.DB.Model(&model.DocumentChunk{}).
 		Where("knowledge_base_id = ? AND deleted = 1", kbID).
 		Pluck("id", &deletedChunkIDs).Error; err != nil {
 		applogger.Error("search: failed to load deleted chunk IDs, results may include deleted chunks", "kb_id", kbID, "error", err)
 	}
-
 	tracker := newDeletedVectorTracker()
 	tracker.LoadDeletedChunkIDs(deletedChunkIDs)
-	candidates = tracker.FilterCandidates(candidates)
 
-	if len(docIDs) > 0 {
-		candidates = filterCandidatesByDocuments(candidates, docIDs)
-		if len(candidates) > topK {
-			candidates = candidates[:topK]
+	var vecCandidates, kwCandidates []searchCandidate
+
+	if alpha < 1 {
+		embService, err := getEmbeddingService()
+		if err != nil {
+			return nil, err
+		}
+		queryVec, err := embService.EmbedSingle(ctx, query)
+		if err != nil {
+			return nil, fmt.Errorf("failed to embed query: %w", err)
+		}
+		mgr, err := getOrCreateIndexManager(kbID)
+		if err != nil {
+			return nil, fmt.Errorf("failed to get index manager: %w", err)
+		}
+		candidates, err := mgr.Search(queryVec, fetchK)
+		if err != nil {
+			return nil, fmt.Errorf("search failed: %w", err)
+		}
+		vecCandidates = tracker.FilterCandidates(candidates)
+	}
+
+	if alpha > 0 {
+		idx, err := getOrCreateBM25Index(kbID)
+		if err != nil {
+			// A broken keyword path degrades to vector-only search instead
+			// of failing the whole request.
+			applogger.Error("search: failed to get BM25 index, degrading to vector-only", "kb_id", kbID, "error", err)
+		} else {
+			kwCandidates = tracker.FilterCandidates(idx.Search(query, fetchK))
 		}
 	}
 
-	return candidatesToResults(candidates, kbID), nil
+	merged := blendHybrid(vecCandidates, kwCandidates, alpha)
+
+	if len(docIDs) > 0 {
+		merged = filterCandidatesByDocuments(merged, docIDs)
+	}
+	if len(merged) > topK {
+		merged = merged[:topK]
+	}
+
+	return candidatesToResults(merged, kbID), nil
+}
+
+// blendHybrid merges vector and keyword candidates into a single ranked list.
+// Each list is normalized by its maximum score first (BM25 is unbounded while
+// cosine is not directly comparable to it), then weighted linearly:
+//
+//	score = (1-alpha)*vecNorm + alpha*kwNorm
+//
+// A chunk found by only one path keeps the weighted score of that path alone.
+func blendHybrid(vec, kw []searchCandidate, alpha float64) []searchCandidate {
+	normalizeScores(vec)
+	normalizeScores(kw)
+
+	merged := make(map[uint64]float64, len(vec)+len(kw))
+	for _, c := range vec {
+		merged[c.ChunkID] += (1 - alpha) * c.Score
+	}
+	for _, c := range kw {
+		merged[c.ChunkID] += alpha * c.Score
+	}
+
+	results := make([]searchCandidate, 0, len(merged))
+	for chunkID, score := range merged {
+		results = append(results, searchCandidate{ChunkID: chunkID, Score: score})
+	}
+	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	return results
+}
+
+// normalizeScores scales scores in place so the maximum becomes 1, making
+// BM25 (unbounded) and cosine scores comparable before weighting. A list
+// whose maximum is non-positive carries no meaningful signal and is left
+// unchanged.
+func normalizeScores(candidates []searchCandidate) {
+	var max float64
+	for _, c := range candidates {
+		if c.Score > max {
+			max = c.Score
+		}
+	}
+	if max <= 0 {
+		return
+	}
+	for i := range candidates {
+		candidates[i].Score /= max
+	}
 }
 
 // searchKB searches a single knowledge base without any document filter.

@@ -304,6 +304,16 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			return true
 		}
 	}
+	// Breathing light: from here on the agent is digesting this session's
+	// event (comprehend + decide). Set working at the main-segment entry and
+	// always reset to idle on exit — the defer structurally covers every
+	// early-return below (agent load failure, comprehension failure, etc.)
+	// so no failure path can leave a ghost working lamp. Events outside any
+	// session (SessionID == 0, e.g. PS digest) never light the lamp.
+	if event.SessionID != 0 {
+		r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusWorking)
+		defer r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
+	}
 	a, err := agent.GetAgent(r.agentPersonID)
 	if err != nil {
 		applogger.Error("handleEvent: failed to load agent", "person_id", r.agentPersonID, "error", err)

@@ -27,6 +27,9 @@ interface ConfigListProps<T extends { id: number }> {
   showCreate?: boolean;
   onCreateClose?: () => void;
   onConfigChanged?: () => void;
+  // Optional callback after a successful create, receiving the created item
+  // and the post-create list snapshot (local state, no refetch).
+  onCreated?: (created: T, configs: T[]) => void;
   beforeDelete?: (id: number) => Promise<boolean>;
   // Field rendered as the primary (top, bold) line of each card.
   primaryField: string;
@@ -38,6 +41,12 @@ interface ConfigListProps<T extends { id: number }> {
   // 'list-grid-3' to switch column count.
   gridClassName?: string;
   editInitialValues?: (item: T) => Record<string, unknown>;
+  // Optional per-item meta cluster rendered at the card's top-right (same
+  // slot as KB cards' index-type tag). Returning null renders nothing.
+  renderMeta?: (item: T) => React.ReactNode;
+  // Optional extra action button rendered in the card's bottom-right hover
+  // action area, before edit/delete. Returning null hides it for an item.
+  renderExtraAction?: (item: T) => React.ReactNode;
 }
 
 /** Generic reusable list component for CRUD config management with cards. */
@@ -49,11 +58,14 @@ export default function ConfigList<T extends { id: number }>({
   showCreate,
   onCreateClose,
   onConfigChanged,
+  onCreated,
   beforeDelete,
   primaryField,
   secondaryField,
   gridClassName,
   editInitialValues,
+  renderMeta,
+  renderExtraAction,
 }: ConfigListProps<T>) {
   const { t } = useTranslation();
   const [configs, setConfigs] = useState<T[]>([]);
@@ -96,12 +108,14 @@ export default function ConfigList<T extends { id: number }>({
   const handleCreate = async (values: Record<string, unknown>) => {
     try {
       const response = await api.create(values);
-      setConfigs([response.data, ...configs]);
+      const updated = [response.data, ...configs];
+      setConfigs(updated);
       setModalVisible(false);
       form.resetFields();
       onCreateClose?.();
       message.success(t(`${i18nPrefix}.createSuccess`));
       onSelectConfig?.(response.data);
+      onCreated?.(response.data, updated);
       onConfigChanged?.();
     } catch (error) {
       logger.error(`Failed to create ${i18nPrefix}:`, error);
@@ -213,11 +227,14 @@ export default function ConfigList<T extends { id: number }>({
                       {secondary}
                     </div>
                   </div>
+                  {renderMeta && <div className="item-card-meta">{renderMeta(config)}</div>}
                 </div>
                 <CardActions
                   onEdit={(e) => { e.stopPropagation(); handleEdit(config); }}
                   onDelete={(e) => handleDelete(config.id, e)}
-                />
+                >
+                  {renderExtraAction && renderExtraAction(config)}
+                </CardActions>
               </div>
               );
             })}

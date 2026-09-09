@@ -362,29 +362,26 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
       ) : (
         <div className="received-list">
           {items.map((item) => {
+            // Row layout: counterpart (14%) | topic (flexible) | read status
+            // (12%, received only) | time (20%). Unread received rows render
+            // every field bold.
             const counterpart = direction === 'sent' ? item.to_name : item.from_name;
-            const counterpartLabel = direction === 'sent' ? t('jinshu.to') : t('jinshu.from');
+            const unread = direction === 'received' && item.is_read === false;
             return (
               <div key={item.id} className="received-delivery-item">
-                <div className="received-delivery-row">
-                  <button
-                    className="received-delivery-header"
-                    onClick={() => handleSelect(item)}
-                  >
-                    <span className="jinshu-topic">{item.topic || t('jinshu.noTopic')}</span>
-                    <span className="jinshu-counterpart">
-                      {counterpartLabel} {counterpart}
+                <button
+                  className={`received-delivery-header${unread ? ' unread' : ''}`}
+                  onClick={() => handleSelect(item)}
+                >
+                  <span className="jinshu-counterpart">{counterpart}</span>
+                  <span className="jinshu-topic">{item.topic || t('jinshu.noTopic')}</span>
+                  {direction === 'received' && (
+                    <span className={`jinshu-read-status${unread ? ' unread' : ''}`}>
+                      {unread ? t('jinshu.unread') : t('jinshu.read')}
                     </span>
-                    <span className="jinshu-time">{formatMessageTime(new Date(item.created_at))}</span>
-                  </button>
-                  <button
-                    className="delivery-open-dir-btn"
-                    onClick={() => handleOpenDir(item)}
-                    title="Show in Finder"
-                  >
-                    <DesktopOutlined />
-                  </button>
-                </div>
+                  )}
+                  <span className="jinshu-time">{formatMessageTime(new Date(item.created_at))}</span>
+                </button>
               </div>
             );
           })}

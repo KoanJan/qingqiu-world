@@ -25,7 +25,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const [expandedMessages, setExpandedMessages] = useState<Set<number>>(new Set());
   const [inputValue, setInputValue] = useState('');
   const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
-  const [agentStatus, setAgentStatus] = useState<number>(PARTICIPANT_STATUS_IDLE);
   const [sessionAgents, setSessionAgents] = useState<SessionAgentStatus[]>([]);
   const [viewMode, setViewMode] = useState<'chat' | 'activity'>('chat');
   const [currentUserPersonId, setCurrentUserPersonId] = useState<number>(0);
@@ -42,7 +41,10 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   }, [session?.id]);
 
   const isTempSession = session?.id === TEMP_SESSION_ID;
-  const isStreaming = agentStatus !== PARTICIPANT_STATUS_IDLE;
+  // Derived from the SSE-maintained sessionAgents — the single source of
+  // truth for agent activity. No optimistic local state: the backend pushes
+  // working on event intake and idle on decision completion.
+  const isStreaming = sessionAgents.some(a => a.status === PARTICIPANT_STATUS_WORKING);
 
   // agentLookup maps person_id → SessionAgentStatus so each message renders
   // its actual sender's avatar/name. Without this, A2A sessions (where both
@@ -72,7 +74,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
       setMessages(prev => [...prev, msg]);
     },
     onAgentStatus: (status: number, agentId?: number) => {
-      setAgentStatus(status);
       if (agentId) {
         setSessionAgents(prev =>
           prev.map(a => (a.agent_id === agentId ? { ...a, status } : a)),
@@ -202,7 +203,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
     if (!result) return;
 
     setInputValue('');
-    setAgentStatus(PARTICIPANT_STATUS_WORKING);
 
     if (result.sessionId !== session.id && onSessionCreated) {
       // Temp→real transition

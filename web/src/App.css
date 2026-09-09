@@ -35,6 +35,10 @@
     --color-language-bg: #f5f3ff;
     --color-kb: #b45309;
     --color-kb-bg: #fffbeb;
+    --color-exp: #e11d48;
+    --color-exp-bg: #fff1f2;
+    --color-mail: #0d9488;
+    --color-mail-bg: #f0fdfa;
     --color-active: #2563eb;
 
     /* Glass-morphism transparency — single source of truth for all translucent layers */
@@ -308,48 +312,6 @@
 .settings-nav-child {
   padding: 6px 10px;
   font-size: 12px;
-}
-
-/* Library sub-view tab selector: small card-style buttons in a 6-column
-   grid so each tab reads as a self-contained choice rather than a row of
-   inline nav items. Each card carries a compact ConfigIcon above a label,
-   similar to .item-card-block but smaller. */
-.library-tab-cards {
-  display: grid;
-  grid-template-columns: repeat(6, 1fr);
-  gap: 8px;
-  padding-bottom: 12px;
-  margin-bottom: 16px;
-  border-bottom: 1px solid #f0f0f0;
-}
-
-.library-tab-card {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  padding: 10px 12px 8px;
-  border: 1px solid #e5e7eb;
-  border-radius: 10px;
-  background: white;
-  font-size: 12px;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-  transition: all 0.15s;
-  text-align: center;
-}
-
-.library-tab-card:hover {
-  border-color: #d1d5db;
-  background: #f9fafb;
-}
-
-.library-tab-card.active {
-  border-color: #b0b0b0;
-  background: #f5f5f5;
-  color: var(--color-text-primary);
-  font-weight: 500;
 }
 
 .settings-nav-label {
@@ -961,6 +923,26 @@
   -webkit-box-orient: vertical;
 }
 
+/* Card meta cluster pinned to the header's top-right (index-type tag +
+   document count on KB cards). Single horizontal row keeps it short so it
+   never reaches the bottom-right hover action buttons. */
+.item-card-meta {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+/* Drop antd Tag's trailing margin — the flex gap handles the spacing. */
+.item-card-meta .ant-tag {
+  margin-inline-end: 0;
+}
+
+.item-card-meta-note {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+}
+
 .session-item.active {
   background-color: rgba(17, 24, 39, 0.05);
   color: var(--color-text-primary);
@@ -1068,6 +1050,15 @@
   color: var(--color-text-placeholder);
 }
 
+/* Muted explanatory note shown at the top of a settings panel body. */
+.panel-note {
+  margin: 0 0 16px;
+  font-size: 13px;
+  font-style: italic;
+  line-height: 1.6;
+  color: var(--color-text-secondary);
+}
+
 .kb-detail {
   display: flex;
   flex-direction: column;
@@ -1075,17 +1066,27 @@
 }
 
 .kb-detail-header {
+  margin-bottom: 4px;
+}
+
+/* Tabbed body: tabs pinned under the header, the active pane fills and scrolls */
+.kb-detail-tabs.ant-tabs {
+  flex: 1;
+  min-height: 0;
   display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 12px;
+  flex-direction: column;
+}
+
+.kb-detail-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
 }
 
 .kb-detail-title {
   font-size: 16px;
   font-weight: 600;
   color: var(--color-text-primary);
-  flex: 1;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1095,7 +1096,7 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 8px;
+  margin-top: 6px;
 }
 
 .kb-detail-stat {
@@ -1106,23 +1107,54 @@
 .kb-detail-desc {
   font-size: 13px;
   color: var(--color-text-secondary);
-  margin-bottom: 12px;
+  margin-top: 6px;
   line-height: 1.5;
 }
 
-.kb-detail-upload {
-  margin-bottom: 16px;
+/* Unified detail sections: one container rhythm, separated by hairlines.
+   `.kb-section + .kb-section` keeps the last (scrolling) section border-free. */
+.kb-section {
+  margin-bottom: 12px;
 }
 
-.kb-upload-hint {
-  margin-top: 4px;
-  font-size: 12px;
-  color: var(--color-text-tertiary);
+.kb-section + .kb-section {
+  border-top: 1px solid var(--color-border, #e5e7eb);
+  padding-top: 16px;
 }
 
-.kb-detail-docs {
-  flex: 1;
-  overflow-y: auto;
+.kb-section-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+/* Header row holding only a right-aligned action (e.g. the upload icon). */
+.kb-section-header-end {
+  justify-content: flex-end;
+}
+
+/* Icon button cluster (e.g. cancel/done) kept together on one side. */
+.kb-section-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.kb-section-header .kb-section-title {
+  margin-bottom: 0;
+}
+
+/* Section titles carry their explanation as a hover tooltip (cursor: help).
+   fit-content shrinks the block to its text so the Tooltip anchors to the
+   words instead of the middle of the full-width row. */
+.kb-section-title {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+  margin-bottom: 8px;
+  width: fit-content;
+  cursor: help;
 }
 
 .kb-doc-item {
@@ -1135,11 +1167,18 @@
   margin-bottom: 8px;
   background-color: #fafafa;
   transition: all 0.2s;
+  /* Anchor for the shared CardActions cluster (absolute bottom-right). */
+  position: relative;
 }
 
 .kb-doc-item:hover {
   border-color: #d1d5db;
   background-color: white;
+}
+
+/* Reveal the shared CardActions on hover, mirroring .item-card. */
+.kb-doc-item:hover .item-card-actions {
+  opacity: 1;
 }
 
 .kb-doc-info {
@@ -1176,23 +1215,6 @@
 }
 
 /* KB access management — authorized agents */
-.kb-detail-access {
-  margin-bottom: 16px;
-}
-
-.kb-access-title {
-  font-size: 13px;
-  font-weight: 600;
-  color: var(--color-text-primary);
-  margin-bottom: 2px;
-}
-
-.kb-access-hint {
-  font-size: 12px;
-  color: var(--color-text-tertiary);
-  margin-bottom: 8px;
-}
-
 .kb-access-list {
   display: flex;
   flex-wrap: wrap;
@@ -1212,10 +1234,30 @@
   color: var(--color-text-primary);
 }
 
-.kb-access-grant-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+.kb-access-empty {
+  font-size: 12px;
+  color: var(--color-text-tertiary);
+}
+
+/* Edit mode: pills become checkable; checked highlights with the primary color */
+.kb-access-checkable {
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.kb-access-checkable:hover {
+  border-color: #d1d5db;
+  background-color: white;
+}
+
+.kb-access-checkable.checked {
+  border-color: var(--color-primary);
+  color: var(--color-primary);
+  background-color: rgba(79, 70, 229, 0.06);
+}
+
+.kb-access-check {
+  font-size: 10px;
 }
 
 /* Activity List — flat timeline */
@@ -1393,16 +1435,16 @@
   overflow: hidden;
 }
 
-.received-delivery-row {
-  display: flex;
-  align-items: center;
-}
-
 .received-delivery-header {
   display: flex;
   align-items: center;
   gap: 8px;
-  flex: 1;
+  /* The header is a bare <button> inside a block container — buttons shrink
+     to fit content, so force it to span the full row width. Without this the
+     three fixed-ratio columns don't line up across rows. */
+  width: 100%;
+  /* Buttons default to centered text; every column aligns left. */
+  text-align: left;
   padding: 10px 14px;
   background: none;
   border: none;
@@ -1437,11 +1479,43 @@
   color: #2563eb;
 }
 
-.jinshu-topic {
+/* List row: fixed-ratio three columns — counterpart 20%, topic flexible,
+   time 25%. Detail page meta is unaffected (scoped to the header button). */
+.received-delivery-header .jinshu-counterpart {
+  flex: 0 0 14%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.received-delivery-header .jinshu-time {
+  flex: 0 0 20%;
+  text-align: right;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Read/unread status column (received list only), between topic and time. */
+.jinshu-read-status {
+  flex: 0 0 12%;
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  text-align: center;
+}
+
+.jinshu-read-status.unread {
+  color: var(--color-text-primary);
+}
+
+/* Unread received rows: bold every field for scannability. */
+.received-delivery-header.unread > span {
   font-weight: 600;
-  color: #4f46e5;
-  flex: 0 0 auto;
-  max-width: 240px;
+}
+
+.jinshu-topic {
+  /* Plain dark text, not emphasized: the topic reads as body content. */
+  color: var(--color-text-primary);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -1459,11 +1533,6 @@
   color: var(--color-text-placeholder);
   flex: 0 0 auto;
   white-space: nowrap;
-}
-
-/* In list rows the time is pushed to the right edge. */
-.received-delivery-header .jinshu-time {
-  margin-left: auto;
 }
 
 .delivery-file-count {
@@ -1964,4 +2033,25 @@
   margin-top: -4px;
   font-size: 12px;
   color: var(--color-text-placeholder, #9ca3af);
+}
+
+/* antd Slider handle: keep the idle look at all times (no hover/active/focus
+   emphasis). antd paints an emphasis on the handle's ::after via
+   :hover/:active/:focus (thicker box-shadow ring, 6px translucent outline
+   halo, size growth), and rc-slider keeps DOM focus on the handle after a
+   drag, so the ring would persist after mouse-up. The rules below force all
+   those states back to the base appearance; !important is required to beat
+   antd's runtime-injected styles of equal specificity. Colors mirror antd
+   default tokens (handleColor = colorPrimaryBorder = #4096ff); the app does
+   not customize the antd theme. Disabled handles keep antd's own styling. */
+.ant-slider:not(.ant-slider-disabled) .ant-slider-handle:hover::after,
+.ant-slider:not(.ant-slider-disabled) .ant-slider-handle:active::after,
+.ant-slider:not(.ant-slider-disabled) .ant-slider-handle:focus::after,
+.ant-slider:not(.ant-slider-disabled):hover .ant-slider-handle::after {
+  width: 10px !important;
+  height: 10px !important;
+  inset-block-start: 0 !important;
+  inset-inline-start: 0 !important;
+  box-shadow: 0 0 0 2px #4096ff !important;
+  outline: none !important;
 }

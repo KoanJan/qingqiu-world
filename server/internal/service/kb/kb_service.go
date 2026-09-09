@@ -244,6 +244,7 @@ func processDocument(ctx context.Context, kbID, docID int64) {
 	}
 
 	addVectorsToIndex(kbID, docID)
+	updateBM25ForDocument(kbID, docID)
 }
 
 // addVectorsToIndex loads newly created vectors for a document and adds them
@@ -291,6 +292,8 @@ func Shutdown() {
 	}
 	managers = make(map[int64]*indexManager)
 	managersMu.Unlock()
+
+	releaseAllBM25Indexes()
 }
 
 // SearchKB searches within a single knowledge base.

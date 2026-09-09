@@ -48,6 +48,8 @@
     "noTopic": "（无主题）",
     "files": "文件",
     "topic": "主题",
+    "read": "已读",
+    "unread": "未读",
     "description": "描述",
     "send": "发送锦书",
     "receiver": "收件人",
@@ -124,7 +126,10 @@
     "deleteFailed": "删除失败",
     "confirmDelete": "确定要删除这个配置吗？",
     "confirmDeleteTitle": "确认删除",
-    "inUseError": "无法删除此LLM配置，它当前正在被用作系统LLM"
+    "inUseError": "无法删除此LLM配置，它当前正在被用作系统LLM",
+    "systemTag": "系统",
+    "setSystemTitle": "设为系统模型",
+    "setSystemSuccess": "已设为系统模型"
   },
   "embeddingConfig": {
     "title": "向量化模型",
@@ -165,9 +170,6 @@
     "systemLLMConfig": "系统模型",
     "publicExperience": "经验",
     "custom": "个性化"
-  },
-  "library": {
-    "title": "资料库"
   },
   "searchConfig": {
     "title": "搜索引擎",
@@ -247,10 +249,11 @@
     "deleteFailed": "删除失败",
     "confirmDelete": "确定要删除这个知识库吗？所有文档和向量数据将被清除。",
     "confirmDeleteTitle": "确认删除",
-    "uploadDocument": "上传文档",
     "uploadSuccess": "文档上传成功，正在处理",
     "uploadFailed": "文档上传失败",
     "unsupportedFileType": "不支持的文件类型。允许的类型：.txt, .md, .pdf",
+    "docsTitle": "文档",
+    "settingsTab": "设置",
     "uploadHint": "支持格式：.txt, .md, .pdf",
     "noDocuments": "暂无文档",
     "docStatusPending": "等待中",
@@ -262,15 +265,20 @@
     "confirmDeleteDoc": "确定要删除这个文档吗？",
     "deleteDocSuccess": "文档删除成功",
     "deleteDocFailed": "文档删除失败",
-    "accessTitle": "授权 Agent",
+    "accessTitle": "授权访问",
     "accessHint": "被授权的 Agent 可在对话中搜索此知识库",
-    "accessSelectPlaceholder": "选择要授权的 Agent",
-    "accessGrant": "授权",
     "accessGrantSuccess": "授权成功",
     "accessGrantFailed": "授权失败",
     "accessRevokeSuccess": "已撤销授权",
     "accessRevokeFailed": "撤销授权失败",
-    "accessNoCandidates": "所有 Agent 均已授权"
+    "accessDone": "完成",
+    "accessEmpty": "暂无可授权的 Agent",
+    "hybridRetrieval": "混合检索",
+    "keywordRatioHint": "混合检索中关键词得分的权重",
+    "ratioVector": "向量({{percent}}%)",
+    "ratioKeyword": "关键词({{percent}}%)",
+    "recallVector": "向量召回",
+    "recallKeyword": "关键词召回"
   },
   "embeddingRequired": {
     "title": "还差一步",
@@ -282,12 +290,8 @@
     "message_1": "Skill 摄入需要系统模型来提炼内容，请先在设置中配置。"
   },
   "systemLLMConfig": {
-    "title": "系统模型",
-    "description": "系统模型用于执行系统级任务（如 Skill 摄入提炼），不绑定任何 Agent。若未配置，相关功能无法使用。",
-    "llmConfigId": "大语言模型",
-    "llmConfigIdPlaceholder": "请选择LLM配置",
+    "description": "系统模型用于执行系统级任务（如 Skill 摄取提炼），不绑定任何 Agent。若未配置，相关功能无法使用。点击卡片右下角的 S 按钮即可将对应 LLM 设为系统模型。",
     "loadError": "加载配置失败",
-    "saveSuccess": "保存成功",
     "saveError": "保存失败"
   },
   "activity": {

@@ -48,6 +48,8 @@
     "noTopic": "(No topic)",
     "files": "Files",
     "topic": "Topic",
+    "read": "Read",
+    "unread": "Unread",
     "description": "Description",
     "send": "Send Jinshu",
     "receiver": "Receiver",
@@ -124,7 +126,10 @@
     "deleteFailed": "Failed to delete",
     "confirmDelete": "Are you sure you want to delete this config?",
     "confirmDeleteTitle": "Confirm Delete",
-    "inUseError": "Cannot delete this LLM config because it is currently set as the system LLM"
+    "inUseError": "Cannot delete this LLM config because it is currently set as the system LLM",
+    "systemTag": "System",
+    "setSystemTitle": "Set as system LLM",
+    "setSystemSuccess": "Set as system LLM"
   },
   "embeddingConfig": {
     "title": "Embedding",
@@ -165,9 +170,6 @@
     "systemLLMConfig": "System LLM",
     "publicExperience": "Experience",
     "custom": "Custom"
-  },
-  "library": {
-    "title": "Library"
   },
   "searchConfig": {
     "title": "Search Engine",
@@ -247,10 +249,11 @@
     "deleteFailed": "Failed to delete",
     "confirmDelete": "Are you sure you want to delete this knowledge base? All documents and vector data will be removed.",
     "confirmDeleteTitle": "Confirm Delete",
-    "uploadDocument": "Upload Document",
     "uploadSuccess": "Document uploaded, processing",
     "uploadFailed": "Failed to upload document",
     "unsupportedFileType": "Unsupported file type. Allowed types: .txt, .md, .pdf",
+    "docsTitle": "Documents",
+    "settingsTab": "Settings",
     "uploadHint": "Supported formats: .txt, .md, .pdf",
     "noDocuments": "No documents",
     "docStatusPending": "Pending",
@@ -262,15 +265,20 @@
     "confirmDeleteDoc": "Are you sure you want to delete this document?",
     "deleteDocSuccess": "Document deleted successfully",
     "deleteDocFailed": "Failed to delete document",
-    "accessTitle": "Authorized Agents",
+    "accessTitle": "Authorized Access",
     "accessHint": "Granted agents can search this knowledge base during chats",
-    "accessSelectPlaceholder": "Select an agent to grant",
-    "accessGrant": "Grant",
     "accessGrantSuccess": "Access granted",
     "accessGrantFailed": "Failed to grant access",
     "accessRevokeSuccess": "Access revoked",
     "accessRevokeFailed": "Failed to revoke access",
-    "accessNoCandidates": "All agents are already granted"
+    "accessDone": "Done",
+    "accessEmpty": "No agents available to grant",
+    "hybridRetrieval": "Hybrid Retrieval",
+    "keywordRatioHint": "Weight of the keyword score in hybrid retrieval",
+    "ratioVector": "Vector ({{percent}}%)",
+    "ratioKeyword": "Keyword ({{percent}}%)",
+    "recallVector": "Vector recall",
+    "recallKeyword": "Keyword recall"
   },
   "embeddingRequired": {
     "title": "One more step",
@@ -282,12 +290,8 @@
     "message_1": "Skill ingestion needs a system LLM to refine content. Please configure it in settings first."
   },
   "systemLLMConfig": {
-    "title": "System LLM",
-    "description": "The system LLM powers host-level operations (e.g., skill ingestion). It is not tied to any agent. Related features are unavailable without it.",
-    "llmConfigId": "LLM",
-    "llmConfigIdPlaceholder": "Please select LLM config",
+    "description": "The system LLM powers host-level operations (e.g., skill ingestion). It is not tied to any agent. Related features are unavailable without it. Click the S button at a card's bottom-right to make that LLM the system LLM.",
     "loadError": "Failed to load config",
-    "saveSuccess": "Saved successfully",
     "saveError": "Failed to save"
   },
   "activity": {

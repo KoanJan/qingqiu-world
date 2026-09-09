@@ -20,7 +20,7 @@ interface AgentStatusBarProps {
 
 const STATUS_DOT_CONFIG: Record<number, { color: string; animate: boolean; label: string }> = {
   [PARTICIPANT_STATUS_IDLE]:    { color: '#22c55e', animate: false, label: 'Idle' },
-  [PARTICIPANT_STATUS_WORKING]: { color: '#3b82f6', animate: true,  label: 'Working...' },
+  [PARTICIPANT_STATUS_WORKING]: { color: '#3b82f6', animate: true,  label: 'Thinking...' },
 };
 
 // Default config for unknown status values

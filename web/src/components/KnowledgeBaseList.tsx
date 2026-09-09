@@ -160,24 +160,29 @@ const KnowledgeBaseList: React.FC<KnowledgeBaseListProps> = ({ onSelectKB, showC
         ) : kbs.length === 0 ? (
           <div className="empty-state-text">{t('kb.noKB')}</div>
         ) : (
-          kbs.map(kb => (
-            <div
-              key={kb.id}
-              className="item-card"
-              style={{ cursor: onSelectKB ? 'pointer' : 'default' }}
-              onClick={() => onSelectKB?.(kb)}
-            >
-              <div className="item-card-header">
-                <ConfigIcon type="kb" />
-                <div className="item-card-info">
-                  <div className="item-card-name">{kb.name}</div>
-                  <div className="item-card-desc">
-                    {kb.description || t('kb.noDescription')}
-                    <span style={{ marginLeft: 8 }}>
-                      <Tag color={STATUS_MAP[kb.index_type]?.color || 'default'} style={{ fontSize: 11 }}>
-                        {t(STATUS_MAP[kb.index_type]?.labelKey || String(kb.index_type))}
-                      </Tag>
-                      {t('kb.docCount', { count: kb.document_count })} · {t('kb.vectorCount', { count: kb.vector_count })}
+          <div className="list-grid-2">
+            {kbs.map(kb => (
+              <div
+                key={kb.id}
+                className="item-card"
+                style={{ cursor: onSelectKB ? 'pointer' : 'default' }}
+                onClick={() => onSelectKB?.(kb)}
+              >
+                <div className="item-card-header">
+                  <ConfigIcon type="kb" />
+                  <div className="item-card-info">
+                    <div className="item-card-name">{kb.name}</div>
+                    <div className="item-card-desc">
+                      {kb.description || t('kb.noDescription')}
+                    </div>
+                  </div>
+                  {/* Index-type tag + document count: top-right meta cluster. */}
+                  <div className="item-card-meta">
+                    <Tag color={STATUS_MAP[kb.index_type]?.color || 'default'} style={{ fontSize: 11 }}>
+                      {t(STATUS_MAP[kb.index_type]?.labelKey || String(kb.index_type))}
+                    </Tag>
+                    <span className="item-card-meta-note">
+                      {t('kb.docCount', { count: kb.document_count })}
                     </span>
                   </div>
                 </div>
@@ -186,8 +191,8 @@ const KnowledgeBaseList: React.FC<KnowledgeBaseListProps> = ({ onSelectKB, showC
                   onDelete={(e) => handleDelete(kb.id, e)}
                 />
               </div>
-            </div>
-          ))
+            ))}
+          </div>
         )}
       </div>
 

@@ -5,6 +5,29 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.10] - 2026-09-10
+
+### Added
+- **Hybrid KB Retrieval**: knowledge-base search now blends vector similarity with keyword (BM25) matching; the keyword weight is configurable per KB from the frontend
+- **KB Detail Tabs**: KB detail body split into Documents and Settings tabs
+- **First LLM Auto-Promotion**: the first LLM config created is automatically set as the system LLM
+
+### Changed
+- **KB List Two-Column Grid**: KB cards moved to a two-column grid, no longer showing vector counts, with index-type tag and document count grouped top-right
+- **Mine View Hosts User Profile**: "My Info" moved from settings to the mine view as a top-level navigation item; settings now defaults to the agent sub-view
+- **Library Concept Removed**: knowledge bases and experiences promoted to top-level settings menu entries; detail back-navigation returns to the originating list
+- **Unified Card Actions**: KB document items use the shared hover actions instead of a permanent delete button, consistent with all other cards
+- **Icon Refinement**: experiences get a dedicated icon color; the Jinshu group switches to a mail icon
+- **Jinshu List Redesign**: rows use fixed-ratio columns (sender | topic | read state | time), plain-weight topics with bold unread rows; list-level "Show in Finder" removed (kept on detail)
+- **System LLM Presentation Simplified**: the settings form replaced by an explanatory note; the current system LLM shows a gold tag on its card, with a hover "S" action on other cards
+
+### Fixed
+- **Single-KB Search Failures**: search failed with "unknown index type" on newly created KBs, and returned empty results when the request omitted topK
+- **Session Breathing Light**: the working indicator never lit during normal chat, and a leftover optimistic state could freeze it; it now follows the agent's actual backend status (labeled "Thinking...")
+- **System LLM Tag Lag**: the system tag now appears immediately after creating the first LLM config, without needing a refresh
+- **Slider Highlight Residue**: the slider handle returns to its rest appearance after dragging
+- **Jinshu Row Layout**: rows shrank to content width with centered text; fixed with full-width, left-aligned rows
+
 ## [0.1.9] - 2026-09-08
 
 ### Added

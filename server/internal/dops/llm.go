@@ -65,9 +65,33 @@ func UpdateSystemLLMConfig(llmConfigID int64) error {
 	return nil
 }
 
-// CreateLLMConfig creates an llm config
+// CreateLLMConfig creates an llm config. If it is the first LLM config in the
+// table, it is automatically promoted to the system LLM so that system-level
+// LLM features work out of the box without manual bootstrap.
 func CreateLLMConfig(entity *model.LLMConfig) error {
-	return database.DB.Select(
+	if err := database.DB.Select(
 		"Name", "ModelID", "BaseURL", "APIKey", "Description",
-	).Create(entity).Error
+	).Create(entity).Error; err != nil {
+		return err
+	}
+
+	var count int64
+	if err := database.DB.Model(&model.LLMConfig{}).Count(&count).Error; err != nil {
+		// The create itself already succeeded; a count failure must not make
+		// the client believe the config was not saved.
+		applogger.Error("count llm configs after create failed", "error", err)
+		return nil
+	}
+	if count != 1 {
+		return nil
+	}
+	if err := UpdateSystemLLMConfig(entity.ID); err != nil {
+		// The create succeeded; a failed auto promotion is recoverable via the
+		// manual "set as system LLM" action, so log instead of failing.
+		applogger.Error("auto-set first llm config as system llm failed",
+			"llm_config_id", entity.ID, "error", err)
+		return nil
+	}
+	applogger.Info("First LLM config auto-set as system LLM", "llm_config_id", entity.ID)
+	return nil
 }

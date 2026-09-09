@@ -10,12 +10,17 @@ import (
 type KnowledgeBaseCreate struct {
 	Name        string `json:"name" binding:"required"`
 	Description string `json:"description"`
+	// KeywordRatio optionally sets the hybrid-retrieval keyword weight
+	// ([0, 1]); nil falls back to the server default.
+	KeywordRatio *float64 `json:"keyword_ratio"`
 }
 
 // KnowledgeBaseUpdate contains the mutable fields for updating a knowledge base.
 type KnowledgeBaseUpdate struct {
 	Name        *string `json:"name"`
 	Description *string `json:"description"`
+	// KeywordRatio updates the hybrid-retrieval keyword weight ([0, 1]).
+	KeywordRatio *float64 `json:"keyword_ratio"`
 }
 
 // KnowledgeBaseResponse represents the API response for a knowledge base.
@@ -65,6 +70,9 @@ func (req *KnowledgeBaseUpdate) BuildUpdates() map[string]interface{} {
 	}
 	if req.Description != nil {
 		updates["description"] = *req.Description
+	}
+	if req.KeywordRatio != nil {
+		updates["keyword_ratio"] = *req.KeywordRatio
 	}
 	return updates
 }

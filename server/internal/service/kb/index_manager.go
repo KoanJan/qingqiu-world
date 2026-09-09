@@ -327,7 +327,7 @@ func (m *indexManager) Search(query []float32, topK int) ([]searchCandidate, err
 	switch m.indexType {
 	case model.KnowledgeBaseIndexTypeHNSW:
 		return m.searchHNSW(query, topK)
-	case model.KnowledgeBaseIndexTypeSwitching:
+	case model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat:
 		return m.searchFlat(query, topK)
 	default:
 		return nil, fmt.Errorf("unknown index type: %d", m.indexType)

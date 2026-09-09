@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type IconType = 'user' | 'agent' | 'llm' | 'embedding' | 'search' | 'library' | 'kb' | 'exp' | 'custom';
+export type IconType = 'user' | 'agent' | 'llm' | 'embedding' | 'search' | 'mail' | 'kb' | 'exp' | 'custom';
 
 /* ===== Clean geometric SVG icons =====
    Simple shapes using currentColor + opacity for theme consistency. */
@@ -62,13 +62,11 @@ const FlatSearchIcon = () => (
   </svg>
 );
 
-// Library: four book spines at staggered heights (Lucide library style).
-const FlatLibraryIcon = () => (
+// Mail: envelope with folded flap (Lucide mail style).
+const FlatMailIcon = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-    <path d="m16 6 4 14" opacity=".7" />
-    <path d="M12 6v14" opacity=".55" />
-    <path d="M8 8v12" opacity=".7" />
-    <path d="M4 4v16" opacity=".55" />
+    <rect width="20" height="16" x="2" y="4" rx="2" opacity=".85" />
+    <path d="m22 7-8.97 5.7a1.94 1.94 0 0 1-2.06 0L2 7" opacity=".55" />
   </svg>
 );
 
@@ -121,9 +119,9 @@ const ICON_MAP: Record<IconType, IconConfig> = {
   llm:     { icon: <FlatLLMIcon />,         colorVar: 'var(--color-llm)',        bgVar: 'var(--color-llm-bg)' },
   embedding:{ icon: <FlatEmbeddingIcon />,  colorVar: 'var(--color-embedding)',  bgVar: 'var(--color-embedding-bg)' },
   search:  { icon: <FlatSearchIcon />,      colorVar: 'var(--color-search)',     bgVar: 'var(--color-search-bg)' },
-  library: { icon: <FlatLibraryIcon />,     colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
+  mail:    { icon: <FlatMailIcon />,        colorVar: 'var(--color-mail)',       bgVar: 'var(--color-mail-bg)' },
   kb:      { icon: <FlatKBIcon />,          colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
-  exp:     { icon: <FlatExpIcon />,         colorVar: 'var(--color-kb)',         bgVar: 'var(--color-kb-bg)' },
+  exp:     { icon: <FlatExpIcon />,         colorVar: 'var(--color-exp)',        bgVar: 'var(--color-exp-bg)' },
   custom:    { icon: <FlatInterfaceIcon />, colorVar: 'var(--color-primary)', bgVar: 'var(--color-primary-bg)' },
 };
 

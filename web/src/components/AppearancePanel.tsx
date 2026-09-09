@@ -406,7 +406,7 @@ const AppearancePanel: React.FC<AppearancePanelProps> = (props) => {
   }, [props.bgMode]);
 
   // Local slider state for instant visual feedback during drag.
-  // Persistence only fires onAfterChange (mouse-up).
+  // Persistence only fires onChangeComplete (mouse-up).
   const [localOpacity, setLocalOpacity] = useState(props.glassOpacity);
   const [localBlur, setLocalBlur] = useState(props.glassBlur);
   useEffect(() => { setLocalOpacity(props.glassOpacity); }, [props.glassOpacity]);
@@ -551,7 +551,7 @@ const AppearancePanel: React.FC<AppearancePanelProps> = (props) => {
                   setLocalOpacity(val);
                   document.documentElement.style.setProperty('--glass-opacity', String(val));
                 }}
-                onAfterChange={(v) => props.onGlassOpacityChange(v as number)}
+                onChangeComplete={(v) => props.onGlassOpacityChange(v)}
                 tooltip={{ formatter: (v) => `${Math.round((v ?? 0) * 100)}%` }}
               />
               <div className="appearance-slider-hint">
@@ -574,7 +574,7 @@ const AppearancePanel: React.FC<AppearancePanelProps> = (props) => {
                   setLocalBlur(val);
                   document.documentElement.style.setProperty('--glass-blur', `${val}px`);
                 }}
-                onAfterChange={(v) => props.onGlassBlurChange(v as number)}
+                onChangeComplete={(v) => props.onGlassBlurChange(v)}
                 tooltip={{ formatter: (v) => `${v}px` }}
               />
               <div className="appearance-slider-hint">

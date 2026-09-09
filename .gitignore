@@ -66,3 +66,5 @@ server/.pid
 *.temp
 .cache/
 data/
+.gocache
+.gotmp

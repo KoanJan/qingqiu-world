@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { Tooltip, Spin, message, Button } from 'antd';
+import { Tooltip, Spin, message } from 'antd';
 import { DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import useScrolling from './hooks/useScrolling';
@@ -17,7 +17,6 @@ import PanelDetail from './components/PanelDetail';
 import NappingCatButton from './components/NappingCatButton';
 import KnowledgeBaseList from './components/KnowledgeBaseList';
 import KnowledgeBaseDetail from './components/KnowledgeBaseDetail';
-import SystemLLMConfigForm from './components/SystemLLMConfigForm';
 import PublicExperienceList from './components/PublicExperienceList';
 import PublicExperienceDetail from './components/PublicExperienceDetail';
 import JinshuPanel from './components/JinshuPanel';
@@ -38,12 +37,15 @@ type RingKey = typeof RING[number];
 
 // Settings sub-view identifiers (navigation within the settings big view).
 // 'overview' is gone — the two-pane layout keeps a persistent left nav, so
-// there is no separate overview page anymore. 'kb-detail' is a nested view
-// reached from 'kb' (still uses PanelDetail's back button to return to kb).
+// there is no separate overview page anymore. KB and public experience are
+// flat top-level entries (no wrapping 'library' grouping). 'kb-detail' /
+// 'exp-detail' are nested views reached from 'kb' / 'experience' (still use
+// PanelDetail's back button to return to their lists).
+// The user profile entry lives in the mine big view, not here.
 type SettingsSubview =
-  | 'user'
   | 'agent'
-  | 'library'
+  | 'kb'
+  | 'experience'
   | 'kb-detail'
   | 'exp-detail'
   | 'llm'
@@ -51,21 +53,21 @@ type SettingsSubview =
   | 'search'
   | 'custom';
 
-// Sidebar navigation items. KB and public-experience are merged into a single
-// 'library' entry; the right panel switches between them via a local tab bar.
+// Sidebar navigation items.
 const SETTINGS_CARDS: { key: SettingsSubview; iconType: IconType }[] = [
   { key: 'agent', iconType: 'agent' },
-  { key: 'library', iconType: 'library' },
+  { key: 'kb', iconType: 'kb' },
+  { key: 'experience', iconType: 'exp' },
   { key: 'llm', iconType: 'llm' },
   { key: 'embedding', iconType: 'embedding' },
   { key: 'search', iconType: 'search' },
   { key: 'custom', iconType: 'custom' },
-  { key: 'user', iconType: 'user' },
 ];
 
 // Mine sub-view identifiers (navigation within the mine big view).
-// Jinshu (锦书) has two children: received and sent.
-type MineSubview = 'jinshu-received' | 'jinshu-sent';
+// Jinshu (锦书) has two children: received and sent; the user profile is a
+// top-level entry alongside the jinshu group.
+type MineSubview = 'jinshu-received' | 'jinshu-sent' | 'user';
 
 // Jinshu's child navigation items shown under the collapsible "jinshu" parent.
 const MINE_CHILDREN: MineSubview[] = ['jinshu-received', 'jinshu-sent'];
@@ -88,22 +90,18 @@ function App() {
     mine: 2,
     settings: 3,
   });
-  // Current subview within the settings big view. Defaults to 'user' — always
+  // Current subview within the settings big view. Defaults to 'agent' — always
   // available (no embedding dependency), a neutral entry point.
-  const [settingsSubview, setSettingsSubview] = useState<SettingsSubview>('user');
+  const [settingsSubview, setSettingsSubview] = useState<SettingsSubview>('agent');
   // Current subview within the mine big view.
   const [mineSubview, setMineSubview] = useState<MineSubview>('jinshu-received');
   // Whether the jinshu parent nav group is expanded.
   const [mineNavOpen, setMineNavOpen] = useState(true);
   const [refreshKey, setRefreshKey] = useState(0);
-  const [systemLLMRefreshKey, setSystemLLMRefreshKey] = useState(0);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [showCreateLLM, setShowCreateLLM] = useState(false);
   const [showCreateKB, setShowCreateKB] = useState(false);
   const [showIngestExp, setShowIngestExp] = useState(false);
-  // Library sub-tab: 'kb' or 'public-experience'. Resets to 'kb' on entry so
-  // the user always lands on the KB list first.
-  const [libraryTab, setLibraryTab] = useState<'kb' | 'public-experience'>('kb');
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
   const [selectedExp, setSelectedExp] = useState<PublicExperience | null>(null);
   const [version, setVersion] = useState<string>('');
@@ -192,16 +190,22 @@ function App() {
       });
   }, [userProfileReady]);
 
+  // Re-check the system LLM singleton config; `systemLLMReady` gates features
+  // that require a system LLM (e.g. experience ingestion).
+  const refreshSystemLLMReady = async () => {
+    try {
+      const res = await systemLLMConfigApi.get();
+      setSystemLLMReady(!!res.data?.llm_config_id);
+    } catch {
+      setSystemLLMReady(false);
+    }
+  };
+
   // After user profile is confirmed, check if the system LLM is configured.
   useEffect(() => {
     if (!userProfileReady) return;
-    systemLLMConfigApi.get()
-      .then((res) => {
-        setSystemLLMReady(!!res.data.llm_config_id);
-      })
-      .catch(() => {
-        setSystemLLMReady(false);
-      });
+    refreshSystemLLMReady();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [userProfileReady]);
 
   useEffect(() => {
@@ -252,9 +256,9 @@ function App() {
   };
 
   const settingsLabelMap: Record<SettingsSubview, string> = {
-    user: t('settings.userProfile'),
     agent: t('settings.agentConfig'),
-    library: t('library.title'),
+    kb: t('settings.kbConfig'),
+    experience: t('settings.publicExperience'),
     'kb-detail': '',
     'exp-detail': '',
     llm: t('settings.llmConfig'),
@@ -266,6 +270,7 @@ function App() {
   const mineLabelMap: Record<MineSubview, string> = {
     'jinshu-received': t('jinshu.received'),
     'jinshu-sent': t('jinshu.sent'),
+    user: t('settings.userProfile'),
   };
 
   // Advance to the next big view in the ring. Always slides left.
@@ -328,12 +333,6 @@ function App() {
     </PanelDetail>
   );
 
-  const renderUserPanel = () => (
-    <PanelDetail title={t('settings.userProfile')}>
-      <UserProfileForm />
-    </PanelDetail>
-  );
-
   const renderAgentPanel = () => (
     <PanelDetail
       title={t('settings.agentConfig')}
@@ -347,64 +346,37 @@ function App() {
     </PanelDetail>
   );
 
-  const renderLibraryPanel = () => (
-    <PanelDetail title={t('library.title')}>
-      <div className="library-tab-cards">
-        <button
-          type="button"
-          className={`library-tab-card${libraryTab === 'kb' ? ' active' : ''}`}
-          onClick={() => setLibraryTab('kb')}
-        >
-          <ConfigIcon type="kb" size={30} iconSize={13} borderRadius="6px" marginBottom={0} />
-          <span>{t('settings.kbConfig')}</span>
-        </button>
-        <button
-          type="button"
-          className={`library-tab-card${libraryTab === 'public-experience' ? ' active' : ''}`}
-          onClick={() => setLibraryTab('public-experience')}
-        >
-          <ConfigIcon type="exp" size={30} iconSize={13} borderRadius="6px" marginBottom={0} />
-          <span>{t('settings.publicExperience')}</span>
-        </button>
-      </div>
-      <div style={{ marginBottom: 12 }}>
-        {libraryTab === 'kb' ? (
-          <Button type="primary" onClick={() => setShowCreateKB(true)}>
-            {t('kb.create')}
-          </Button>
-        ) : (
-          <Tooltip title={!systemLLMReady ? t('systemLLMRequired.message_1') : undefined}>
-            <Button
-              type="primary"
-              disabled={!systemLLMReady}
-              onClick={() => setShowIngestExp(true)}
-            >
-              {t('publicExperience.ingest')}
-            </Button>
-          </Tooltip>
-        )}
-      </div>
-      <div style={{ marginTop: 16 }}>
-        {libraryTab === 'kb' ? (
-          <KnowledgeBaseList
-            showCreate={showCreateKB}
-            onCreateClose={() => setShowCreateKB(false)}
-            onSelectKB={(kb) => {
-              setSelectedKB(kb);
-              setSettingsSubview('kb-detail');
-            }}
-          />
-        ) : (
-          <PublicExperienceList
-            showIngest={showIngestExp}
-            onIngestClose={() => setShowIngestExp(false)}
-            onSelectExp={(exp) => {
-              setSelectedExp(exp);
-              setSettingsSubview('exp-detail');
-            }}
-          />
-        )}
-      </div>
+  const renderKBPanel = () => (
+    <PanelDetail
+      title={t('settings.kbConfig')}
+      onAdd={() => setShowCreateKB(true)}
+    >
+      <KnowledgeBaseList
+        showCreate={showCreateKB}
+        onCreateClose={() => setShowCreateKB(false)}
+        onSelectKB={(kb) => {
+          setSelectedKB(kb);
+          setSettingsSubview('kb-detail');
+        }}
+      />
+    </PanelDetail>
+  );
+
+  const renderExpPanel = () => (
+    <PanelDetail
+      title={t('settings.publicExperience')}
+      onAdd={() => setShowIngestExp(true)}
+      onAddDisabled={!systemLLMReady}
+      onAddTooltip={t('systemLLMRequired.message_1')}
+    >
+      <PublicExperienceList
+        showIngest={showIngestExp}
+        onIngestClose={() => setShowIngestExp(false)}
+        onSelectExp={(exp) => {
+          setSelectedExp(exp);
+          setSettingsSubview('exp-detail');
+        }}
+      />
     </PanelDetail>
   );
 
@@ -414,7 +386,7 @@ function App() {
         onBack={() => {
           setSelectedKB(null);
           setShowCreateKB(false);
-          setSettingsSubview('library');
+          setSettingsSubview('kb');
         }}
       >
         <KnowledgeBaseDetail kb={selectedKB} />
@@ -426,14 +398,14 @@ function App() {
       <PanelDetail
         onBack={() => {
           setSelectedExp(null);
-          setSettingsSubview('library');
+          setSettingsSubview('experience');
         }}
       >
         <PublicExperienceDetail
           exp={selectedExp}
           onRedistilled={() => {
             setSelectedExp(null);
-            setSettingsSubview('library');
+            setSettingsSubview('experience');
           }}
         />
       </PanelDetail>
@@ -444,11 +416,12 @@ function App() {
       title={t('settings.llmConfig')}
       onAdd={() => setShowCreateLLM(true)}
     >
+      <p className="panel-note">{t('systemLLMConfig.description')}</p>
       <LLMConfigList
         onSelectConfig={handleSelectLLMConfig}
         showCreate={showCreateLLM}
         onCreateClose={() => setShowCreateLLM(false)}
-        onConfigChanged={() => setSystemLLMRefreshKey(k => k + 1)}
+        onConfigChanged={() => { refreshSystemLLMReady(); }}
         beforeDelete={async (id) => {
           try {
             const sysRes = await systemLLMConfigApi.get();
@@ -460,10 +433,6 @@ function App() {
           return true;
         }}
       />
-      <div style={{ borderTop: '1px solid var(--color-border)', marginTop: 32, paddingTop: 24 }}>
-        <h4 style={{ marginBottom: 16 }}>{t('systemLLMConfig.title')}</h4>
-        <SystemLLMConfigForm onSaved={() => setSystemLLMReady(true)} refreshKey={systemLLMRefreshKey} />
-      </div>
     </PanelDetail>
   );
 
@@ -480,9 +449,9 @@ function App() {
   );
 
   const settingsPanelMap: Record<string, () => React.ReactNode> = {
-    user: renderUserPanel,
     agent: renderAgentPanel,
-    library: renderLibraryPanel,
+    kb: renderKBPanel,
+    experience: renderExpPanel,
     'kb-detail': renderKBDetailPanel,
     'exp-detail': renderExpDetailPanel,
     llm: renderLLMPanel,
@@ -497,6 +466,13 @@ function App() {
   };
 
   const renderMinePanel = () => {
+    if (mineSubview === 'user') {
+      return (
+        <PanelDetail title={t('settings.userProfile')}>
+          <UserProfileForm />
+        </PanelDetail>
+      );
+    }
     if (mineSubview === 'jinshu-received') {
       return <JinshuPanel direction="received" />;
     }
@@ -632,7 +608,7 @@ function App() {
                         className="settings-nav-item"
                         onClick={() => setMineNavOpen(prev => !prev)}
                       >
-                        <ConfigIcon type="library" size={28} iconSize={14} borderRadius="6px" marginBottom={0} />
+                        <ConfigIcon type="mail" size={28} iconSize={14} borderRadius="6px" marginBottom={0} />
                         <span className="settings-nav-label">{t('jinshu.title')}</span>
                         <DownOutlined className={`nav-chevron${mineNavOpen ? ' open' : ''}`} />
                       </button>
@@ -651,6 +627,15 @@ function App() {
                         </div>
                       )}
                     </div>
+                    {/* Top-level entry: user profile (moved out of settings). */}
+                    <button
+                      type="button"
+                      className={`settings-nav-item${mineSubview === 'user' ? ' active' : ''}`}
+                      onClick={() => setMineSubview('user')}
+                    >
+                      <ConfigIcon type="user" size={28} iconSize={14} borderRadius="6px" marginBottom={0} />
+                      <span className="settings-nav-label">{mineLabelMap.user}</span>
+                    </button>
                   </nav>
                 </div>
               </ResizableCard>
@@ -678,11 +663,15 @@ function App() {
                   <div className="settings-sidebar-title">{t('settings.title')}</div>
                   <nav className="settings-nav">
                     {SETTINGS_CARDS.map(({ key, iconType }) => {
-                      const needsEmbedding = key === 'agent' || key === 'library';
+                      // KB creation needs embeddings; the experience list
+                      // itself does not (ingest is gated by systemLLM on its
+                      // own button).
+                      const needsEmbedding = key === 'agent' || key === 'kb';
                       const disabled = needsEmbedding && !embeddingReady;
-                      // kb-detail is nested under kb; keep kb highlighted while
-                      // the detail page is open so the nav reflects the location.
-                      const activeKey = settingsSubview === 'kb-detail' || settingsSubview === 'exp-detail' ? 'library' : settingsSubview;
+                      // Detail views are nested under their lists; keep the
+                      // parent entry highlighted so the nav reflects the
+                      // location.
+                      const activeKey = settingsSubview === 'kb-detail' ? 'kb' : settingsSubview === 'exp-detail' ? 'experience' : settingsSubview;
                       return (
                         <Tooltip key={key} title={disabled ? t('embeddingRequired.message_1') : undefined}>
                           <button
