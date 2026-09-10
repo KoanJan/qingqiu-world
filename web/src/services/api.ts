@@ -131,6 +131,7 @@ export async function initApiClient(): Promise<number> {
 export const sessionApi = {
   list: () => api.get<Session[]>('/sessions'),
   get: (id: number) => api.get<Session>(`/sessions/${id}`),
+  markRead: (id: number) => api.post(`/sessions/${id}/read`),
   create: (data: Partial<Session>) => api.post<Session>('/sessions', data),
   update: (id: number, data: Partial<Session>) => api.put<Session>(`/sessions/${id}`, data),
   delete: (id: number) => api.delete(`/sessions/${id}`),

@@ -12,7 +12,7 @@ import { useSSE } from '../hooks/useSSE';
 import { useMessages } from '../hooks/useMessages';
 import type { Message, Session, Agent, SessionAgentStatus } from '../types';
 import { PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING, TEMP_SESSION_ID } from '../types';
-import { agentApi, chatApi, personApi } from '../services/api';
+import { agentApi, chatApi, personApi, sessionApi } from '../services/api';
 import { logger } from '../logger';
 
 interface ChatWindowProps {
@@ -72,6 +72,11 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
         msg.person_id = currentAgent.id;
       }
       setMessages(prev => [...prev, msg]);
+      if (session && session.id !== TEMP_SESSION_ID) {
+        sessionApi.markRead(session.id).catch(error => {
+          logger.error('Failed to mark session read after message:', error, 'session_id', session.id);
+        });
+      }
     },
     onAgentStatus: (status: number, agentId?: number) => {
       if (agentId) {

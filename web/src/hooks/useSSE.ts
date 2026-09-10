@@ -26,6 +26,7 @@ interface UseSSECallbacks {
 export function useSSE(callbacks: UseSSECallbacks) {
   const { t } = useTranslation();
   const esRef = useRef<EventSource | null>(null);
+  const sessionIdRef = useRef<number | null>(null);
   // Use ref for callbacks so the SSE handler always sees the latest
   const cbRef = useRef(callbacks);
   cbRef.current = callbacks;
@@ -36,10 +37,19 @@ export function useSSE(callbacks: UseSSECallbacks) {
       esRef.current.close();
       esRef.current = null;
     }
+    sessionIdRef.current = null;
   }, []);
 
   const connect = useCallback(
     (sessionId: number) => {
+      // Skip reconnection when already connected to the same session.
+      // Reconnecting unconditionally would tear down the EventSource and
+      // reopen it, creating a gap during which server-side SSE pushes
+      // (e.g. agent_status=working) are lost.
+      if (sessionIdRef.current === sessionId && esRef.current) {
+        return;
+      }
+
       disconnect();
 
       const url = `${getDynamicApiBaseUrl()}/chat/stream/${sessionId}`;
@@ -47,6 +57,7 @@ export function useSSE(callbacks: UseSSECallbacks) {
 
       const es = new EventSource(url);
       esRef.current = es;
+      sessionIdRef.current = sessionId;
 
       es.onmessage = (event) => {
         try {

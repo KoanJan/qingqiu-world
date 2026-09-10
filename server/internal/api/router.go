@@ -86,6 +86,7 @@ func SetupRouter() *gin.Engine {
 			sessions.GET("", h.ListSessions)
 			sessions.GET("/:id", h.GetSession)
 			sessions.GET("/:id/activities", h.GetSessionActivities)
+			sessions.POST("/:id/read", h.MarkSessionRead)
 			sessions.PUT("/:id", h.UpdateSession)
 			sessions.DELETE("/:id", h.DeleteSession)
 		}
@@ -111,6 +112,7 @@ func SetupRouter() *gin.Engine {
 			chat.GET("/stream/:session_id", h.StreamMessages)
 			chat.GET("/agents/:session_id", h.GetSessionAgents)
 		}
+		api.GET("/notifications/stream", h.StreamNotifications)
 
 		searchConfig := api.Group("/search-config")
 		{

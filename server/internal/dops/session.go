@@ -266,6 +266,60 @@ func IsParticipant(sessionID, personID int64) (bool, error) {
 	return count > 0, nil
 }
 
+// GetSessionHumanParticipantID returns the person ID of the human
+// participant in a session. Returns 0 if no human participant exists
+// (e.g. AI-AI sessions). Used by the notification system to address
+// user-level SSE pushes.
+func GetSessionHumanParticipantID(sessionID int64) (int64, error) {
+	var personID int64
+	err := database.DB.Raw(`SELECT ps.participant_id FROM participant_sessions ps
+		JOIN persons p ON p.id = ps.participant_id AND p.type = ?
+		WHERE ps.session_id = ?
+		LIMIT 1`, model.PersonTypeHuman, sessionID).Scan(&personID).Error
+	return personID, err
+}
+
+// GetUnreadSessions returns a set of session IDs (as map keys) where the
+// latest message ID exceeds the user's last_read_message_id. Only sessions
+// the user participates in are considered — observer sessions never
+// produce unread messages for the user.
+func GetUnreadSessions(personID int64, sessionIDs []int64) (map[int64]bool, error) {
+	if len(sessionIDs) == 0 {
+		return nil, nil
+	}
+	// Fetch user's read markers for the candidate sessions.
+	var ps []model.ParticipantSession
+	if err := database.DB.
+		Where("participant_id = ? AND session_id IN ?", personID, sessionIDs).
+		Find(&ps).Error; err != nil {
+		return nil, err
+	}
+	readMap := make(map[int64]int64, len(ps))
+	for _, p := range ps {
+		readMap[p.SessionID] = p.LastReadMessageID
+	}
+	// Fetch latest message ID per session in one query.
+	type maxMsg struct {
+		SessionID int64
+		MaxID     int64
+	}
+	var maxMsgs []maxMsg
+	if err := database.DB.Model(&model.Message{}).
+		Where("session_id IN ?", sessionIDs).
+		Select("session_id, MAX(id) as max_id").
+		Group("session_id").
+		Scan(&maxMsgs).Error; err != nil {
+		return nil, err
+	}
+	result := make(map[int64]bool)
+	for _, mm := range maxMsgs {
+		if mm.MaxID > readMap[mm.SessionID] {
+			result[mm.SessionID] = true
+		}
+	}
+	return result, nil
+}
+
 // GetSessionOtherParticipant returns the conversation partner of selfPersonID
 // in a 1v1 session — the participant other than selfPersonID. This resolves
 // "the person you are talking to" from the session's actual participants

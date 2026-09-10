@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { Button, Modal, message, Input } from 'antd';
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { MessageCircle, Users, Eye } from 'lucide-react';
@@ -18,6 +18,7 @@ interface SessionListProps {
   onSelectSession: (session: Session | null) => void;
   onCreateSession: (agentId: number) => void;
   embeddingReady?: boolean;
+  notification?: { sessionId: number; sequence: number } | null;
 }
 
 // ParticipantAvatars renders the AI participant avatars for a session.
@@ -99,7 +100,12 @@ const ParticipantAvatars: React.FC<{ participants: SessionParticipant[] }> = ({ 
   );
 };
 
-const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSession, onCreateSession }) => {
+const SessionList: React.FC<SessionListProps> = ({
+  currentSessionId,
+  onSelectSession,
+  onCreateSession,
+  notification,
+}) => {
   const { t } = useTranslation();
   const [sessions, setSessions] = useState<Session[]>([]);
   const [agentsBrief, setAgentsBrief] = useState<AgentBrief[]>([]);
@@ -109,6 +115,8 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
   const [editingSession, setEditingSession] = useState<Session | null>(null);
   const [editTitle, setEditTitle] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('sessions');
+  const currentSessionIdRef = useRef(currentSessionId);
+  currentSessionIdRef.current = currentSessionId;
 
   const loadSessions = async () => {
     setLoading(true);
@@ -139,6 +147,22 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
   useEffect(() => {
     loadSessions();
   }, []);
+
+  useEffect(() => {
+    if (!notification) return;
+    setSessions(prev => prev.map(session => (
+      session.id === notification.sessionId
+        ? { ...session, has_unread: session.id !== currentSessionIdRef.current }
+        : session
+    )));
+  }, [notification]);
+
+  useEffect(() => {
+    if (currentSessionId === null) return;
+    setSessions(prev => prev.map(session => (
+      session.id === currentSessionId ? { ...session, has_unread: false } : session
+    )));
+  }, [currentSessionId]);
 
   // Refresh agent energy data whenever switching to the agents view.
   useEffect(() => {
@@ -217,13 +241,26 @@ const SessionList: React.FC<SessionListProps> = ({ currentSessionId, onSelectSes
             <div
               key={session.id}
               className={`session-item ${currentSessionId === session.id ? 'active' : ''}`}
-              onClick={() => onSelectSession(session)}
+              onClick={() => onSelectSession({ ...session, has_unread: false })}
               onMouseEnter={() => setHoveredSessionId(session.id)}
               onMouseLeave={() => setHoveredSessionId(null)}
               style={isObserver ? { opacity: 0.6 } : undefined}
             >
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
                 <div style={{ display: 'flex', alignItems: 'center', flex: 1, minWidth: 0 }}>
+                  {session.has_unread && (
+                    <span
+                      aria-label="Unread messages"
+                      style={{
+                        width: 6,
+                        height: 6,
+                        borderRadius: '50%',
+                        backgroundColor: '#ef4444',
+                        flexShrink: 0,
+                        marginRight: 4,
+                      }}
+                    />
+                  )}
                   <ParticipantAvatars participants={session.participants ?? []} />
                   <span style={{
                     overflow: 'hidden',

@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.11] - 2026-09-11
+
+### Added
+- **Unread Message Indicators**: sessions with new messages show a red dot in the session list, clearing once the session is opened; agent replies that arrive while the user is in another session mark their session unread
+
+### Fixed
+- **Missing Working Indicator on Send**: sending a message could miss the agent's "Working" status push and leave the breathing light unlit; the SSE connection is now reused instead of being rebuilt
+
 ## [0.1.10] - 2026-09-10
 
 ### Added

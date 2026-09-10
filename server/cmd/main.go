@@ -101,6 +101,25 @@ func main() {
 		if data != "" {
 			handler.PushSSEToSession(sessionID, data)
 		}
+
+		// User-level notification: notify the human participant of this
+		// session that a new message has arrived. The payload is
+		// type-based for extensibility — future notification types just
+		// add new "type" values. AI-AI sessions have no human
+		// participant, so no notification is sent.
+		humanID, err := dops.GetSessionHumanParticipantID(sessionID)
+		if err != nil {
+			applogger.Error("onPushMessage: failed to resolve human participant for notification",
+				"session_id", sessionID, "error", err)
+		} else if humanID > 0 {
+			notifData := safeMarshalSSE(map[string]interface{}{
+				"type":       "new_message",
+				"session_id": sessionID,
+			})
+			if notifData != "" {
+				handler.PushNotificationToUser(humanID, notifData)
+			}
+		}
 	}
 
 	// Experience system: semantic retrieval for tasks + heartbeat-triggered reflection.

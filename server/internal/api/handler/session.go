@@ -36,15 +36,30 @@ func (h *Handler) ListSessions(c *gin.Context) {
 
 	// Resolve current user's participation for each session.
 	participationMap := map[int64]bool{}
+	unreadSet := map[int64]bool{}
 	if currentUserID, err := dops.GetCurrentUserPersonID(); err != nil {
 		applogger.Error("failed to resolve current user person id for participation check", "error", err)
-	} else if pm, err := dops.GetParticipatedSessions(currentUserID, sids); err != nil {
-		applogger.Error("failed to resolve user participation in sessions", "error", err)
 	} else {
-		participationMap = pm
+		if pm, err := dops.GetParticipatedSessions(currentUserID, sids); err != nil {
+			applogger.Error("failed to resolve user participation in sessions", "error", err)
+		} else {
+			participationMap = pm
+		}
+		// Resolve unread status for sessions the user participates in.
+		participatedSids := make([]int64, 0, len(participationMap))
+		for _, sid := range sids {
+			if participationMap[sid] {
+				participatedSids = append(participatedSids, sid)
+			}
+		}
+		if us, err := dops.GetUnreadSessions(currentUserID, participatedSids); err != nil {
+			applogger.Error("failed to resolve unread sessions", "error", err)
+		} else {
+			unreadSet = us
+		}
 	}
 
-	response.Success(c, schema.NewSessionResponseList(entities, personMap, participationMap))
+	response.Success(c, schema.NewSessionResponseList(entities, personMap, participationMap, unreadSet))
 }
 
 // GetSession handles retrieving a single session by ID.
@@ -60,17 +75,55 @@ func (h *Handler) GetSession(c *gin.Context) {
 		applogger.Error("failed to resolve session person", "session_id", id, "error", err)
 	}
 
-	// Resolve current user's participation.
+	// Resolve current user's participation and unread status.
 	isParticipant := false
+	hasUnread := false
 	if currentUserID, err := dops.GetCurrentUserPersonID(); err != nil {
 		applogger.Error("failed to resolve current user person id for participation check", "error", err)
-	} else if ok, err := dops.IsParticipant(id, currentUserID); err != nil {
-		applogger.Error("failed to resolve user participation in session", "session_id", id, "error", err)
 	} else {
-		isParticipant = ok
+		if ok, err := dops.IsParticipant(id, currentUserID); err != nil {
+			applogger.Error("failed to resolve user participation in session", "session_id", id, "error", err)
+		} else {
+			isParticipant = ok
+		}
+		if isParticipant {
+			if us, err := dops.GetUnreadSessions(currentUserID, []int64{id}); err != nil {
+				applogger.Error("failed to resolve unread status", "session_id", id, "error", err)
+			} else {
+				hasUnread = us[id]
+			}
+		}
 	}
 
-	response.Success(c, schema.NewSessionResponse(entity, sm, isParticipant))
+	response.Success(c, schema.NewSessionResponse(entity, sm, isParticipant, hasUnread))
+}
+
+// MarkSessionRead advances the current user's read marker to the latest
+// message in the session. Reading is monotonic and never moves the marker
+// backwards when concurrent messages arrive.
+func (h *Handler) MarkSessionRead(c *gin.Context) {
+	id := getPathID(c)
+	if _, err := dops.GetSession(id); err != nil {
+		handleNotFound(c, "Session", id)
+		return
+	}
+	personID, err := dops.GetCurrentUserPersonID()
+	if err != nil {
+		response.BadRequest(c, "No user profile found.")
+		return
+	}
+	latestMessageID, err := dops.GetMaxMessageID(id)
+	if err != nil {
+		applogger.Error("failed to resolve latest message for read marker", "session_id", id, "error", err)
+		response.InternalError(c, "Failed to mark session read")
+		return
+	}
+	if err := dops.AdvanceLastReadMessageID(id, personID, latestMessageID); err != nil {
+		applogger.Error("failed to advance session read marker", "session_id", id, "error", err)
+		response.InternalError(c, "Failed to mark session read")
+		return
+	}
+	response.Success(c, gin.H{"session_id": id, "last_read_message_id": latestMessageID})
 }
 
 // UpdateSession handles updating an existing session.
@@ -101,17 +154,27 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 		applogger.Error("failed to resolve session person", "session_id", id, "error", err)
 	}
 
-	// Resolve current user's participation.
+	// Resolve current user's participation and unread status.
 	isParticipant := false
+	hasUnread := false
 	if currentUserID, err := dops.GetCurrentUserPersonID(); err != nil {
 		applogger.Error("failed to resolve current user person id for participation check", "error", err)
-	} else if ok, err := dops.IsParticipant(id, currentUserID); err != nil {
-		applogger.Error("failed to resolve user participation in session", "session_id", id, "error", err)
 	} else {
-		isParticipant = ok
+		if ok, err := dops.IsParticipant(id, currentUserID); err != nil {
+			applogger.Error("failed to resolve user participation in session", "session_id", id, "error", err)
+		} else {
+			isParticipant = ok
+		}
+		if isParticipant {
+			if us, err := dops.GetUnreadSessions(currentUserID, []int64{id}); err != nil {
+				applogger.Error("failed to resolve unread status", "session_id", id, "error", err)
+			} else {
+				hasUnread = us[id]
+			}
+		}
 	}
 
-	response.Success(c, schema.NewSessionResponse(entity, sm, isParticipant))
+	response.Success(c, schema.NewSessionResponse(entity, sm, isParticipant, hasUnread))
 }
 
 // DeleteSession handles deleting a session and its resources.

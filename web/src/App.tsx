@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { Tooltip, Spin, message } from 'antd';
 import { DownOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -21,10 +21,11 @@ import PublicExperienceList from './components/PublicExperienceList';
 import PublicExperienceDetail from './components/PublicExperienceDetail';
 import JinshuPanel from './components/JinshuPanel';
 import ConfigIcon from './components/ConfigIcon';
-import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, initApiClient } from './services/api';
+import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, initApiClient, sessionApi } from './services/api';
 import { logger } from './logger';
 import type { IconType } from './components/ConfigIcon';
 import type { Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
+import { useUserSSE, type UserNotification } from './hooks/useUserSSE';
 import { TEMP_SESSION_ID } from './types';
 import './App.css';
 
@@ -111,8 +112,18 @@ function App() {
   const [userProfileChecking, setUserProfileChecking] = useState(true);
   const [embeddingReady, setEmbeddingReady] = useState(false);
   const [systemLLMReady, setSystemLLMReady] = useState(false);
+  const [notification, setNotification] = useState<{ sessionId: number; sequence: number } | null>(null);
 
   useScrolling();
+
+  const handleUserNotification = useCallback((event: UserNotification) => {
+    if (event.type !== 'new_message' || typeof event.session_id !== 'number') {
+      return;
+    }
+    setNotification({ sessionId: event.session_id, sequence: Date.now() });
+  }, []);
+
+  useUserSSE({ enabled: userProfileReady, onNotification: handleUserNotification });
 
   const {
     settings: appearance,
@@ -224,6 +235,11 @@ function App() {
 
   const handleSelectSession = (session: Session | null) => {
     setCurrentSession(session);
+    if (session && session.id !== TEMP_SESSION_ID) {
+      sessionApi.markRead(session.id).catch(error => {
+        logger.error('Failed to mark session read:', error, 'session_id', session.id);
+      });
+    }
   };
 
   const handleSelectLLMConfig = (config: LLMConfig | null) => {
@@ -245,6 +261,7 @@ function App() {
       agent_avatar: '',
       participants: [],
       is_participant: true,
+      has_unread: false,
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
     };
@@ -573,6 +590,7 @@ function App() {
                   embeddingReady={embeddingReady}
                   onSelectSession={handleSelectSession}
                   onCreateSession={handleCreateSession}
+                  notification={notification}
                 />
               </ResizableCard>
 

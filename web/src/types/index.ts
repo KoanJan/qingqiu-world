@@ -22,6 +22,11 @@ export interface Session {
    * This reflects a relationship fact, not a permission restriction.
    */
   is_participant: boolean;
+  /**
+   * Whether this session has messages the current user has not yet read.
+   * The frontend renders an unread badge on the session list item when true.
+   */
+  has_unread: boolean;
   created_at: string;
   updated_at: string | null;
 }

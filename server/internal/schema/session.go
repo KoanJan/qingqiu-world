@@ -46,6 +46,11 @@ type SessionParticipantResponse struct {
 // user — they can view the chat history but cannot send messages (the
 // frontend hides the input component). This reflects a relationship fact
 // (the user is not in that conversation), not a permission restriction.
+//
+// HasUnread (0.1.11) indicates whether this session has messages the
+// current user has not yet read. The frontend renders an unread badge
+// on the session list item when true. Computed by comparing the session's
+// latest message ID against the user's last_read_message_id.
 type SessionResponse struct {
 	ID            int64                        `json:"id"`
 	Title         string                       `json:"title"`
@@ -54,6 +59,7 @@ type SessionResponse struct {
 	AgentAvatar   string                       `json:"agent_avatar"` // Resolved from persons table
 	Participants  []SessionParticipantResponse `json:"participants"`
 	IsParticipant bool                         `json:"is_participant"`
+	HasUnread     bool                         `json:"has_unread"`
 	CreatedAt     time.Time                    `json:"created_at"`
 	UpdatedAt     time.Time                    `json:"updated_at"`
 }
@@ -63,11 +69,13 @@ type SessionResponse struct {
 // The first entry (if any) populates AgentID/AgentName/AgentAvatar for
 // backward compatibility; all entries populate Participants.
 // isParticipant indicates whether the current user is in this session.
-func NewSessionResponse(m *model.Session, aiMembers []dops.SessionMember, isParticipant bool) *SessionResponse {
+// hasUnread indicates whether the session has messages the user hasn't read.
+func NewSessionResponse(m *model.Session, aiMembers []dops.SessionMember, isParticipant, hasUnread bool) *SessionResponse {
 	resp := &SessionResponse{
 		ID:            m.ID,
 		Title:         m.Title,
 		IsParticipant: isParticipant,
+		HasUnread:     hasUnread,
 		CreatedAt:     m.CreatedAt,
 		UpdatedAt:     m.UpdatedAt,
 	}
@@ -91,14 +99,16 @@ func NewSessionResponse(m *model.Session, aiMembers []dops.SessionMember, isPart
 // membersMap maps sessionID → []SessionMember (all AI participants), pre-resolved
 // by dops.GetAIPersonsInSessions.
 // participationMap maps sessionID → true for sessions the current user participates in.
-func NewSessionResponseList(entities []model.Session, membersMap map[int64][]dops.SessionMember, participationMap map[int64]bool) []*SessionResponse {
+// unreadSet maps sessionID → true for sessions with unread messages.
+func NewSessionResponseList(entities []model.Session, membersMap map[int64][]dops.SessionMember, participationMap, unreadSet map[int64]bool) []*SessionResponse {
 	if len(entities) == 0 {
 		return nil
 	}
 	result := make([]*SessionResponse, 0, len(entities))
 	for i := range entities {
 		isParticipant := participationMap[entities[i].ID]
-		result = append(result, NewSessionResponse(&entities[i], membersMap[entities[i].ID], isParticipant))
+		hasUnread := unreadSet[entities[i].ID]
+		result = append(result, NewSessionResponse(&entities[i], membersMap[entities[i].ID], isParticipant, hasUnread))
 	}
 	return result
 }

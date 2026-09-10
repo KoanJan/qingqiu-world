@@ -92,6 +92,15 @@ func (cm *connectionManager) PushToSession(sessionID int64, data string) {
 	snapshot := make([]chan string, len(conns))
 	copy(snapshot, conns)
 	cm.mu.RUnlock()
+	// A push with no registered SSE connection would silently vanish (the
+	// loop below would just iterate over an empty slice). Log it so lost
+	// status/message events are diagnosable. Kept at Warn — this is a real
+	// message loss, and project rules forbid silently dropping it.
+	if len(snapshot) == 0 {
+		applogger.Warn("SSE push: no active connections for session, dropping",
+			"session_id", sessionID)
+		return
+	}
 	for _, ch := range snapshot {
 		select {
 		case ch <- data:
@@ -120,11 +129,91 @@ func PushSSEToSession(sessionID int64, data string) {
 	connManager.PushToSession(sessionID, data)
 }
 
-// ShutdownSSE closes all SSE connections gracefully.
-// Should be called before HTTP server shutdown to avoid
-// waiting for long-lived keep-alive connections to close.
+// userConnManager manages user-level SSE connections keyed by userID.
+// Each user has at most one persistent notification channel (independent of
+// session-level channels). Used for cross-session notifications such as
+// "new message in a non-active session".
+type userConnManager struct {
+	mu          sync.RWMutex
+	connections map[int64][]chan string // userID -> list of SSE channels
+}
+
+// userConnMgr is the global singleton for user-level SSE connections.
+var userConnMgr = &userConnManager{
+	connections: make(map[int64][]chan string),
+}
+
+// Register creates and registers a new SSE channel for a user.
+func (cm *userConnManager) Register(userID int64) chan string {
+	ch := make(chan string, 256)
+	cm.mu.Lock()
+	cm.connections[userID] = append(cm.connections[userID], ch)
+	cm.mu.Unlock()
+	return ch
+}
+
+// Unregister removes an SSE channel from a user and closes it.
+func (cm *userConnManager) Unregister(userID int64, ch chan string) {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	conns := cm.connections[userID]
+	for i, c := range conns {
+		if c == ch {
+			cm.connections[userID] = append(conns[:i], conns[i+1:]...)
+			close(c)
+			break
+		}
+	}
+	if len(cm.connections[userID]) == 0 {
+		delete(cm.connections, userID)
+	}
+}
+
+// PushToUser sends a message to all SSE channels of a user.
+func (cm *userConnManager) PushToUser(userID int64, data string) {
+	cm.mu.RLock()
+	conns := cm.connections[userID]
+	snapshot := make([]chan string, len(conns))
+	copy(snapshot, conns)
+	cm.mu.RUnlock()
+	if len(snapshot) == 0 {
+		applogger.Warn("User SSE push: no active connections for user, dropping",
+			"user_id", userID)
+		return
+	}
+	for _, ch := range snapshot {
+		select {
+		case ch <- data:
+		default:
+			applogger.Error("User SSE channel full, dropping message", "user_id", userID)
+		}
+	}
+}
+
+// CloseAll closes all user-level SSE channels and clears the connection map.
+func (cm *userConnManager) CloseAll() {
+	cm.mu.Lock()
+	defer cm.mu.Unlock()
+	for userID, conns := range cm.connections {
+		for _, ch := range conns {
+			close(ch)
+		}
+		delete(cm.connections, userID)
+	}
+}
+
+// PushNotificationToUser is the exported wrapper for pushing user-level
+// SSE notifications. Called from the runtime when a non-active session
+// receives a new message.
+func PushNotificationToUser(userID int64, data string) {
+	userConnMgr.PushToUser(userID, data)
+}
+
+// ShutdownSSE closes all SSE connections gracefully (both session-level
+// and user-level). Should be called before HTTP server shutdown.
 func ShutdownSSE() {
 	connManager.CloseAll()
+	userConnMgr.CloseAll()
 }
 
 // CreateAndSend creates a new session and sends the first message.
@@ -311,6 +400,51 @@ func (h *Handler) StreamMessages(c *gin.Context) {
 					return false
 				}
 			}
+			return true
+		case <-c.Request.Context().Done():
+			return false
+		case <-heartbeat.C:
+			c.Writer.WriteString(": heartbeat\n\n")
+			c.Writer.Flush()
+			return true
+		}
+	})
+}
+
+// StreamNotifications handles user-level SSE streaming for cross-session
+// notifications. Unlike StreamMessages (which is per-session), this channel
+// is per-user and persists across session switches — it delivers lightweight
+// notifications such as "new message in a non-active session".
+//
+// The payload is type-based for extensibility: the current version only
+// emits {"type":"new_message", "session_id":N}, but future notification
+// types (e.g. jinshu_received, alarm_triggered) can be added by defining
+// new "type" values — the frontend dispatches by type.
+func (h *Handler) StreamNotifications(c *gin.Context) {
+	userID, err := dops.GetCurrentUserPersonID()
+	if err != nil {
+		response.BadRequest(c, "No user profile found.")
+		return
+	}
+
+	c.Header("Content-Type", "text/event-stream; charset=utf-8")
+	c.Header("Cache-Control", "no-cache")
+	c.Header("Connection", "keep-alive")
+	c.Header("X-Accel-Buffering", "no")
+
+	ch := userConnMgr.Register(userID)
+	defer userConnMgr.Unregister(userID, ch)
+
+	c.Stream(func(w io.Writer) bool {
+		heartbeat := time.NewTimer(30 * time.Second)
+		defer heartbeat.Stop()
+
+		select {
+		case data, ok := <-ch:
+			if !ok {
+				return false
+			}
+			c.SSEvent("", data)
 			return true
 		case <-c.Request.Context().Done():
 			return false
