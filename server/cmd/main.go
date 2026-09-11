@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -12,14 +11,16 @@ import (
 	"time"
 
 	"qingqiu-world-server/internal/api"
-	"qingqiu-world-server/internal/api/handler"
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/migration"
+	notificationrouter "qingqiu-world-server/internal/notification/router"
+	"qingqiu-world-server/internal/realtime"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/experience"
+	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/kb"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
@@ -29,17 +30,6 @@ import (
 
 	"github.com/joho/godotenv"
 )
-
-// safeMarshalSSE marshals data to JSON for SSE push, logging on failure.
-// Returns the JSON string or an empty string if marshaling fails.
-func safeMarshalSSE(data map[string]interface{}) string {
-	bytes, err := json.Marshal(data)
-	if err != nil {
-		applogger.Error("Failed to marshal SSE event data", "error", err)
-		return ""
-	}
-	return string(bytes)
-}
 
 func main() {
 	exePath, _ := os.Executable()
@@ -60,6 +50,8 @@ func main() {
 
 	database.Init()
 	migration.Run()
+	hub := realtime.NewHub()
+	notificationPublisher := notificationrouter.New(hub)
 
 	// Energy: initialize the global fixed timezone from <DATA_ROOT>/tz.txt.
 	// Must run before any energy operation (RecoverEnergy/DeductEnergy) and
@@ -79,51 +71,9 @@ func main() {
 	memCtx, memCancel := context.WithCancel(context.Background())
 	go memory.Start(memCtx)
 
-	// Initialize the Agent Runtime system with SSE callbacks
-	onStatusChange := func(agentConfigID, personID, sessionID int64, status int) {
-		data := safeMarshalSSE(map[string]interface{}{
-			"type":       "agent_status",
-			"agent_id":   personID,
-			"session_id": sessionID,
-			"status":     status,
-		})
-		if data != "" {
-			handler.PushSSEToSession(sessionID, data)
-		}
-	}
-	onPushMessage := func(sessionID, messageID, personID int64, content string) {
-		data := safeMarshalSSE(map[string]interface{}{
-			"type":       "message",
-			"message_id": messageID,
-			"person_id":  personID,
-			"content":    content,
-		})
-		if data != "" {
-			handler.PushSSEToSession(sessionID, data)
-		}
-
-		// User-level notification: notify the human participant of this
-		// session that a new message has arrived. The payload is
-		// type-based for extensibility — future notification types just
-		// add new "type" values. AI-AI sessions have no human
-		// participant, so no notification is sent.
-		humanID, err := dops.GetSessionHumanParticipantID(sessionID)
-		if err != nil {
-			applogger.Error("onPushMessage: failed to resolve human participant for notification",
-				"session_id", sessionID, "error", err)
-		} else if humanID > 0 {
-			notifData := safeMarshalSSE(map[string]interface{}{
-				"type":       "new_message",
-				"session_id": sessionID,
-			})
-			if notifData != "" {
-				handler.PushNotificationToUser(humanID, notifData)
-			}
-		}
-	}
-
 	// Experience system: semantic retrieval for tasks + heartbeat-triggered reflection.
-	experience.Init(embSvc)
+	experience.Init(embSvc, notificationPublisher)
+	jinshu.SetNotificationPublisher(notificationPublisher)
 
 	// Initialize the global event queue first, before runtimes subscribe to it
 	eventqueue.Init()
@@ -131,12 +81,12 @@ func main() {
 	// Start all agent runtimes and recover orphaned scheduled events.
 	// recoverScheduledEvents() is called inside Start() after all runtimes
 	// have subscribed to the event queue.
-	runtime.Start(onStatusChange, onPushMessage, handler.PushSSEToSession)
+	runtime.Start(notificationPublisher)
 
 	kb.Init(kb.DefaultEmbeddingDim, 0)
 	kb.RecoverProcessingDocuments()
 
-	r := api.SetupRouter()
+	r := api.SetupRouter(hub)
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -171,8 +121,8 @@ func main() {
 	// Shut down the memory system (vectorization + daily cron)
 	memCancel()
 
-	// Close all SSE connections so HTTP shutdown doesn't wait for keep-alive
-	handler.ShutdownSSE()
+	// Close all SSE connections so HTTP shutdown doesn't wait for keep-alive.
+	hub.CloseAll()
 
 	// Graceful HTTP shutdown — returns immediately since SSE connections are closed
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)

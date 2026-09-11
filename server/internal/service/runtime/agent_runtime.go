@@ -11,6 +11,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/chat"
@@ -58,13 +59,12 @@ type agentRuntime struct {
 	agentPersonID      int64                         // Agent's PersonID for participant_session queries
 	eventCh            <-chan *eventqueue.AgentEvent // Read-only channel subscribed from eventqueue.Global
 	messageCommitCh    chan *commitRequest
-	heartbeatInterval  time.Duration                                              // Base heartbeat interval (adaptive)
-	idleTicks          int                                                        // Consecutive idle heartbeats (for tickless backoff)
-	heartbeatTick      int                                                        // Total heartbeat ticks (for check scheduling)
-	mu                 sync.Mutex                                                 // Protects activeWrites for external queries
-	learningInProgress atomic.Bool                                                // Guards against concurrent learning checks
-	privateSpaceLoop   *privatespace.Loop                                         // Private-space loop (nil if not initialized)
-	onStatusChange     func(agentConfigID, personID, sessionID int64, status int) // Callback for SSE push
+	heartbeatInterval  time.Duration      // Base heartbeat interval (adaptive)
+	idleTicks          int                // Consecutive idle heartbeats (for tickless backoff)
+	heartbeatTick      int                // Total heartbeat ticks (for check scheduling)
+	mu                 sync.Mutex         // Protects activeWrites for external queries
+	learningInProgress atomic.Bool        // Guards against concurrent learning checks
+	privateSpaceLoop   *privatespace.Loop // Private-space loop (nil if not initialized)
 }
 
 // ==========================================================================
@@ -78,14 +78,12 @@ func newAgentRuntime(
 	agentConfigID int64,
 	eventCh <-chan *eventqueue.AgentEvent,
 	heartbeatInterval time.Duration,
-	onStatusChange func(agentConfigID, personID, sessionID int64, status int),
 ) *agentRuntime {
 	return &agentRuntime{
 		agentConfigID:     agentConfigID,
 		eventCh:           eventCh,
 		messageCommitCh:   make(chan *commitRequest, 16),
 		heartbeatInterval: heartbeatInterval,
-		onStatusChange:    onStatusChange,
 	}
 }
 
@@ -1200,9 +1198,7 @@ func (r *agentRuntime) weakUpdateAgentStatusInSession(sessionID int64, status in
 		return
 	}
 
-	if r.onStatusChange != nil {
-		r.onStatusChange(r.agentConfigID, r.agentPersonID, sessionID, status)
-	}
+	notify(notification.AgentStatusChanged{SessionID: sessionID, PersonID: r.agentPersonID, Status: status})
 }
 
 // hasActiveWorkInSession checks whether any active work exists for the
@@ -1264,10 +1260,10 @@ func (r *agentRuntime) adjustHeartbeatInterval() time.Duration {
 // createAgentRuntime creates and initializes an agentRuntime struct without starting
 // the event loop. Loads the agent's LLM config, subscribes to the event queue,
 // and recovers abandoned works from a previous run.
-func createAgentRuntime(agentConfigID int64, onStatusChange func(agentConfigID, personID, sessionID int64, status int)) (*agentRuntime, error) {
+func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 	eventCh := eventqueue.Subscribe(agentConfigID)
 
-	runtime := newAgentRuntime(agentConfigID, eventCh, 30*time.Second, onStatusChange)
+	runtime := newAgentRuntime(agentConfigID, eventCh, 30*time.Second)
 
 	// Resolve agent's PersonID for participant_session queries
 	ac, err := dops.Get[model.AgentConfig](agentConfigID)

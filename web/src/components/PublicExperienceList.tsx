@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Modal, Form, Upload, message, Spin, Tag } from 'antd';
 import { UploadOutlined, ReloadOutlined } from '@ant-design/icons';
 import type { UploadFile } from 'antd';
@@ -12,17 +12,18 @@ import {
   PUBLIC_EXPERIENCE_STATUS_ERROR,
 } from '../types';
 import { publicExperienceApi } from '../services/api';
+import { subscribeClientNotifications, CLIENT_NOTIFICATION_TYPES } from '../services/clientNotifications';
 
 interface PublicExperienceListProps {
+  active: boolean;
   showIngest?: boolean;
   onIngestClose?: () => void;
   onSelectExp?: (exp: PublicExperience) => void;
 }
 
-// Poll interval for refreshing the list while any experience is still Generating.
-const POLL_INTERVAL_MS = 3000;
+const FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
 
-const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ showIngest, onIngestClose, onSelectExp }) => {
+const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ active, showIngest, onIngestClose, onSelectExp }) => {
   const { t } = useTranslation();
   const [experiences, setExperiences] = useState<PublicExperience[]>([]);
   const [loading, setLoading] = useState(false);
@@ -32,37 +33,60 @@ const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ showIngest,
   const [ingestForm] = Form.useForm();
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
+  const latestEventIdRef = useRef(0);
+  const dirtyRef = useRef(false);
+  const requestRef = useRef(0);
+  const loadedRef = useRef(false);
 
   // Load the experience list. When silent=true, no loading spinner / error toast
   // is shown — used by the polling loop to avoid disruptive UX.
-  const loadExperiences = async (silent = false) => {
+  const loadExperiences = useCallback(async (silent = false) => {
+    const requestID = ++requestRef.current;
     if (!silent) setLoading(true);
     try {
       const res = await publicExperienceApi.list();
-      setExperiences(res.data);
+      if (requestID === requestRef.current) setExperiences(res.data);
     } catch {
       if (!silent) message.error(t('publicExperience.loadError'));
     } finally {
       if (!silent) setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
-    loadExperiences();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    return subscribeClientNotifications((notification) => {
+      if (notification.type === CLIENT_NOTIFICATION_TYPES.STREAM_RECONNECTED) {
+        latestEventIdRef.current = 0;
+        dirtyRef.current = true;
+        if (active) {
+          dirtyRef.current = false;
+          void loadExperiences(true);
+        }
+        return;
+      }
+      if (notification.type !== CLIENT_NOTIFICATION_TYPES.PUBLIC_EXPERIENCE_UPDATED && notification.type !== CLIENT_NOTIFICATION_TYPES.PUBLIC_EXPERIENCE_DELETED) return;
+      if (typeof notification.id === 'number') {
+        if (notification.id <= latestEventIdRef.current) return;
+        latestEventIdRef.current = notification.id;
+      }
+      dirtyRef.current = true;
+      if (active) {
+        dirtyRef.current = false;
+        void loadExperiences(true);
+      }
+    });
+  }, [active, loadExperiences]);
 
-  // Poll while any experience is still in Generating status so the UI
-  // transitions to Active/Error without manual refresh.
   useEffect(() => {
-    const hasGenerating = experiences.some(e => e.status === PUBLIC_EXPERIENCE_STATUS_GENERATING);
-    if (!hasGenerating) return;
-    const timer = setInterval(() => {
-      loadExperiences(true);
-      // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, POLL_INTERVAL_MS);
-    return () => clearInterval(timer);
-  }, [experiences]);
+    if (!active) return;
+    if (!loadedRef.current || dirtyRef.current) {
+      loadedRef.current = true;
+      dirtyRef.current = false;
+      void loadExperiences(true);
+    }
+    const timer = window.setInterval(() => void loadExperiences(true), FALLBACK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [active, loadExperiences]);
 
   useEffect(() => {
     if (showIngest) {

@@ -1,6 +1,7 @@
 package jinshu
 
 import (
+	"context"
 	"fmt"
 	"io"
 	"os"
@@ -11,12 +12,25 @@ import (
 
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 	servicetools "qingqiu-world-server/internal/service/tools"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
+
+// notificationPublisher emits completed delivery facts after files and the record are
+// in place. It intentionally has no read-state event.
+var notificationPublisher notification.Publisher = notification.NopPublisher{}
+
+// SetNotificationPublisher configures the output port at the composition root.
+// A nil value preserves NopPublisher for tests and partial startup.
+func SetNotificationPublisher(publisher notification.Publisher) {
+	if publisher != nil {
+		notificationPublisher = publisher
+	}
+}
 
 // SendParams holds the inputs for delivering a jinshu to another person.
 type SendParams struct {
@@ -94,6 +108,13 @@ func Send(p SendParams) (*model.Jinshu, error) {
 	if err := notify(record, relPaths); err != nil {
 		applogger.Error("jinshu: notify failed", "jinshu_id", record.ID, "error", err)
 	}
+	// Delivery is now complete. This fact is routed separately to human sender
+	// and recipient, with only their respective list direction exposed.
+	notificationPublisher.Publish(context.Background(), notification.JinshuCreated{
+		JinshuID:     record.ID,
+		FromPersonID: record.FromPersonID,
+		ToPersonID:   record.ToPersonID,
+	})
 
 	return record, nil
 }

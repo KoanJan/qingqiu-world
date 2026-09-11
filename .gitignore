@@ -4,6 +4,7 @@
 .lingma
 .specify
 /specs
+AGENTS.md
 
 # Node.js
 node_modules/

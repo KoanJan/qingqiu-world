@@ -11,7 +11,8 @@ import { logger } from '../logger';
 
 interface UseMessagesResult {
   messages: Message[];
-  setMessages: React.Dispatch<React.SetStateAction<Message[]>>;
+  /** Insert or replace a message by persistent ID, then restore message order. */
+  upsertMessage: (message: Message) => void;
   loading: boolean;
   /** Call after temp→real transition to skip re-load and preserve streaming UI. */
   markTempToRealTransition: () => void;
@@ -34,6 +35,19 @@ interface UseMessagesResult {
   } | null>;
 }
 
+// Message persistence and SSE fan-out race by design: an SSE notification may
+// arrive before the HTTP send response creates its optimistic UI entry. Every
+// write path therefore uses this helper instead of append, so a database ID is
+// the sole identity of a rendered message.
+function upsertByMessageID(messages: Message[], nextMessage: Message): Message[] {
+  return [...messages.filter((message) => message.id !== nextMessage.id), nextMessage]
+    .sort((left, right) => left.id - right.id);
+}
+
+function deduplicateMessages(messages: Message[]): Message[] {
+  return messages.reduce<Message[]>((result, message) => upsertByMessageID(result, message), []);
+}
+
 /**
  * Manages chat message state: loading history and sending new messages.
  *
@@ -46,6 +60,10 @@ export function useMessages(
   const { t } = useTranslation();
   const [messages, setMessages] = useState<Message[]>([]);
   const [loading, setLoading] = useState(false);
+
+  const upsertMessage = useCallback((nextMessage: Message) => {
+    setMessages((previous) => upsertByMessageID(previous, nextMessage));
+  }, []);
 
   const loadIdRef = useRef(0);
   const prevSessionIdRef = useRef<number | null>(null);
@@ -74,7 +92,7 @@ export function useMessages(
     try {
       const res = await messageApi.list(s.id);
       if (loadId !== loadIdRef.current) return; // stale
-      setMessages(res.data);
+      setMessages(deduplicateMessages(res.data));
     } catch (err) {
       logger.error('Failed to load messages:', err);
     } finally {
@@ -103,7 +121,7 @@ export function useMessages(
             updated_at: new Date().toISOString(),
           };
 
-          setMessages([userMsg]);
+          setMessages((prev) => upsertByMessageID(prev, userMsg));
           return {
             shouldConnect: true,
             sessionId: newSessionId,
@@ -122,7 +140,7 @@ export function useMessages(
           updated_at: new Date().toISOString(),
         };
 
-        setMessages((prev) => [...prev, userMsg]);
+        setMessages((prev) => upsertByMessageID(prev, userMsg));
         return {
           shouldConnect: true,
           sessionId: session.id,
@@ -163,7 +181,7 @@ export function useMessages(
       setLoading(true);
       messageApi.list(currentId).then(res => {
         if (loadId !== loadIdRef.current) return; // stale
-        setMessages(res.data);
+        setMessages(deduplicateMessages(res.data));
       }).catch(err => {
         logger.error('Failed to load messages:', err);
       }).finally(() => {
@@ -174,7 +192,7 @@ export function useMessages(
 
   return {
     messages,
-    setMessages,
+    upsertMessage,
     loading,
     markTempToRealTransition,
     loadMessages,

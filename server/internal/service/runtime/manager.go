@@ -15,6 +15,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 )
@@ -22,9 +23,8 @@ import (
 // runtimeManager manages agentRuntime instances for all agents.
 // Thread-safe. Each agent gets exactly one runtime.
 type runtimeManager struct {
-	mu             sync.RWMutex
-	runtimes       map[int64]*agentRuntime // agentConfigID -> runtime
-	onStatusChange func(agentConfigID, personID, sessionID int64, status int)
+	mu       sync.RWMutex
+	runtimes map[int64]*agentRuntime // agentConfigID -> runtime
 
 	// rootCtx is the root context for all agent runtimes.
 	// Cancelling it propagates to every runtime, stopping all goroutines at once.
@@ -37,13 +37,12 @@ type runtimeManager struct {
 }
 
 // newRuntimeManager creates a new runtime manager.
-func newRuntimeManager(onStatusChange func(agentConfigID, personID, sessionID int64, status int)) *runtimeManager {
+func newRuntimeManager() *runtimeManager {
 	rootCtx, cancelAll := context.WithCancel(context.Background())
 	return &runtimeManager{
-		runtimes:       make(map[int64]*agentRuntime),
-		onStatusChange: onStatusChange,
-		rootCtx:        rootCtx,
-		cancelAll:      cancelAll,
+		runtimes:  make(map[int64]*agentRuntime),
+		rootCtx:   rootCtx,
+		cancelAll: cancelAll,
 	}
 }
 
@@ -57,7 +56,7 @@ func (rm *runtimeManager) StartRuntime(agentConfigID int64) {
 		return
 	}
 
-	rt, err := createAgentRuntime(agentConfigID, rm.onStatusChange)
+	rt, err := createAgentRuntime(agentConfigID)
 	if err != nil {
 		applogger.Error("StartRuntime: failed to create agent runtime", "agent_config_id", agentConfigID, "error", err)
 		return
@@ -146,28 +145,19 @@ func StartRuntime(agentConfigID int64) {
 	}
 }
 
-// Start initializes the global runtime system: event queue, all agent runtimes,
-// and the output callbacks for SSE push.  Must be called once during application
-// startup, after database.Init() and before any handler traffic.
+// Start initializes the global runtime system and its event publisher. It must
+// be called once during application startup, after database.Init() and before
+// any handler traffic.
 //
 // All agents are eagerly started at startup.  For a desktop local application
 // the number of agents is small and the resource cost is negligible, so there
 // is no reason to use lazy initialization — every agent should be ready to
 // receive events from the moment the server starts.
-//
-// The three callbacks connect the runtime to the SSE transport layer:
-//   - onStatusChange: agent heartbeat / status transitions
-//   - onPushMessage: new message content to stream to UI
-//   - onPushSSE: raw SSE events (notifications, etc.)
-func Start(
-	onStatusChange func(agentConfigID, personID, sessionID int64, status int),
-	onPushMessage func(sessionID, messageID, personID int64, content string),
-	onPushSSE func(sessionID int64, data string),
-) {
-	pushMessageEvent = onPushMessage
-	pushSSEEvent = onPushSSE
-
-	globalRuntimeManager = newRuntimeManager(onStatusChange)
+func Start(publisher notification.Publisher) {
+	if publisher != nil {
+		notificationPublisher = publisher
+	}
+	globalRuntimeManager = newRuntimeManager()
 
 	// Reset any stale working statuses left from a previous crash.
 	// Each agent's recoverActiveWorks handles the normal case (work record + status),
@@ -206,7 +196,17 @@ func Start(
 //
 // The agent runtime event loop is the consumer — it receives the event and
 // calls memory.CreateObservation using the EventID carried in the payload.
-func SendNewMessageEvent(agentConfigID, sessionID, messageID int64, content, speakerName string) {
+func SendNewMessageEvent(agentConfigID, sessionID, messageID, personID int64, content, speakerName string) {
+	// The record was committed by the caller before this entry point is called.
+	// Publishing here keeps all chat-message facts on the same user event stream,
+	// including messages sent from another browser tab.
+	notify(notification.MessageCommitted{
+		SessionID: sessionID,
+		MessageID: messageID,
+		PersonID:  personID,
+		Content:   content,
+	})
+
 	// Production: record memory event before dispatching.
 	eventID, err := memory.RecordMessageEvent(messageID, content)
 	if err != nil {

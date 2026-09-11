@@ -10,18 +10,19 @@ import (
 	"qingqiu-world-server/internal/api/handler"
 	"qingqiu-world-server/internal/api/middleware"
 	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/realtime"
 
 	"github.com/gin-gonic/gin"
 )
 
 // SetupRouter creates and configures the Gin engine with all routes.
 // Includes CORS middleware, static file serving for avatars, and all API endpoints.
-func SetupRouter() *gin.Engine {
+func SetupRouter(hub realtime.Hub) *gin.Engine {
 	r := gin.Default()
 
 	r.Use(middleware.CORS())
 
-	h := handler.NewHandler()
+	h := handler.NewHandler(hub)
 
 	r.GET("/", h.Root)
 	r.GET("/api/version", h.GetVersion)
@@ -109,7 +110,6 @@ func SetupRouter() *gin.Engine {
 		{
 			chat.POST("/new", middleware.RequireEmbedding, h.CreateAndSend)
 			chat.POST("/send/:session_id", middleware.RequireEmbedding, h.SendMessage)
-			chat.GET("/stream/:session_id", h.StreamMessages)
 			chat.GET("/agents/:session_id", h.GetSessionAgents)
 		}
 		api.GET("/notifications/stream", h.StreamNotifications)

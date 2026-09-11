@@ -8,6 +8,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 )
@@ -110,7 +111,7 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 	r.notifyOtherAIParticipants(req.sessionID, msg.ID, req.content, eventID)
 
 	// Push message event to SSE clients.
-	pushMessageEvent(req.sessionID, msg.ID, msg.PersonID, msg.Content)
+	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content})
 }
 
 // notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to

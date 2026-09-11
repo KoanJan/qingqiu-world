@@ -25,7 +25,8 @@ import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, ini
 import { logger } from './logger';
 import type { IconType } from './components/ConfigIcon';
 import type { Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
-import { useUserSSE, type UserNotification } from './hooks/useUserSSE';
+import { useUserSSE } from './hooks/useUserSSE';
+import { CLIENT_NOTIFICATION_TYPES, subscribeClientNotifications, type ClientNotification } from './services/clientNotifications';
 import { TEMP_SESSION_ID } from './types';
 import './App.css';
 
@@ -116,14 +117,22 @@ function App() {
 
   useScrolling();
 
-  const handleUserNotification = useCallback((event: UserNotification) => {
-    if (event.type !== 'new_message' || typeof event.session_id !== 'number') {
+  const handleClientNotification = useCallback((notification: ClientNotification) => {
+    const nestedSessionId = notification.data?.session_id;
+    const sessionId = typeof notification.session_id === 'number'
+      ? notification.session_id
+      : typeof notification.resource_id === 'number'
+        ? notification.resource_id
+        : nestedSessionId;
+    if (notification.type !== CLIENT_NOTIFICATION_TYPES.NEW_MESSAGE || typeof sessionId !== 'number') {
       return;
     }
-    setNotification({ sessionId: event.session_id, sequence: Date.now() });
+    setNotification({ sessionId, sequence: Date.now() });
   }, []);
 
-  useUserSSE({ enabled: userProfileReady, onNotification: handleUserNotification });
+  useUserSSE({ enabled: userProfileReady });
+
+  useEffect(() => subscribeClientNotifications(handleClientNotification), [handleClientNotification]);
 
   const {
     settings: appearance,
@@ -387,6 +396,7 @@ function App() {
       onAddTooltip={t('systemLLMRequired.message_1')}
     >
       <PublicExperienceList
+        active={RING[viewIndex] === 'settings' && settingsSubview === 'experience'}
         showIngest={showIngestExp}
         onIngestClose={() => setShowIngestExp(false)}
         onSelectExp={(exp) => {
@@ -491,10 +501,10 @@ function App() {
       );
     }
     if (mineSubview === 'jinshu-received') {
-      return <JinshuPanel direction="received" />;
+      return <JinshuPanel direction="received" active={RING[viewIndex] === 'mine'} />;
     }
     if (mineSubview === 'jinshu-sent') {
-      return <JinshuPanel direction="sent" />;
+      return <JinshuPanel direction="sent" active={RING[viewIndex] === 'mine'} />;
     }
     return null;
   };

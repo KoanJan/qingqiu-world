@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/vectorutils"
 )
 
@@ -133,7 +134,7 @@ func finalizePublicExperience(ctx context.Context, expID int64, fm *SkillFrontma
 // markPublicExperienceError sets Status=Error on a public experience.
 // Called by processIngestion when distillation fails. Error details are
 // logged but not stored in the DB.
-func markPublicExperienceError(expID int64) {
+func markPublicExperienceError(expID int64) error {
 	if err := database.DB.Model(&model.PublicExperience{}).
 		Where("id = ?", expID).
 		Update("status", model.PublicExperienceStatusError).Error; err != nil {
@@ -141,25 +142,41 @@ func markPublicExperienceError(expID int64) {
 			"exp_id", expID,
 			"error", err,
 		)
+		return err
 	}
+	publishPublicExperience(notification.PublicExperienceError, expID)
+	return nil
 }
 
 // deletePublicExperience removes a public experience and its vector.
 // Called by processIngestion when LLM returns skip=true (nothing worth extracting).
-func deletePublicExperience(expID int64) {
+func deletePublicExperience(expID int64) error {
 	if err := database.DB.Where("experience_id = ?", expID).
 		Delete(&model.PublicExperienceVector{}).Error; err != nil {
 		applogger.Error("Failed to delete public_experience_vector during skip cleanup",
 			"exp_id", expID,
 			"error", err,
 		)
+		return err
 	}
 	if err := database.DB.Delete(&model.PublicExperience{}, expID).Error; err != nil {
 		applogger.Error("Failed to delete public_experience during skip cleanup",
 			"exp_id", expID,
 			"error", err,
 		)
+		return err
 	}
+	publishPublicExperience(notification.PublicExperienceDeleted, expID)
+	return nil
+}
+
+// publishPublicExperience emits a best-effort, user-level cache invalidation
+// after the experience state has already been committed.
+func publishPublicExperience(change notification.PublicExperienceChange, expID int64) {
+	notificationPublisher.Publish(context.Background(), notification.PublicExperienceChanged{
+		ExperienceID: expID,
+		Change:       change,
+	})
 }
 
 // SearchPublicExperiences performs semantic retrieval against public experiences.

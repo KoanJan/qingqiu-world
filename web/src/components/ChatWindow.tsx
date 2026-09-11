@@ -8,10 +8,10 @@ import AgentAvatar from './AgentAvatar';
 import AgentStatusBar from './AgentStatusBar';
 import ActivityList from './ActivityList';
 import { MarkdownRenderer } from 'pd-markdown/web';
-import { useSSE } from '../hooks/useSSE';
 import { useMessages } from '../hooks/useMessages';
+import { subscribeClientNotifications, CLIENT_NOTIFICATION_TYPES } from '../services/clientNotifications';
 import type { Message, Session, Agent, SessionAgentStatus } from '../types';
-import { PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING, TEMP_SESSION_ID } from '../types';
+import { MESSAGE_STATUS_COMPLETED, PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING, TEMP_SESSION_ID } from '../types';
 import { agentApi, chatApi, personApi, sessionApi } from '../services/api';
 import { logger } from '../logger';
 
@@ -33,6 +33,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const isInitialLoadRef = useRef<boolean>(true);
+  // IDs are tracked per event route/resource, rather than globally: unrelated
+  // events must not suppress a newer status update for this chat participant.
+  const latestEventIDRef = useRef<Map<string, number>>(new Map());
 
   // Reset initial-load flag and view mode when the session changes.
   useEffect(() => {
@@ -62,40 +65,75 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   // Temp sessions are always writable (the user is creating them).
   const isReadOnly = !isTempSession && session?.is_participant === false;
 
-  // ---- Hooks: SSE connection ----
-
-  const { connect: sseConnect, disconnect: sseDisconnect } = useSSE({
-    onMessage: (msg: Message) => {
-      // person_id now comes from the backend SSE push. Only fall back to
-      // currentAgent.id if the backend didn't provide it (backward compat).
-      if (!msg.person_id && currentAgent?.id) {
-        msg.person_id = currentAgent.id;
-      }
-      setMessages(prev => [...prev, msg]);
-      if (session && session.id !== TEMP_SESSION_ID) {
-        sessionApi.markRead(session.id).catch(error => {
-          logger.error('Failed to mark session read after message:', error, 'session_id', session.id);
-        });
-      }
-    },
-    onAgentStatus: (status: number, agentId?: number) => {
-      if (agentId) {
-        setSessionAgents(prev =>
-          prev.map(a => (a.agent_id === agentId ? { ...a, status } : a)),
-        );
-      }
-    },
-  });
-
   // ---- Hooks: Messages ----
 
   const {
     messages,
-    setMessages,
+    upsertMessage,
     loading: messagesLoading,
     markTempToRealTransition,
     handleSend: sendMessage,
+    loadMessages,
   } = useMessages(session);
+
+  // The shared user stream remains connected across session switches. This
+  // component selects only events belonging to its current session. It upserts
+  // messages because the HTTP send response and SSE fan-out can both surface
+  // the same persisted message.
+  useEffect(() => subscribeClientNotifications((notification) => {
+    const selectedSessionID = session?.id;
+    if (notification.type === CLIENT_NOTIFICATION_TYPES.STREAM_RECONNECTED) {
+      latestEventIDRef.current.clear();
+      if (selectedSessionID !== undefined && selectedSessionID !== TEMP_SESSION_ID) {
+        void loadMessages();
+      }
+      return;
+    }
+    if (selectedSessionID === undefined || notification.session_id !== selectedSessionID) return;
+
+    // Publishers may race, so a higher notification ID wins within the same
+    // invalidation domain. Message IDs still provide the final display order.
+    const streamKey = `${notification.type}:${notification.resource_id ?? notification.session_id}`;
+    if (typeof notification.id === 'number') {
+      const latest = latestEventIDRef.current.get(streamKey);
+      if (latest !== undefined && notification.id <= latest) return;
+      latestEventIDRef.current.set(streamKey, notification.id);
+    }
+
+    if (notification.type === CLIENT_NOTIFICATION_TYPES.CHAT_MESSAGE) {
+      const messageID = notification.data?.message_id;
+      const personID = notification.data?.person_id;
+      const content = notification.data?.content;
+      if (typeof messageID !== 'number' || typeof personID !== 'number' || typeof content !== 'string') return;
+
+      const occurredAt = typeof notification.occurred_at === 'string' ? notification.occurred_at : new Date().toISOString();
+      const nextMessage: Message = {
+        id: messageID,
+        session_id: selectedSessionID,
+        person_id: personID,
+        content,
+        status: MESSAGE_STATUS_COMPLETED,
+        created_at: occurredAt,
+        updated_at: occurredAt,
+      };
+      upsertMessage(nextMessage);
+      // Read state is intentionally a receiver-local HTTP mutation; it does
+      // not result in an SSE event observable by the sender.
+      sessionApi.markRead(selectedSessionID).catch(error => {
+        logger.error('Failed to mark session read after message:', error, 'session_id', selectedSessionID);
+      });
+      return;
+    }
+
+    if (notification.type === CLIENT_NOTIFICATION_TYPES.CHAT_AGENT_STATUS) {
+      const agentID = notification.data?.agent_id;
+      const status = notification.data?.status;
+      if (typeof agentID !== 'number' || typeof status !== 'number') return;
+      setSessionAgents(prev => prev.map(agent =>
+        agent.agent_id === agentID ? { ...agent, status } : agent,
+      ));
+    }
+  }), [loadMessages, session?.id, upsertMessage]);
 
   // ---- Data loading ----
 
@@ -167,20 +205,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
     }
   }, [messages, scrollToBottom]);
 
-  // Cleanup SSE on unmount (useSSE handles this, but explicit for session transitions)
-  useEffect(() => {
-    return () => sseDisconnect();
-  }, []);
-
-  // Connect SSE when a real session is selected — not just when the user
-  // sends a message. This ensures read-only A2A sessions (where the user is
-  // not a participant) also receive real-time message pushes.
-  // Temp sessions (id < 0) are skipped; they connect on first send.
-  useEffect(() => {
-    if (!session || isTempSession) return;
-    sseConnect(session.id);
-  }, [session?.id, isTempSession, sseConnect]);
-
   // Tab indicator position
   useEffect(() => {
     const container = tabContainerRef.current;
@@ -215,8 +239,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
       onSessionCreated(result.sessionId);
     }
 
-    // Always connect SSE (will be a no-op if already connected to same session)
-    sseConnect(result.sessionId);
   };
 
   const handleCopy = (content: string) => {

@@ -12,6 +12,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/llm"
 )
 
@@ -115,6 +116,7 @@ func IngestSkill(ctx context.Context, params IngestSkillParams) (*model.Uploaded
 		"public_experience_id", exp.ID,
 		"file_name", params.FileName,
 	)
+	publishPublicExperience(notification.PublicExperienceGenerating, exp.ID)
 
 	go processIngestion(*uploaded, exp.ID)
 	return uploaded, nil
@@ -170,6 +172,7 @@ func RedistillPublicExperience(ctx context.Context, expID int64) error {
 		"public_experience_id", expID,
 		"uploaded_skill_id", uploaded.ID,
 	)
+	publishPublicExperience(notification.PublicExperienceGenerating, expID)
 
 	go processIngestion(uploaded, expID)
 	return nil
@@ -292,6 +295,7 @@ func processIngestion(uploaded model.UploadedSkill, expID int64) {
 		markPublicExperienceError(expID)
 		return
 	}
+	publishPublicExperience(notification.PublicExperienceActive, expID)
 
 	applogger.Info("processIngestion: public experience finalized",
 		"uploaded_skill_id", uploaded.ID,

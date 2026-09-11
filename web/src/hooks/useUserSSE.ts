@@ -1,24 +1,17 @@
 import { useCallback, useEffect, useRef } from 'react';
 import { getDynamicApiBaseUrl } from '../services/api';
 import { logger } from '../logger';
-
-export interface UserNotification {
-  type: string;
-  session_id?: number;
-  [key: string]: unknown;
-}
+import { notifyClientStreamReconnected, publishClientNotification, type ClientNotification } from '../services/clientNotifications';
 
 interface UseUserSSEOptions {
   enabled: boolean;
-  onNotification: (notification: UserNotification) => void;
 }
 
-// Maintains the user-level notification stream independently from the
-// currently selected session-level message stream.
-export function useUserSSE({ enabled, onNotification }: UseUserSSEOptions) {
+// useUserSSE maintains the application's sole user-scoped realtime stream.
+// It owns connection lifetime only; resource-specific listeners subscribe via
+// userEvents so switching views never opens another EventSource.
+export function useUserSSE({ enabled }: UseUserSSEOptions) {
   const eventSourceRef = useRef<EventSource | null>(null);
-  const callbackRef = useRef(onNotification);
-  callbackRef.current = onNotification;
 
   const disconnect = useCallback(() => {
     if (eventSourceRef.current) {
@@ -34,15 +27,25 @@ export function useUserSSE({ enabled, onNotification }: UseUserSSEOptions) {
       return;
     }
 
-    const url = `${getDynamicApiBaseUrl()}/notifications/stream`;
+	const url = `${getDynamicApiBaseUrl()}/notifications/stream`;
     logger.info('User SSE: connecting', url);
     const eventSource = new EventSource(url);
     eventSourceRef.current = eventSource;
+    let opened = false;
+
+    eventSource.onopen = () => {
+      // EventSource calls onopen after automatic reconnect as well. Caches use
+      // this synthetic event to revalidate because this version has no replay.
+      if (opened) notifyClientStreamReconnected();
+      opened = true;
+    };
 
     eventSource.onmessage = (event) => {
       try {
-        const notification = JSON.parse(event.data) as UserNotification;
-        callbackRef.current(notification);
+        const notification = JSON.parse(event.data) as ClientNotification;
+        // Fan out before the compatibility callback so every feature observes
+        // the same parsed envelope from the one physical connection.
+        publishClientNotification(notification);
       } catch (error) {
         logger.error('User SSE: parse error', error, event.data);
       }

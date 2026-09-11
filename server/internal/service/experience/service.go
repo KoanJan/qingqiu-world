@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/vectorutils"
 )
@@ -16,17 +17,24 @@ import (
 // Package-level state for the experience system singleton.
 var (
 	embeddingSvc *llm.EmbeddingService
-	initOnce     sync.Once
-	ready        atomic.Bool
+	// notificationPublisher is an output-only port. The experience singleton emits
+	// after persistence but never depends on SSE delivery succeeding.
+	notificationPublisher notification.Publisher = notification.NopPublisher{}
+	initOnce              sync.Once
+	ready                 atomic.Bool
 )
 
 // Init sets the embedding service reference for the experience system.
 // Must be called once during application startup, before any experience operations.
 // Idempotent: only the first call has effect.
-// embeddingSvc may be nil if no embedding service is configured.
-func Init(es *llm.EmbeddingService) {
+// embeddingSvc may be nil if no embedding service is configured. publisher is
+// the already-wired application event projector; nil retains the safe no-op.
+func Init(es *llm.EmbeddingService, publisher notification.Publisher) {
 	initOnce.Do(func() {
 		embeddingSvc = es
+		if publisher != nil {
+			notificationPublisher = publisher
+		}
 		ready.Store(true)
 		applogger.Info("Experience system initialized")
 	})

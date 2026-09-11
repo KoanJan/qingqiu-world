@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
@@ -176,6 +177,8 @@ func (w *work) runTask(ctx context.Context) {
 		return
 	}
 
+	notify(notification.AgentProcessingStarted{SessionID: w.sessionID})
+
 	w.taskResult = task.RunTask(task.RunTaskParams{
 		LLMConfig:  &a.LLM,
 		SessionID:  w.sessionID,
@@ -185,7 +188,6 @@ func (w *work) runTask(ctx context.Context) {
 		Background: w.triggerAction.Background,
 		Metadata:   w.plan.Metadata,
 		Ctx:        ctx,
-		OnNotify:   func(data string) { pushSSEEvent(w.sessionID, data) },
 		GuidanceCh: w.guidanceCh,
 	})
 

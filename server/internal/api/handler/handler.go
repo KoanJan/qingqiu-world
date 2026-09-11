@@ -15,16 +15,17 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/realtime"
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/jinshu"
 )
 
 // Handler handles core API HTTP requests.
-type Handler struct{}
+type Handler struct{ hub realtime.Hub }
 
 // NewHandler creates a new Handler instance.
-func NewHandler() *Handler {
-	return &Handler{}
+func NewHandler(hub realtime.Hub) *Handler {
+	return &Handler{hub: hub}
 }
 
 // Root handles the API root endpoint.

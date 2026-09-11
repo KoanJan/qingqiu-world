@@ -17,15 +17,12 @@
 package handler
 
 import (
-	"encoding/json"
-	"io"
 	"strconv"
-	"sync"
-	"time"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/realtime/sse"
 	"qingqiu-world-server/internal/service/runtime"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -37,184 +34,6 @@ import (
 
 // userFriendlyErrorMessage is the default error message shown to users on internal errors.
 const userFriendlyErrorMessage = "Sorry, something went wrong on the server. Please try again later."
-
-// connectionManager manages SSE connections per session.
-// Each session can have multiple connected clients (e.g., multiple browser tabs).
-// Messages are broadcast to all connections of the same session.
-//
-// Thread-safe: PushToSession (called from runtime goroutines) may run
-// concurrently with Register/Unregister (called from HTTP handler goroutines).
-type connectionManager struct {
-	mu          sync.RWMutex
-	connections map[int64][]chan string // sessionID -> list of SSE channels
-}
-
-// connManager is the global singleton for managing SSE connections.
-var connManager = &connectionManager{
-	connections: make(map[int64][]chan string),
-}
-
-// Register creates and registers a new SSE channel for a session.
-// Returns the channel for the caller to listen on.
-func (cm *connectionManager) Register(sessionID int64) chan string {
-	ch := make(chan string, 256)
-	cm.mu.Lock()
-	cm.connections[sessionID] = append(cm.connections[sessionID], ch)
-	cm.mu.Unlock()
-	return ch
-}
-
-// Unregister removes an SSE channel from a session and closes it.
-// Cleans up the session entry if no connections remain.
-func (cm *connectionManager) Unregister(sessionID int64, ch chan string) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	conns := cm.connections[sessionID]
-	for i, c := range conns {
-		if c == ch {
-			cm.connections[sessionID] = append(conns[:i], conns[i+1:]...)
-			close(c)
-			break
-		}
-	}
-	if len(cm.connections[sessionID]) == 0 {
-		delete(cm.connections, sessionID)
-	}
-}
-
-// PushToSession sends a message to all SSE channels of a session.
-// Drops the message if a channel is full (non-blocking send).
-func (cm *connectionManager) PushToSession(sessionID int64, data string) {
-	cm.mu.RLock()
-	conns := cm.connections[sessionID]
-	// Copy the slice under lock so we can release the lock before iterating
-	// and potentially blocking on channel sends.
-	snapshot := make([]chan string, len(conns))
-	copy(snapshot, conns)
-	cm.mu.RUnlock()
-	// A push with no registered SSE connection would silently vanish (the
-	// loop below would just iterate over an empty slice). Log it so lost
-	// status/message events are diagnosable. Kept at Warn — this is a real
-	// message loss, and project rules forbid silently dropping it.
-	if len(snapshot) == 0 {
-		applogger.Warn("SSE push: no active connections for session, dropping",
-			"session_id", sessionID)
-		return
-	}
-	for _, ch := range snapshot {
-		select {
-		case ch <- data:
-		default:
-			applogger.Error("SSE channel full, dropping message", "session_id", sessionID)
-		}
-	}
-}
-
-// CloseAll closes all SSE channels and clears the connection map.
-// Causes all StreamMessages handlers to exit cleanly.
-func (cm *connectionManager) CloseAll() {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	for sessionID, conns := range cm.connections {
-		for _, ch := range conns {
-			close(ch)
-		}
-		delete(cm.connections, sessionID)
-	}
-}
-
-// PushSSEToSession is the exported wrapper for pushing SSE events to a session.
-// Used by the runtime package to push agent_status and message events.
-func PushSSEToSession(sessionID int64, data string) {
-	connManager.PushToSession(sessionID, data)
-}
-
-// userConnManager manages user-level SSE connections keyed by userID.
-// Each user has at most one persistent notification channel (independent of
-// session-level channels). Used for cross-session notifications such as
-// "new message in a non-active session".
-type userConnManager struct {
-	mu          sync.RWMutex
-	connections map[int64][]chan string // userID -> list of SSE channels
-}
-
-// userConnMgr is the global singleton for user-level SSE connections.
-var userConnMgr = &userConnManager{
-	connections: make(map[int64][]chan string),
-}
-
-// Register creates and registers a new SSE channel for a user.
-func (cm *userConnManager) Register(userID int64) chan string {
-	ch := make(chan string, 256)
-	cm.mu.Lock()
-	cm.connections[userID] = append(cm.connections[userID], ch)
-	cm.mu.Unlock()
-	return ch
-}
-
-// Unregister removes an SSE channel from a user and closes it.
-func (cm *userConnManager) Unregister(userID int64, ch chan string) {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	conns := cm.connections[userID]
-	for i, c := range conns {
-		if c == ch {
-			cm.connections[userID] = append(conns[:i], conns[i+1:]...)
-			close(c)
-			break
-		}
-	}
-	if len(cm.connections[userID]) == 0 {
-		delete(cm.connections, userID)
-	}
-}
-
-// PushToUser sends a message to all SSE channels of a user.
-func (cm *userConnManager) PushToUser(userID int64, data string) {
-	cm.mu.RLock()
-	conns := cm.connections[userID]
-	snapshot := make([]chan string, len(conns))
-	copy(snapshot, conns)
-	cm.mu.RUnlock()
-	if len(snapshot) == 0 {
-		applogger.Warn("User SSE push: no active connections for user, dropping",
-			"user_id", userID)
-		return
-	}
-	for _, ch := range snapshot {
-		select {
-		case ch <- data:
-		default:
-			applogger.Error("User SSE channel full, dropping message", "user_id", userID)
-		}
-	}
-}
-
-// CloseAll closes all user-level SSE channels and clears the connection map.
-func (cm *userConnManager) CloseAll() {
-	cm.mu.Lock()
-	defer cm.mu.Unlock()
-	for userID, conns := range cm.connections {
-		for _, ch := range conns {
-			close(ch)
-		}
-		delete(cm.connections, userID)
-	}
-}
-
-// PushNotificationToUser is the exported wrapper for pushing user-level
-// SSE notifications. Called from the runtime when a non-active session
-// receives a new message.
-func PushNotificationToUser(userID int64, data string) {
-	userConnMgr.PushToUser(userID, data)
-}
-
-// ShutdownSSE closes all SSE connections gracefully (both session-level
-// and user-level). Should be called before HTTP server shutdown.
-func ShutdownSSE() {
-	connManager.CloseAll()
-	userConnMgr.CloseAll()
-}
 
 // CreateAndSend creates a new session and sends the first message.
 //
@@ -293,7 +112,7 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 	}
 
 	// Produce memory event + dispatch to agent runtime
-	runtime.SendNewMessageEvent(agentConfigID, session.ID, userMsg.ID, message, dops.GetUserName())
+	runtime.SendNewMessageEvent(agentConfigID, session.ID, userMsg.ID, userPersonID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
 		"session_id": session.ID,
@@ -351,109 +170,29 @@ func (h *Handler) SendMessage(c *gin.Context) {
 
 	// Produce memory event + dispatch to agent runtime
 	agentConfigID := dops.GetFirstAgentConfigIDBySessionID(sessionID)
-	runtime.SendNewMessageEvent(agentConfigID, sessionID, userMsg.ID, message, dops.GetUserName())
+	runtime.SendNewMessageEvent(agentConfigID, sessionID, userMsg.ID, userPersonID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
 		"message_id": userMsg.ID,
 	})
 }
 
-// StreamMessages handles SSE streaming for a session.
-//
-// Establishes a Server-Sent Events connection that:
-//  1. Sends any existing streaming message content (reconnection support)
-//  2. Registers an SSE channel for real-time updates
-//  3. Streams chunks, notifications, and done/error events
-//  4. Sends heartbeat keep-alive every 30 seconds
-//  5. Cleans up on client disconnect or stream completion
-func (h *Handler) StreamMessages(c *gin.Context) {
-	sessionID := getPathIDByParam(c, "session_id")
-
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	_, err := dops.GetSession(sessionID)
-	if err != nil {
-		errorData, _ := json.Marshal(map[string]string{"type": "error", "message": "Session not found"})
-		c.SSEvent("", string(errorData))
-		return
-	}
-
-	ch := connManager.Register(sessionID)
-	defer connManager.Unregister(sessionID, ch)
-
-	c.Stream(func(w io.Writer) bool {
-		heartbeat := time.NewTimer(30 * time.Second)
-		defer heartbeat.Stop()
-
-		select {
-		case data, ok := <-ch:
-			if !ok {
-				return false
-			}
-			c.SSEvent("", data)
-			var parsed map[string]interface{}
-			if json.Unmarshal([]byte(data), &parsed) == nil {
-				if t, ok := parsed["type"].(string); ok && (t == "done" || t == "error") {
-					return false
-				}
-			}
-			return true
-		case <-c.Request.Context().Done():
-			return false
-		case <-heartbeat.C:
-			c.Writer.WriteString(": heartbeat\n\n")
-			c.Writer.Flush()
-			return true
-		}
-	})
-}
-
-// StreamNotifications handles user-level SSE streaming for cross-session
-// notifications. Unlike StreamMessages (which is per-session), this channel
-// is per-user and persists across session switches — it delivers lightweight
-// notifications such as "new message in a non-active session".
-//
-// The payload is type-based for extensibility: the current version only
-// emits {"type":"new_message", "session_id":N}, but future notification
-// types (e.g. jinshu_received, alarm_triggered) can be added by defining
-// new "type" values — the frontend dispatches by type.
+// StreamNotifications serves the single, user-scoped event stream. The current
+// human is resolved before subscribing, so a connection can receive only that
+// user's fan-out set. Session routing is represented in event.session_id, not
+// in the URL; switching chats therefore does not create another connection.
 func (h *Handler) StreamNotifications(c *gin.Context) {
-	userID, err := dops.GetCurrentUserPersonID()
+	humanPersonID, err := dops.GetCurrentUserPersonID()
 	if err != nil {
 		response.BadRequest(c, "No user profile found.")
 		return
 	}
 
-	c.Header("Content-Type", "text/event-stream; charset=utf-8")
-	c.Header("Cache-Control", "no-cache")
-	c.Header("Connection", "keep-alive")
-	c.Header("X-Accel-Buffering", "no")
-
-	ch := userConnMgr.Register(userID)
-	defer userConnMgr.Unregister(userID, ch)
-
-	c.Stream(func(w io.Writer) bool {
-		heartbeat := time.NewTimer(30 * time.Second)
-		defer heartbeat.Stop()
-
-		select {
-		case data, ok := <-ch:
-			if !ok {
-				return false
-			}
-			c.SSEvent("", data)
-			return true
-		case <-c.Request.Context().Done():
-			return false
-		case <-heartbeat.C:
-			c.Writer.WriteString(": heartbeat\n\n")
-			c.Writer.Flush()
-			return true
-		}
-	})
+	if h.hub == nil {
+		response.InternalError(c, "Realtime hub unavailable")
+		return
+	}
+	sse.Serve(c.Writer, c.Request, h.hub.Subscribe(humanPersonID))
 }
 
 // sessionAgentStatus represents an agent's status within a session.

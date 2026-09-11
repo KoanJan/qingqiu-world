@@ -4,6 +4,7 @@ import { CaretRightOutlined, CaretDownOutlined, FolderOpenOutlined, FolderOutlin
 import { useTranslation } from 'react-i18next';
 import { jinshuApi, agentApi } from '../services/api';
 import { logger } from '../logger';
+import { subscribeClientNotifications, CLIENT_NOTIFICATION_TYPES } from '../services/clientNotifications';
 import PanelDetail from './PanelDetail';
 import type { Jinshu, JinshuFileEntry, Agent } from '../types';
 import { formatFileSize } from '../utils/format';
@@ -236,15 +237,24 @@ const JinshuSendForm: React.FC<{
 
 interface JinshuPanelProps {
   direction: Direction;
+  active: boolean;
 }
 
-const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
+const FALLBACK_INTERVAL_MS = 5 * 60 * 1000;
+
+const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction, active }) => {
   const { t } = useTranslation();
   const [items, setItems] = useState<Jinshu[]>([]);
   const [loading, setLoading] = useState(true);
   const [selected, setSelected] = useState<Jinshu | null>(null);
   const [showSend, setShowSend] = useState(false);
   const prevDataRef = useRef<string>('');
+  const latestEventIdRef = useRef(0);
+  const dirtyRef = useRef(false);
+  // A newly mounted or direction-switched panel must perform one visible load
+  // to settle its initial spinner. Later notification/fallback refreshes are
+  // silent so they do not disrupt an already rendered list.
+  const hasLoadedRef = useRef(false);
 
   const load = async (isPoll: boolean = false) => {
     if (!isPoll) {
@@ -267,6 +277,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
     } finally {
       if (!isPoll) {
         setLoading(false);
+        hasLoadedRef.current = true;
       }
     }
   };
@@ -276,10 +287,44 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction }) => {
     setSelected(null);
     setShowSend(false);
     prevDataRef.current = '';
-    load(false);
-    const timer = setInterval(() => load(true), 10000);
-    return () => clearInterval(timer);
+    setItems([]);
+    setLoading(true);
+    hasLoadedRef.current = false;
   }, [direction]);
+
+  useEffect(() => {
+    return subscribeClientNotifications((notification) => {
+      if (notification.type === CLIENT_NOTIFICATION_TYPES.STREAM_RECONNECTED) {
+        latestEventIdRef.current = 0;
+        dirtyRef.current = true;
+        if (active) {
+          dirtyRef.current = false;
+          void load(hasLoadedRef.current);
+        }
+        return;
+      }
+      if (notification.type !== CLIENT_NOTIFICATION_TYPES.JINSHU_UPDATED) return;
+      const directions = notification.data?.directions;
+      if (!Array.isArray(directions) || !directions.includes(direction)) return;
+      if (typeof notification.id === 'number') {
+        if (notification.id <= latestEventIdRef.current) return;
+        latestEventIdRef.current = notification.id;
+      }
+      dirtyRef.current = true;
+      if (active) {
+        dirtyRef.current = false;
+        void load(hasLoadedRef.current);
+      }
+    });
+  }, [active, direction]);
+
+  useEffect(() => {
+    if (!active) return;
+    dirtyRef.current = false;
+    void load(hasLoadedRef.current);
+    const timer = window.setInterval(() => load(true), FALLBACK_INTERVAL_MS);
+    return () => window.clearInterval(timer);
+  }, [active, direction]);
 
   const handleOpenDir = async (item: Jinshu) => {
     const firstPath = (item.files ?? [])[0]?.local_path;

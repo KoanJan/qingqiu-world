@@ -20,7 +20,6 @@ package task
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -73,7 +72,6 @@ type RunTaskParams struct {
 	Background string    // Full context from Decide phase: trigger event, participants, comprehension
 	Metadata   *Metadata // System-generated traceability info from work creation
 	Ctx        context.Context
-	OnNotify   func(data string)        // Optional callback for frontend notifications
 	GuidanceCh <-chan GuidanceDirective // Channel for receiving new guidance during execution
 }
 
@@ -89,15 +87,6 @@ type RunTaskParams struct {
 // observes the channel at each iteration boundary and injects new directives
 // as environment events in the ReAct cycle.
 func RunTask(params RunTaskParams) *TaskResult {
-	// Notify frontend that agent is processing
-	if params.OnNotify != nil {
-		notifyData, _ := json.Marshal(map[string]string{
-			"type":    "agent_processing",
-			"message": "Agent is processing your request...",
-		})
-		params.OnNotify(string(notifyData))
-	}
-
 	applogger.Info("RunTask: starting with Guidance",
 		"session_id", params.SessionID,
 		"guidance", params.Guidance,
