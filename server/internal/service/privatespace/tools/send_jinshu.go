@@ -7,19 +7,18 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
-// SendJinshuTool sends files from the agent's private-space working directory
-// to another person as a jinshu (锦书). Unlike the task loop variant, there is
-// no session context to embed; the source directory is the private-space workDir.
+// SendJinshuTool sends files from the agent's Agent Owned Space to another
+// person as a jinshu (锦书). Bare paths remain relative to private/.
 type SendJinshuTool struct {
 	personID int64
 	workDir  string
 }
 
 // NewSendJinshuTool creates a SendJinshuTool for the given person and private
-// space. rootDir is kept for API symmetry with other privatespace tools but the
-// source is intentionally restricted to workDir.
+// space. rootDir is kept for API symmetry with other private-space tools.
 func NewSendJinshuTool(personID int64, rootDir, workDir string) *SendJinshuTool {
 	return &SendJinshuTool{
 		personID: personID,
@@ -29,13 +28,13 @@ func NewSendJinshuTool(personID int64, rootDir, workDir string) *SendJinshuTool 
 
 func (t *SendJinshuTool) Name() string { return "send_jinshu" }
 func (t *SendJinshuTool) Description() string {
-	return "Send files from your private space to another person as a jinshu (锦书)"
+	return "Send selected Agent Owned Space files to another person as a jinshu (锦书)"
 }
 
 func (t *SendJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: "send_jinshu",
-		Description: "Send files from your private space to another person as a jinshu (锦书). " +
+		Description: "Send selected Agent Owned Space files to another person as a jinshu (锦书). " +
 			"The files are copied to the recipient's jinshu/received/ directory, and a copy is kept " +
 			"in your jinshu/sent/ directory.",
 		Parameters: map[string]interface{}{
@@ -55,7 +54,7 @@ func (t *SendJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"paths": map[string]interface{}{
 					"type":        "array",
-					"description": "List of file or directory paths to send (relative to your private-space working directory)",
+					"description": "Use work/<session_id>/... or private/...; bare paths remain relative to private/.",
 					"items": map[string]interface{}{
 						"type": "string",
 					},
@@ -66,7 +65,7 @@ func (t *SendJinshuTool) Schema() llm.FunctionDefinition {
 	}
 }
 
-// Execute resolves the source paths relative to the private-space workDir and
+// Execute resolves source paths through the constrained AOS locator and
 // delegates the delivery to the shared jinshu.Send core.
 func (t *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 	receiverName, ok := args["receiver"].(string)
@@ -94,7 +93,7 @@ func (t *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	files, relPaths, err := jinshu.ResolveWorkDirFiles(t.workDir, paths)
+	files, relPaths, err := workspace.ResolveAOSFiles(t.personID, t.workDir, paths)
 	if err != nil {
 		return "", err
 	}

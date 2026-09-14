@@ -1,6 +1,8 @@
 ;; qingqiu-world Seatbelt sandbox policy
-;; Design: availability over security. Restrict writes only;
-;; everything else (reads, execution, network) is allowed by default.
+;; Design: availability over security. Outside the data/ directory, reads,
+;; execution and network are allowed by default and only writes to protected
+;; system directories are denied. Inside data/, access is confined to the
+;; agent's own Agent Owned Space subdir ($WORKSPACE).
 ;; mach-lookup is NOT covered by (allow default) and must be listed explicitly.
 (version 1)
 (allow default)
@@ -14,6 +16,25 @@
     (global-name "com.apple.SystemConfiguration.configd")
 )
 
+;; === Data confinement: only the agent's own AOS subdir is reachable under data/ ===
+;; data/ holds AOSMeta, the SQLite DB, jinshu snapshots, KB, avatars and other
+;; agents' AOS — all runtime-owned and must not be observed or modified through
+;; the bash sandbox. $WORKSPACE (data/aos/<person>) is a deeper subpath than
+;; $DATAROOT, so the specific allow below overrides this deny. Everything
+;; outside data/ keeps the (allow default) behavior.
+(deny file-read*
+    (subpath "$DATAROOT")
+)
+(deny file-write*
+    (subpath "$DATAROOT")
+)
+(allow file-read*
+    (subpath "$WORKSPACE")
+)
+(allow file-write*
+    (subpath "$WORKSPACE")
+)
+
 ;; === Write: deny protected directories ===
 (deny file-write*
     (subpath "/private/etc")
@@ -25,18 +46,4 @@
     (subpath "/Library")
     (subpath "/Applications")
     (regex #"^/Users/[^/]+/\.(ssh|gnupg|aws)")
-)
-
-;; === Write: only workspace and temp directories ===
-(allow file-write*
-    (subpath "$WORKSPACE")
-    (subpath "/private/tmp")
-    (subpath "/private/var/folders")
-)
-(allow file-write*
-    (literal "/dev/null")
-    (literal "/dev/stdin")
-    (literal "/dev/stdout")
-    (literal "/dev/stderr")
-    (literal "/dev/dtracehelper")
 )

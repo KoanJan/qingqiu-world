@@ -52,42 +52,94 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
   const { t } = useTranslation();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
-  const [expandedIndices, setExpandedIndices] = useState<Set<number>>(new Set());
+  const [loadingOlder, setLoadingOlder] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [nextBeforeInteractionId, setNextBeforeInteractionId] = useState<number>();
+  const [expandedEventIds, setExpandedEventIds] = useState<Set<string>>(new Set());
   const contentRef = useRef<HTMLDivElement>(null);
+  const scrollToLatestRef = useRef(true);
+
+  const loadLatestActivities = useCallback(async () => {
+    setLoading(true);
+    setLoadError(false);
+    setExpandedEventIds(new Set());
+    scrollToLatestRef.current = true;
+    try {
+      const res = await sessionApi.getActivities(sessionId);
+      setEvents(res.data.events);
+      setHasMore(res.data.has_more);
+      setNextBeforeInteractionId(res.data.next_before_interaction_id);
+    } catch (error) {
+      logger.error('Failed to load activities, session_id:', sessionId, error);
+      setEvents([]);
+      setHasMore(false);
+      setNextBeforeInteractionId(undefined);
+      setLoadError(true);
+    } finally {
+      setLoading(false);
+    }
+  }, [sessionId]);
 
   useEffect(() => {
-    const fetchActivities = async () => {
-      setLoading(true);
-      try {
-        const res = await sessionApi.getActivities(sessionId);
-        setEvents(res.data);
-      } catch (error) {
-        logger.error('Failed to load activities, session_id:', sessionId, error);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    fetchActivities();
-  }, [sessionId]);
+    void loadLatestActivities();
+  }, [loadLatestActivities]);
 
   // Scroll to the latest (bottom) activity record after events are loaded.
   useEffect(() => {
-    if (loading || events.length === 0 || !contentRef.current) return;
+    if (loading || events.length === 0 || !contentRef.current || !scrollToLatestRef.current) return;
     contentRef.current.scrollTop = contentRef.current.scrollHeight;
+    scrollToLatestRef.current = false;
   }, [loading, events.length]);
 
-  const toggleExpand = useCallback((idx: number) => {
-    setExpandedIndices(prev => {
+  const toggleExpand = useCallback((eventId: string) => {
+    setExpandedEventIds(prev => {
       const next = new Set(prev);
-      if (next.has(idx)) {
-        next.delete(idx);
+      if (next.has(eventId)) {
+        next.delete(eventId);
       } else {
-        next.add(idx);
+        next.add(eventId);
       }
       return next;
     });
   }, []);
+
+  const loadOlderActivities = useCallback(async () => {
+    if (loadingOlder || !hasMore || !nextBeforeInteractionId) return;
+
+    const content = contentRef.current;
+    const previousHeight = content?.scrollHeight ?? 0;
+    const previousTop = content?.scrollTop ?? 0;
+    setLoadingOlder(true);
+    try {
+      const res = await sessionApi.getActivities(sessionId, nextBeforeInteractionId);
+      setEvents(previous => {
+        const existingIDs = new Set(previous.map(event => event.id));
+        const olderEvents = res.data.events.filter(event => !existingIDs.has(event.id));
+        return [...olderEvents, ...previous];
+      });
+      setHasMore(res.data.has_more);
+      setNextBeforeInteractionId(res.data.next_before_interaction_id);
+      setLoadError(false);
+      requestAnimationFrame(() => {
+        const current = contentRef.current;
+        if (current) {
+          current.scrollTop = current.scrollHeight - previousHeight + previousTop;
+        }
+      });
+    } catch (error) {
+      logger.error('Failed to load older activities, session_id:', sessionId, error);
+      setLoadError(true);
+    } finally {
+      setLoadingOlder(false);
+    }
+  }, [hasMore, loadingOlder, nextBeforeInteractionId, sessionId]);
+
+  const handleActivityScroll = useCallback(() => {
+    if (contentRef.current && contentRef.current.scrollTop <= 16) {
+      void loadOlderActivities();
+    }
+  }, [loadOlderActivities]);
 
   // Build a lookup map from agent_id to agent info.
   const agentMap = useMemo(() => {
@@ -111,7 +163,12 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
       <div className="activity-list">
         <div className="activity-empty">
           <ClipboardList size={20} />
-          <span>{t('activity.noRecords')}</span>
+          <span>{loadError ? t('activity.loadError') : t('activity.noRecords')}</span>
+          {loadError && (
+            <button className="activity-retry-btn" onClick={() => void loadLatestActivities()}>
+              {t('activity.retry')}
+            </button>
+          )}
         </div>
       </div>
     );
@@ -119,8 +176,19 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
 
   return (
     <div className="activity-list">
-      <div className="activity-content" ref={contentRef}>
-        {events.map((event, idx) => {
+      <div className="activity-content" ref={contentRef} onScroll={handleActivityScroll}>
+        {loadingOlder && <div className="activity-page-loading"><Spin size="small" /></div>}
+        {hasMore && !loadingOlder && !loadError && (
+          <button className="activity-retry-btn activity-retry-btn-inline" onClick={() => void loadOlderActivities()}>
+            {t('activity.loadEarlier')}
+          </button>
+        )}
+        {loadError && (
+          <button className="activity-retry-btn activity-retry-btn-inline" onClick={() => void loadOlderActivities()}>
+            {t('activity.loadError')} · {t('activity.retry')}
+          </button>
+        )}
+        {events.map(event => {
           const agent = agentMap[event.agent_id];
           const displayName = agent?.name || 'AI';
 
@@ -129,10 +197,10 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
             const action = t(`activity.tool.${event.tool}`);
             const targetText = event.target || '';
             const needsTruncate = targetText.length > CONTENT_TRUNCATE_LENGTH;
-            const expanded = expandedIndices.has(idx);
+            const expanded = expandedEventIds.has(event.id);
 
             return (
-              <div key={idx} className="activity-row activity-row-tool_call">
+              <div key={event.id} className="activity-row activity-row-tool_call">
                 <div className="activity-row-header">
                   <AgentAvatar avatar={agent?.avatar || ''} size={24} iconSize={12} borderRadius="6px" />
                   <span className="activity-agent-name">{displayName}</span>
@@ -143,7 +211,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
                   {targetText && (needsTruncate && !expanded ? (
                     <span className="activity-tool-target">
                       {' '}{targetText.slice(0, CONTENT_TRUNCATE_LENGTH)}...
-                      <button className="activity-expand-btn" onClick={() => toggleExpand(idx)}>
+                      <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
                         {t('activity.expand')}
                       </button>
                     </span>
@@ -151,7 +219,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
                     <span className="activity-tool-target">
                       {' '}{targetText}
                       {needsTruncate && (
-                        <button className="activity-expand-btn" onClick={() => toggleExpand(idx)}>
+                        <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
                           {t('activity.collapse')}
                         </button>
                       )}
@@ -164,10 +232,10 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
 
           const fullText = getDisplayText(event);
           const needsTruncate = fullText.length > CONTENT_TRUNCATE_LENGTH;
-          const expanded = expandedIndices.has(idx);
+          const expanded = expandedEventIds.has(event.id);
 
           return (
-            <div key={idx} className={`activity-row activity-row-${event.type}`}>
+            <div key={event.id} className={`activity-row activity-row-${event.type}`}>
               <div className="activity-row-header">
                 <AgentAvatar avatar={agent?.avatar || ''} size={24} iconSize={12} borderRadius="6px" />
                 <span className="activity-agent-name">{displayName}</span>
@@ -177,7 +245,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
                 {needsTruncate && !expanded ? (
                   <>
                     {fullText.slice(0, CONTENT_TRUNCATE_LENGTH)}...
-                    <button className="activity-expand-btn" onClick={() => toggleExpand(idx)}>
+                    <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
                       {t('activity.expand')}
                     </button>
                   </>
@@ -185,7 +253,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
                   <>
                     {fullText}
                     {needsTruncate && (
-                      <button className="activity-expand-btn" onClick={() => toggleExpand(idx)}>
+                      <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
                         {t('activity.collapse')}
                       </button>
                     )}

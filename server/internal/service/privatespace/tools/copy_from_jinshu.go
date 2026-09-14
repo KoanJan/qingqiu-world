@@ -6,12 +6,11 @@ import (
 
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
-
-	servicetools "qingqiu-world-server/internal/service/tools"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // CopyFromJinshuTool copies the files delivered by a received jinshu into the
-// agent's private-space working directory.
+// agent's Agent Owned Space.
 type CopyFromJinshuTool struct {
 	personID int64
 	workDir  string
@@ -28,14 +27,14 @@ func NewCopyFromJinshuTool(personID int64, rootDir, workDir string) *CopyFromJin
 
 func (t *CopyFromJinshuTool) Name() string { return "copy_from_jinshu" }
 func (t *CopyFromJinshuTool) Description() string {
-	return "Copy files from a received jinshu into your private-space working directory"
+	return "Copy files from a received jinshu into your Agent Owned Space"
 }
 
 func (t *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: "copy_from_jinshu",
-		Description: "Copy the files delivered by a received jinshu into a directory under your " +
-			"private-space working directory. The target directory is created if it does not exist, " +
+		Description: "Copy the files delivered by a received jinshu into an Agent Owned Space directory. " +
+			"Use work/<session_id>/... or private/...; bare paths remain relative to private/. The target directory is created if it does not exist, " +
 			"and existing files with the same name are overwritten.",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -46,7 +45,7 @@ func (t *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"target_relative_dir": map[string]interface{}{
 					"type":        "string",
-					"description": "Directory under your private-space working directory to copy the files into.",
+					"description": "Target Agent Owned Space directory.",
 				},
 			},
 			"required": []string{"jinshu_id", "target_relative_dir"},
@@ -71,7 +70,7 @@ func (t *CopyFromJinshuTool) Execute(args map[string]interface{}) (string, error
 		return "", err
 	}
 
-	targetDir, err := servicetools.ResolvePath(targetRel, t.workDir, t.workDir)
+	targetDir, _, err := workspace.ResolveAOSLocatorFromDefault(t.personID, t.workDir, targetRel)
 	if err != nil {
 		return "", fmt.Errorf("invalid target_relative_dir %q: %w", targetRel, err)
 	}

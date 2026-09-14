@@ -27,7 +27,7 @@ const reflectionTimeout = 2 * time.Minute
 type reflectOutput struct {
 	Title       string `json:"title" jsonschema:"description=Transferable lesson stated as a general principle"`
 	Description string `json:"description" jsonschema:"description=One sentence stating what this teaches — used for semantic matching. State the insight, not what was done."`
-	WhenToUse   string `json:"when_to_use" jsonschema:"description=What task signatures, trigger phrases, or problem patterns indicate this experience applies. Each on its own line. Helps distinguish similar but inapplicable situations from different but applicable ones."`
+	WhenToUse   string `json:"when_to_use" jsonschema:"description=What work patterns, trigger phrases, or problem patterns indicate this experience applies. Each on its own line. Helps distinguish similar but inapplicable situations from different but applicable ones."`
 	Guidelines  string `json:"guidelines" jsonschema:"description=Actionable advice with rationale. What to do, why, and in what order. Decision heuristics, sequencing rules, proven patterns."`
 	Pitfalls    string `json:"pitfalls" jsonschema:"description=Known failure modes. What can go wrong, early warning signs, and how to prevent or recover."`
 	Procedure   string `json:"procedure" jsonschema:"description=Numbered steps. Only include if a repeatable, cross-project workflow emerged. Leave empty if none."`
@@ -62,7 +62,7 @@ func CheckReflection(ctx context.Context, personID int64) {
 	}
 
 	for _, sess := range sessions {
-		// Check whether this session has any task interactions.
+		// Check whether this session has any focused-work interactions.
 		// If not, notes.jsonl is not expected to exist — skip without error.
 		hasInteractions, err := dops.HasInteractions(sess.ID)
 		if err != nil {
@@ -71,7 +71,7 @@ func CheckReflection(ctx context.Context, personID int64) {
 			continue
 		}
 		if !hasInteractions {
-			applogger.Info("CheckReflection: session has no task interactions, skipping",
+			applogger.Info("CheckReflection: session has no focused-work interactions, skipping",
 				"session_id", sess.ID)
 			continue
 		}
@@ -167,12 +167,12 @@ func reflectSession(ctx context.Context, personID, sessionID int64, notesContent
 	// Note: existing experiences are NOT loaded into the prompt. Loading them
 	// would bloat the context as the experience library grows. Instead, the
 	// LLM is given the option to return update_exp_id from its own knowledge
-	// of exp_ids it has seen during task execution (via scan/recall tools).
-	prompt := `Distill transferable experience from a completed task log.
+	// of exp_ids it has seen during focused-work execution (via scan/recall tools).
+	prompt := `Distill transferable experience from a completed focused-work log.
 
-The log below records what happened in one specific task. Extract only the abstract knowledge that could help with a completely different future task — do not summarize or reorganize the log itself.
+The log below records what happened in one specific focused-work run. Extract only the abstract knowledge that could help with a completely different future work — do not summarize or reorganize the log itself.
 
-Strip task-identifying details (project names, person names, specific file paths) and host-environment coupling (system-specific tools like write_notes/wake_me_when, internal APIs, system config) — these are not transferable. Keep concrete technical details (domain APIs like Canvas/fillText, library names, function signatures, algorithm steps) — they are the actionable value, not host coupling.
+Strip work-identifying details (project names, person names, specific file paths) and host-environment coupling (system-specific tools like write_notes/wake_me_when, internal APIs, system config) — these are not transferable. Keep concrete technical details (domain APIs like Canvas/fillText, library names, function signatures, algorithm steps) — they are the actionable value, not host coupling.
 
 Fill each output field as follows:
 
@@ -180,7 +180,7 @@ title: The transferable lesson, stated as a general principle.
 
 description: One sentence stating the core insight — used for semantic matching. State what this teaches, not what was done.
 
-when_to_use: What task signatures, trigger phrases, or problem patterns indicate this experience applies. Helps distinguish "looks similar but isn't" from "looks different but is". Leave empty if the lesson applies broadly.
+when_to_use: What work patterns, trigger phrases, or problem patterns indicate this experience applies. Helps distinguish "looks similar but isn't" from "looks different but is". Leave empty if the lesson applies broadly.
 
 guidelines: Actionable advice with rationale. What to do, why, and in what order. Decision heuristics, sequencing rules, proven patterns.
 
@@ -188,11 +188,11 @@ pitfalls: Known failure modes. What can go wrong, early warning signs, and how t
 
 procedure: Numbered steps. Only include if a repeatable workflow emerged. Leave empty if none.
 
-update_exp_id: If this experience refines or overlaps with an existing experience you already have (e.g., an exp_id you saw via scan_my_experience / recall_my_experience during this task), set this to that experience's id. Otherwise, leave it as 0 to create a new experience.
+update_exp_id: If this experience refines or overlaps with an existing experience you already have (e.g., an exp_id you saw via scan_my_experience / recall_my_experience during this focused-work run), set this to that experience's id. Otherwise, leave it as 0 to create a new experience.
 
 skip: true only if the log contains nothing transferable.
 
-## Task log
+## Focused-work log
 ` + notesContent
 
 	messages := []llm.Message{
@@ -234,7 +234,7 @@ skip: true only if the log contains nothing transferable.
 
 	// Branch: update an existing experience or create a new one.
 	// The LLM returns update_exp_id when it recognizes (from exp_ids it saw
-	// during task execution) that this lesson refines an existing one.
+	// during focused-work execution) that this lesson refines an existing one.
 	if output.UpdateExpID > 0 {
 		if err := updateExperience(ctx, output.UpdateExpID, personID,
 			output.Title, output.Description, output.WhenToUse,

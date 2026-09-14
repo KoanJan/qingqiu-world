@@ -5,13 +5,15 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
-// ListTaskWorks list all task work ids in the session
-func ListTaskWorks(sessionID int64) ([]int64, error) {
-	var workIDs []int64
+// ListSessionActivityWorks returns the minimal Work projection required to
+// attribute session activity to the agent that produced it.
+func ListSessionActivityWorks(sessionID int64) ([]model.Work, error) {
+	var works []model.Work
 	if err := database.DB.Model(&model.Work{}).
+		Select("id", "person_id").
 		Where("session_id = ?", sessionID).
-		Pluck("id", &workIDs).Error; err != nil {
+		Find(&works).Error; err != nil {
 		return nil, err
 	}
-	return workIDs, nil
+	return works, nil
 }

@@ -51,7 +51,7 @@ func (w *WriteNotesTool) Schema() llm.FunctionDefinition {
 			"Skip trivial or obvious information. " +
 			"Focus on key facts that future steps MUST know — " +
 			"critical discoveries, important decisions, and essential state. " +
-			"When in doubt, ask: would losing this information hurt the task? " +
+			"When in doubt, ask: would losing this information hurt a later continuation of this FocusedWork? " +
 			"If not, skip it." +
 			"\n\n" +
 			"Entry types:\n" +
@@ -153,7 +153,7 @@ func (w *WriteNotesTool) Execute(args map[string]interface{}) (string, error) {
 }
 
 // ReadNotes returns the full notes content rendered as markdown for LLM consumption.
-// The task loop calls this to include notes in the system prompt.
+// The FocusedLoop calls this to include notes in the system prompt.
 func (w *WriteNotesTool) ReadNotes() string {
 	entries := workspace.ReadAllNotes(w.personID, w.sessionID)
 	if len(entries) == 0 {

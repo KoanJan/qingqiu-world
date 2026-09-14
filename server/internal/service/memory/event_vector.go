@@ -8,11 +8,11 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 )
 
-// embeddingTask carries the data needed for async embedding generation.
+// embeddingJob carries the data needed for async embedding generation.
 // The event record is already persisted synchronously by RecordEvent;
 // the background goroutine only needs eventID + content to call the
 // embedding API and store the resulting vector.
-type embeddingTask struct {
+type embeddingJob struct {
 	eventID int64
 	content string
 }
@@ -23,7 +23,7 @@ const vectorizationChannelSize = 256
 // It is purely a vectorization work queue — no event creation, no
 // observation creation. Those are handled by RecordEvent (sync) and
 // CreateObservation (caller-side) respectively.
-var vectorizerCh = make(chan embeddingTask, vectorizationChannelSize)
+var vectorizerCh = make(chan embeddingJob, vectorizationChannelSize)
 
 // ---------------------------------------------------------------------------
 // External API — production
@@ -48,7 +48,7 @@ func RecordMessageEvent(messageID int64, content string) (int64, error) {
 	// Enqueue async embedding generation if embedding service is configured.
 	if embeddingSvc != nil {
 		select {
-		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		case vectorizerCh <- embeddingJob{eventID: eventID, content: content}:
 		default:
 			applogger.Error("Embedding queue full, embedding generation skipped",
 				"event_id", eventID)
@@ -85,7 +85,7 @@ func RecordJinshuEvent(jinshuID int64, content string) (int64, error) {
 
 	if embeddingSvc != nil {
 		select {
-		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		case vectorizerCh <- embeddingJob{eventID: eventID, content: content}:
 		default:
 			applogger.Error("Embedding queue full, embedding generation skipped",
 				"event_id", eventID)
@@ -112,7 +112,7 @@ func RecordWorkCompletedEvent(workID int64, content string) (int64, error) {
 
 	if embeddingSvc != nil {
 		select {
-		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		case vectorizerCh <- embeddingJob{eventID: eventID, content: content}:
 		default:
 			applogger.Error("Embedding queue full, embedding generation skipped",
 				"event_id", eventID)
@@ -137,7 +137,7 @@ func RecordPSDigestEvent(digestID int64, content string) (int64, error) {
 
 	if embeddingSvc != nil {
 		select {
-		case vectorizerCh <- embeddingTask{eventID: eventID, content: content}:
+		case vectorizerCh <- embeddingJob{eventID: eventID, content: content}:
 		default:
 			applogger.Error("Embedding queue full, embedding generation skipped",
 				"event_id", eventID)
@@ -152,31 +152,31 @@ func RecordPSDigestEvent(digestID int64, content string) (int64, error) {
 // ---------------------------------------------------------------------------
 
 // startEventVectorization runs the embedding generation loop. Drains
-// remaining tasks when ctx is cancelled, then returns.
+// remaining jobs when ctx is cancelled, then returns.
 func startEventVectorization(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
 			drainVectorizerRemaining()
 			return
-		case task := <-vectorizerCh:
-			if err := storeEventEmbedding(ctx, task.eventID, task.content); err != nil {
+		case job := <-vectorizerCh:
+			if err := storeEventEmbedding(ctx, job.eventID, job.content); err != nil {
 				applogger.Error("Failed to store event embedding",
-					"event_id", task.eventID, "error", err)
+					"event_id", job.eventID, "error", err)
 			}
 		}
 	}
 }
 
-// drainVectorizerRemaining processes any queued embedding tasks before
+// drainVectorizerRemaining processes any queued embedding jobs before
 // shutdown.
 func drainVectorizerRemaining() {
 	for {
 		select {
-		case task := <-vectorizerCh:
-			if err := storeEventEmbedding(context.Background(), task.eventID, task.content); err != nil {
+		case job := <-vectorizerCh:
+			if err := storeEventEmbedding(context.Background(), job.eventID, job.content); err != nil {
 				applogger.Error("Failed to store event embedding (drain)",
-					"event_id", task.eventID, "error", err)
+					"event_id", job.eventID, "error", err)
 			}
 		default:
 			return

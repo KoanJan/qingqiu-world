@@ -1,6 +1,6 @@
-// Package tools provides task-loop domain tool implementations.
+// Package tools provides FocusedLoop domain tool implementations.
 // Reusable path-based tool cores are in service/tools; this package wraps them
-// with the task-specific Tool interface, Schema generation, and ID-to-path translation.
+// with the FocusedWork-specific Tool interface, Schema generation, and ID-to-path translation.
 package tools
 
 import servicetools "qingqiu-world-server/internal/service/tools"

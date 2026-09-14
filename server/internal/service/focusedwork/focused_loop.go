@@ -1,4 +1,4 @@
-package task
+package focusedwork
 
 import (
 	"context"
@@ -7,9 +7,9 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+	focusedworkcontext "qingqiu-world-server/internal/service/focusedwork/context"
+	"qingqiu-world-server/internal/service/focusedwork/tools"
 	"qingqiu-world-server/internal/service/llm"
-	taskcontext "qingqiu-world-server/internal/service/task/context"
-	"qingqiu-world-server/internal/service/task/tools"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -21,7 +21,7 @@ import (
 // Must be greater than tools.DefaultTruncateBytes + JSON overhead buffer.
 const hardOutputLimit = 50 * 1024 // 50KB
 
-// TaskLoop implements the ReAct-style task loop for autonomous task execution.
+// FocusedLoop implements the ReAct-style loop for sustained, multi-step agent work.
 //
 // The loop iterates:
 //   - Call LLM with current context (window-controlled by ContextManager)
@@ -38,42 +38,42 @@ const hardOutputLimit = 50 * 1024 // 50KB
 //   - Agent can voluntarily call write_notes at any time
 //   - Forced checkpoint only when distance from last voluntary write >= window
 //   - This respects agent's autonomy while ensuring memory persistence
-//   - Final iteration always writes notes if task not completed
-type TaskLoop struct {
-	llmClient        *llm.ChatModel              // Main LLM client with tool binding
-	llmConfig        *model.LLMConfig            // LLM config for creating checkpoint client
-	toolRegistry     map[string]tools.Tool       // Tool name -> Tool mapping
-	contextManager   *taskcontext.ContextManager // Context manager with window control
-	maxIterations    int                         // Maximum number of loop iterations
-	sessionID        int64                       // Session ID for interaction records
-	userMsgID        int64                       // User message ID that triggered execution
-	workID           int64                       // Work ID for interaction record association
-	writeNotesTool   *tools.WriteNotesTool       // Write notes tool for checkpoint iterations
-	checkpointClient *llm.ChatModel              // Lazy-initialized LLM client for checkpoint iterations
-	lastNotesIter    int                         // Last iteration where write_notes was called (voluntary or forced)
-	guidanceCh       <-chan GuidanceDirective    // Channel for observing new guidance during execution
-	forceCheckpoint  bool                        // Set by cycle detection to force a checkpoint
-	blockReason      string                      // Reason for forced checkpoint (from cycle detection)
+//   - Final iteration always writes notes if focused work is not completed
+type FocusedLoop struct {
+	llmClient        *llm.ChatModel                     // Main LLM client with tool binding
+	llmConfig        *model.LLMConfig                   // LLM config for creating checkpoint client
+	toolRegistry     map[string]tools.Tool              // Tool name -> Tool mapping
+	contextManager   *focusedworkcontext.ContextManager // Context manager with window control
+	maxIterations    int                                // Maximum number of loop iterations
+	sessionID        int64                              // Session ID for interaction records
+	userMsgID        int64                              // User message ID that triggered execution
+	workID           int64                              // Work ID for interaction record association
+	writeNotesTool   *tools.WriteNotesTool              // Write notes tool for checkpoint iterations
+	checkpointClient *llm.ChatModel                     // Lazy-initialized LLM client for checkpoint iterations
+	lastNotesIter    int                                // Last iteration where write_notes was called (voluntary or forced)
+	guidanceCh       <-chan GuidanceDirective           // Channel for observing new guidance during execution
+	forceCheckpoint  bool                               // Set by cycle detection to force a checkpoint
+	blockReason      string                             // Reason for forced checkpoint (from cycle detection)
 }
 
-// NewTaskLoop creates a new TaskLoop instance.
+// NewFocusedLoop creates a new FocusedLoop instance.
 // The tool list is converted to a name-keyed registry for efficient lookup during execution.
-func NewTaskLoop(
+func NewFocusedLoop(
 	llmClient *llm.ChatModel,
 	llmConfig *model.LLMConfig,
 	toolList []tools.Tool,
-	contextManager *taskcontext.ContextManager,
+	contextManager *focusedworkcontext.ContextManager,
 	maxIterations int,
 	sessionID, userMsgID, workID int64,
 	writeNotesTool *tools.WriteNotesTool,
 	guidanceCh <-chan GuidanceDirective,
-) *TaskLoop {
+) *FocusedLoop {
 	registry := make(map[string]tools.Tool)
 	for _, t := range toolList {
 		registry[t.Name().String()] = t
 	}
 
-	return &TaskLoop{
+	return &FocusedLoop{
 		llmClient:      llmClient,
 		llmConfig:      llmConfig,
 		toolRegistry:   registry,
@@ -87,7 +87,7 @@ func NewTaskLoop(
 	}
 }
 
-// LoopResult represents the outcome of the task loop execution.
+// LoopResult represents the outcome of a FocusedLoop execution.
 type LoopResult struct {
 	Status string `json:"status"`           // "success" or "failure"
 	Result string `json:"result,omitempty"` // Final content on success
@@ -100,24 +100,24 @@ type LoopResult struct {
 //   - LLM returns a stop response (success)
 //   - Max iterations reached (failure, after writing notes)
 //
-// The task requirement is already injected via ContextManager
+// The focused-work requirement is already injected via ContextManager
 // (as part of the system prompt with Guidance), so it is not passed
 // as a parameter here.
-func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
-	applogger.Info("TaskLoop starting",
+func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
+	applogger.Info("FocusedLoop starting",
 		"max_iterations", tl.maxIterations,
 		"session_id", tl.sessionID,
 		"work_id", tl.workID,
 	)
 
 	for iteration := 1; iteration <= tl.maxIterations; iteration++ {
-		// Check if the task has been cancelled (e.g., session deleted)
+		// Check if focused work has been cancelled (e.g., session deleted)
 		if ctx != nil && ctx.Err() != nil {
-			applogger.Info("TaskLoop cancelled, stopping execution",
+			applogger.Info("FocusedLoop cancelled, stopping execution",
 				"session_id", tl.sessionID,
 				"iteration", iteration,
 			)
-			return &LoopResult{Status: "failure", Reason: "task cancelled"}
+			return &LoopResult{Status: "failure", Reason: "FocusedWork cancelled"}
 		}
 
 		// If cycle detection triggered a forced checkpoint, run it now.
@@ -134,7 +134,7 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 		// Drain all pending guidance to handle multiple updates.
 		tl.observeNewGuidance(iteration)
 
-		applogger.Info("TaskLoop iteration", "iteration", iteration, "max", tl.maxIterations)
+		applogger.Info("FocusedLoop iteration", "iteration", iteration, "max", tl.maxIterations)
 
 		if tl.writeNotesTool != nil {
 			tl.writeNotesTool.TrimNotes()
@@ -160,7 +160,7 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 
 		response, err := tl.invokeLLM(ctx, messages)
 		if err != nil {
-			applogger.Error("TaskLoop LLM error", "iteration", iteration, "error", err)
+			applogger.Error("FocusedLoop LLM error", "iteration", iteration, "error", err)
 			return &LoopResult{Status: "failure", Reason: fmt.Sprintf("LLM invocation failed at iteration %d: %s", iteration, err.Error())}
 		}
 
@@ -170,7 +170,7 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 
 		switch finishReason {
 		case "stop":
-			applogger.Debug("TaskLoop LLM response",
+			applogger.Debug("FocusedLoop LLM response",
 				"finish_reason", "stop",
 				"content", content,
 			)
@@ -183,13 +183,13 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 					"args": tc.Function.Arguments,
 				})
 			}
-			applogger.Debug("TaskLoop LLM response",
+			applogger.Debug("FocusedLoop LLM response",
 				"finish_reason", "tool_calls",
 				"content", content,
 				"tool_calls", fmt.Sprintf("%v", tcSummary),
 			)
 		case "length":
-			applogger.Debug("TaskLoop LLM response",
+			applogger.Debug("FocusedLoop LLM response",
 				"finish_reason", "length",
 				"content", content,
 			)
@@ -203,17 +203,17 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 
 		switch finishReason {
 		case "stop":
-			applogger.Info("TaskLoop completed", "iteration", iteration)
+			applogger.Info("FocusedLoop completed", "iteration", iteration)
 			tl.updateNotesOnStop(ctx, iteration, content, messages)
 			return &LoopResult{Status: "success", Result: content}
 
 		case "tool_calls":
 			if content != "" {
-				applogger.Info("TaskLoop thoughts", "iteration", iteration, "thoughts", content[:min(500, len(content))])
+				applogger.Info("FocusedLoop thoughts", "iteration", iteration, "thoughts", content[:min(500, len(content))])
 			}
 
 			// Discard reasoning content from tool_calls to establish an information
-			// boundary between TaskLoop internals and the chat layer.
+			// boundary between FocusedLoop internals and the chat layer.
 			//
 			// When tool_calls are accompanied by reasoning content, that content
 			// propagates into subsequent iterations and eventually leaks into
@@ -223,9 +223,9 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 			// hallucination in the final user-facing response.
 			//
 			// By discarding reasoning content here, we cut off the hallucination
-			// at its source: internal process information stays inside TaskLoop,
+			// at its source: internal process information stays inside FocusedLoop,
 			// and only tool calls and their results are carried forward. The LLM
-			// can still reason about next steps from the task description and
+			// can still reason about next steps from the focused-work requirement and
 			// tool results alone — the reasoning content is redundant signal.
 			assistantMsg := llm.Message{
 				Role:      "assistant",
@@ -251,7 +251,7 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 			tl.contextManager.AddIteration(assistantMsg, toolResults)
 
 		case "length":
-			applogger.Error("TaskLoop finish_reason=length", "iteration", iteration)
+			applogger.Error("FocusedLoop finish_reason=length", "iteration", iteration)
 
 			assistantMsg := llm.Message{
 				Role:    "assistant",
@@ -272,11 +272,11 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 			)
 
 		default:
-			applogger.Error("TaskLoop unexpected finish_reason", "finish_reason", finishReason, "iteration", iteration)
+			applogger.Error("FocusedLoop unexpected finish_reason", "finish_reason", finishReason, "iteration", iteration)
 		}
 	}
 
-	reason := fmt.Sprintf("Task did not complete within %d iterations", tl.maxIterations)
+	reason := fmt.Sprintf("FocusedWork did not complete within %d iterations", tl.maxIterations)
 	return &LoopResult{Status: "failure", Reason: reason}
 }
 
@@ -295,14 +295,14 @@ func (tl *TaskLoop) Run(ctx context.Context) *LoopResult {
 //
 // The iteration parameter is the current loop iteration number, so the
 // guidance interaction record is grouped with the iteration that consumes it.
-func (tl *TaskLoop) observeNewGuidance(iteration int) {
+func (tl *FocusedLoop) observeNewGuidance(iteration int) {
 	if tl.guidanceCh == nil {
 		return
 	}
 	for {
 		select {
 		case directive := <-tl.guidanceCh:
-			applogger.Info("TaskLoop: observed new guidance",
+			applogger.Info("FocusedLoop: observed new guidance",
 				"session_id", tl.sessionID,
 				"work_id", tl.workID,
 				"iteration", iteration,
@@ -341,7 +341,7 @@ func (tl *TaskLoop) observeNewGuidance(iteration int) {
 //   - This respects agent's autonomy while ensuring memory persistence
 //
 // Final iteration is handled separately.
-func (tl *TaskLoop) isCheckpointIteration(iteration int) bool {
+func (tl *FocusedLoop) isCheckpointIteration(iteration int) bool {
 	if iteration == tl.maxIterations {
 		return false
 	}
@@ -358,11 +358,11 @@ func (tl *TaskLoop) isCheckpointIteration(iteration int) bool {
 //
 // On final iteration (isFinal=true), returns failure result after saving notes.
 // On checkpoint iteration, returns success to continue the loop.
-func (tl *TaskLoop) runNotesIteration(ctx context.Context, iteration int, messages []llm.Message, isFinal bool) *LoopResult {
+func (tl *FocusedLoop) runNotesIteration(ctx context.Context, iteration int, messages []llm.Message, isFinal bool) *LoopResult {
 	if tl.writeNotesTool == nil {
 		applogger.Error("Cannot run notes iteration: write_notes_tool not initialized")
 		if isFinal {
-			return &LoopResult{Status: "failure", Reason: "Task did not complete within max iterations"}
+			return &LoopResult{Status: "failure", Reason: "FocusedWork did not complete within max iterations"}
 		}
 		return &LoopResult{Status: "success"}
 	}
@@ -381,7 +381,7 @@ func (tl *TaskLoop) runNotesIteration(ctx context.Context, iteration int, messag
 	if isFinal {
 		checkpointMsg = `[Final Iteration - Save Your Progress]
 You have reached the maximum number of iterations.
-The task could not be completed in time.
+This FocusedWork could not be completed in time.
 
 MANDATORY: You must save your progress now using the write_notes tool.
 This is the ONLY tool available to you.
@@ -433,7 +433,7 @@ After writing notes, you will regain access to all tools.`
 	if err != nil {
 		applogger.Error("Notes iteration LLM error", "error", err)
 		if isFinal {
-			return &LoopResult{Status: "failure", Reason: "Task did not complete within max iterations"}
+			return &LoopResult{Status: "failure", Reason: "FocusedWork did not complete within max iterations"}
 		}
 		return &LoopResult{Status: "failure", Reason: fmt.Sprintf("Notes iteration LLM invocation failed: %s", err.Error())}
 	}
@@ -492,17 +492,17 @@ After writing notes, you will regain access to all tools.`
 	applogger.Info("Notes iteration completed", "iteration", iteration)
 
 	if isFinal {
-		return &LoopResult{Status: "failure", Reason: "Task did not complete within max iterations. Notes have been saved for next execution."}
+		return &LoopResult{Status: "failure", Reason: "FocusedWork did not complete within max iterations. Notes have been saved for a later FocusedWork."}
 	}
 
 	return &LoopResult{Status: "success"}
 }
 
-// updateNotesOnStop updates notes when the agent decides to end the task
+// updateNotesOnStop updates notes when the agent decides to end focused work
 // (finish_reason=stop). The outcome may be completion, partial progress, or
 // abandonment — the function does not prejudge. Uses the checkpoint client
 // (lazy-initialized) with only write_notes tool available.
-func (tl *TaskLoop) updateNotesOnStop(ctx context.Context, iteration int, finalContent string, messages []llm.Message) {
+func (tl *FocusedLoop) updateNotesOnStop(ctx context.Context, iteration int, finalContent string, messages []llm.Message) {
 	if tl.writeNotesTool == nil {
 		return
 	}
@@ -511,16 +511,16 @@ func (tl *TaskLoop) updateNotesOnStop(ctx context.Context, iteration int, finalC
 		tl.checkpointClient = llm.NewChatModelWithTemperature(tl.llmConfig.BaseURL, tl.llmConfig.APIKey, tl.llmConfig.ModelID, llm.TemperatureCreative)
 	}
 
-	applogger.Info("Updating notes on task stop", "iteration", iteration)
+	applogger.Info("Updating notes on focused-work stop", "iteration", iteration)
 
-	endMsg := `[Task Ended - Update Your Notes]
-The task has ended. Record the final outcome in your notes.
+	endMsg := `[FocusedWork Ended - Update Your Notes]
+This FocusedWork has ended. Record the final outcome in your notes.
 
 Use write_notes to APPEND a summary entry reflecting what actually happened:
 
 {
   "entry_type": "progress",
-  "content": "Summary of what was accomplished, or why the task could not proceed further...",
+  "content": "Summary of what was accomplished, or why this FocusedWork could not proceed further...",
   "references": ["file1.py", "file2.json"]
 }
 
@@ -567,12 +567,12 @@ This will help you continue work if changes are requested later.`
 		tl.contextManager.RefreshNotes(tl.writeNotesTool.ReadNotes())
 	}
 
-	applogger.Info("Notes updated on task stop")
+	applogger.Info("Notes updated on focused-work stop")
 }
 
 // runCycleBlockedCheckpoint handles the forced checkpoint triggered by cycle detection.
 //
-// When a tool's CycleDetect returns Blocked=true, the task loop enters this
+// When a tool's CycleDetect returns Blocked=true, the FocusedLoop enters this
 // special checkpoint mode instead of continuing normal execution. Only
 // write_notes is available. The agent is asked to reflect on why it was
 // blocked and record its findings, then the work terminates with failure.
@@ -580,7 +580,7 @@ This will help you continue work if changes are requested later.`
 // Unlike regular checkpoints (which continue the loop), a cycle-blocked
 // checkpoint always ends the work — the agent cannot retry the same
 // approach that caused the cycle.
-func (tl *TaskLoop) runCycleBlockedCheckpoint(ctx context.Context, iteration int, reason string) *LoopResult {
+func (tl *FocusedLoop) runCycleBlockedCheckpoint(ctx context.Context, iteration int, reason string) *LoopResult {
 	applogger.Info("Running cycle-blocked checkpoint",
 		"iteration", iteration,
 		"reason", reason,
@@ -606,7 +606,7 @@ You must stop and reflect on what happened:
 3. What alternative approaches could work?
 
 Use write_notes to record your reflection. This is the ONLY tool available.
-The task will end after you save your notes.`, reason)
+This FocusedWork will end after you save your notes.`, reason)
 
 	messagesWithCheckpoint := append(messages, llm.Message{
 		Role:    "user",
@@ -654,14 +654,14 @@ The task will end after you save your notes.`, reason)
 
 	return &LoopResult{
 		Status: "failure",
-		Reason: fmt.Sprintf("Task terminated due to detected cycle: %s. Notes have been saved for next execution.", reason),
+		Reason: fmt.Sprintf("FocusedWork terminated due to detected cycle: %s. Notes have been saved for a later FocusedWork.", reason),
 	}
 }
 
 // invokeLLM calls the LLM with the current messages and all registered tools.
 // Converts internal message format and binds tool schemas.
-func (tl *TaskLoop) invokeLLM(ctx context.Context, messages []llm.Message) (llm.ToolResponse, error) {
-	applogger.Debug("TaskLoop invoking LLM",
+func (tl *FocusedLoop) invokeLLM(ctx context.Context, messages []llm.Message) (llm.ToolResponse, error) {
+	applogger.Debug("FocusedLoop invoking LLM",
 		"message_count", len(messages),
 	)
 
@@ -675,7 +675,7 @@ func (tl *TaskLoop) invokeLLM(ctx context.Context, messages []llm.Message) (llm.
 // executeToolCall executes a single tool call and returns the result.
 // Looks up the tool in the registry, parses arguments, and calls Execute.
 // Returns error messages for unknown tools or invalid arguments.
-func (tl *TaskLoop) executeToolCall(tc llm.ToolCall) llm.Message {
+func (tl *FocusedLoop) executeToolCall(tc llm.ToolCall) llm.Message {
 	toolCallID := tc.ID
 	toolName := tc.Function.Name
 	argsStr := tc.Function.Arguments
@@ -743,7 +743,7 @@ func (tl *TaskLoop) executeToolCall(tc llm.ToolCall) llm.Message {
 // Silently skips if session is not configured.
 // Records are grouped by (session_id, work_id, iteration)
 // to support both frontend display and debugging.
-func (tl *TaskLoop) weakWriteInteraction(iteration, interactionType int, data map[string]interface{}) {
+func (tl *FocusedLoop) weakWriteInteraction(iteration, interactionType int, data map[string]interface{}) {
 	if tl.sessionID == 0 {
 		return
 	}

@@ -47,7 +47,7 @@ type SendParams struct {
 // sent/{id}/ directory and the recipient's received/{id}/ directory, records a
 // memory event, and notifies the recipient if it is an AI agent.
 //
-// This is the single delivery path shared by the task loop tool, the
+// This is the single delivery path shared by the FocusedLoop tool, the
 // private-space tool, and the user-facing HTTP API. Callers only differ in how
 // they build the Files map (output dir, private-space workdir, or uploads).
 func Send(p SendParams) (*model.Jinshu, error) {

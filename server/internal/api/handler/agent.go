@@ -8,7 +8,6 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/agent"
-	"qingqiu-world-server/internal/service/privatespace"
 	"qingqiu-world-server/internal/service/runtime"
 	"qingqiu-world-server/internal/service/workspace"
 	"strings"
@@ -149,10 +148,9 @@ func (h *Handler) DeleteAgent(c *gin.Context) {
 
 	// Filesystem cleanup (not transactional)
 	for _, sid := range sessionIDs {
-		workspace.RemoveWorkspace(personID, sid)
 		workspace.RemoveAac(personID, sid)
 	}
-	privatespace.RemoveDir(personID)
+	workspace.RemoveAgentOwnedSpace(personID)
 
 	response.SuccessMessage(c, "Agent config deleted successfully", nil)
 }

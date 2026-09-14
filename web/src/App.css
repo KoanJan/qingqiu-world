@@ -1348,6 +1348,28 @@
   font-size: 13px;
 }
 
+.activity-page-loading {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0;
+}
+
+.activity-retry-btn {
+  border: 0;
+  border-radius: 6px;
+  background: var(--color-primary, #1677ff);
+  color: #fff;
+  cursor: pointer;
+  font: inherit;
+  margin-top: 8px;
+  padding: 4px 10px;
+}
+
+.activity-retry-btn-inline {
+  display: block;
+  margin: 0 auto 8px;
+}
+
 /* View toggle button in chat header */
 .chat-header-row {
   display: flex;

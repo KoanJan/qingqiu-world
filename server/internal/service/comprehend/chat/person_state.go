@@ -51,7 +51,7 @@ func formatRecentMessages(recentMessages []model.Message, personName, agentName 
 // (used to label the agent's own messages in the dialog).
 // characterSettings provides the agent's role context to prevent misinterpretation of casual questions.
 // activeWorksSummary describes the agent's currently running works, enabling self-awareness
-// (e.g., understanding "change the approach" refers to an ongoing task).
+// (e.g., understanding "change the approach" refers to ongoing focused work).
 // Returns nil if inference fails, allowing the chat flow to continue without person state.
 func InferPersonState(
 	ctx context.Context,

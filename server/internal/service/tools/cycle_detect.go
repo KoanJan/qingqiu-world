@@ -5,7 +5,7 @@
 // authorized inventory through an injected KBAuthorizer instead of a person ID
 // (see AuthorizedKBsFor), keeping person identity in the wrapper packages.
 //
-// Higher-level packages (task/tools, privatespace/tools) wrap these cores with
+// Higher-level packages (focusedwork/tools, privatespace/tools) wrap these cores with
 // their own interface contracts. Shared LLM-facing parameter descriptions are
 // exported by the kb cores as plain data so wording stays single-sourced.
 package tools

@@ -242,12 +242,20 @@ export interface UploadedSkill {
 }
 
 export interface ActivityEvent {
+  id: string;
   time: string;
   type: string; // "thinking" | "tool_call" | "guidance"
   content: string; // thinking/guidance text; empty for tool_call
   tool?: string;   // only for tool_call
   target?: string; // only for tool_call
   agent_id: number;
+}
+
+/** One cursor-bounded page of chronological agent activity events. */
+export interface ActivityPage {
+  events: ActivityEvent[];
+  has_more: boolean;
+  next_before_interaction_id?: number;
 }
 
 export interface JinshuFileEntry {

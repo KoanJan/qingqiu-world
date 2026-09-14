@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.13] - 2026-09-15
+
+### Changed
+- **Agent Owned Space and FocusedWork Continuity**: the former task-oriented execution model is now FocusedWork / FocusedLoop — an agent's sustained multi-step attention mode. Each agent owns one persistent AOS with fixed `work/<session_id>/` and `private/` directories; both loops can use all owned resources while runtime metadata stays in AOSMeta. Focus handoffs provide later Decide, chat, and FocusedWork runs with relevant outcomes, artifacts, blockers, and next steps; Decide can inspect bounded resource metadata when it needs to locate prior work. Jinshu can explicitly deliver copied snapshots from either AOS directory.
+- **Activity Timeline**: the chat activity tab now requests a bounded latest page and loads older records on demand while preserving scroll position and expanded rows. It reads only visible response/guidance interactions rather than historical LLM prompts, uses interaction-ID cursors, correctly attributes events in multi-agent sessions, and shows targets for KB, Jinshu, chat-history, experience, and file tools.
+- **Agent-Owned Data Sandboxing**: macOS Seatbelt and Linux Bubblewrap now conceal every `data/` subtree except the executing agent's AOS, so AOSMeta, the database, Jinshu, knowledge bases, avatars, and other agents' resources are inaccessible to sandboxed commands. Policies resolve canonical paths and are refreshed when their rendered rules change, while ordinary host access and availability fallbacks remain intact.
+
 ## [0.1.12] - 2026-09-11
 
 ### Changed

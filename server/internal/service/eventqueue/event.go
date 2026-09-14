@@ -25,7 +25,7 @@ const (
 	EventTypeSystemNotification
 	// EventTypeScheduled represents a scheduled event (self-wake alarm) that has fired.
 	EventTypeScheduled
-	// EventTypeWorkCompleted represents a Work (task/chat) completing execution.
+	// EventTypeWorkCompleted represents a Work (focused work/chat) completing execution.
 	EventTypeWorkCompleted
 	// EventTypeAlarmCreated represents a new scheduled alarm being created (by tool or recovery).
 	EventTypeAlarmCreated
@@ -52,6 +52,8 @@ const (
 	// so the agent's global cognition can encode the session into long-term
 	// memory.
 	EventTypePSCompleted
+	// EventTypeOwnedSpaceInspected carries bounded filesystem metadata observed by the agent.
+	EventTypeOwnedSpaceInspected
 )
 
 // AgentEvent represents an event that should be processed by an agent.
@@ -192,6 +194,12 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Private space digest]"
 		}
 		return fmt.Sprintf("[Private space digest] %s", p.Digest)
+	case EventTypeOwnedSpaceInspected:
+		p, ok := e.Payload.(*OwnedSpaceInspectedPayload)
+		if !ok || p == nil {
+			return "[Owned space inspection]"
+		}
+		return fmt.Sprintf("[Owned space inspection] scope=%s\n%s", p.Scope, p.Result)
 	default:
 		return ""
 	}
@@ -240,8 +248,8 @@ type WorkCompletedPayload struct {
 	WorkID     int64  // ID of the completed work
 	Guidance   string // The original guidance (execution intent) of the work
 	Status     string // "success" or "failure"
-	TaskOutput string // Task execution output (for TaskWork success)
-	TaskError  string // Task execution error (for TaskWork failure)
+	WorkOutput string // Focused-work output (for successful focused work)
+	WorkError  string // Focused-work error (for failed focused work)
 }
 
 // PSCompletedPayload is the payload type for EventTypePSCompleted events.
@@ -252,6 +260,12 @@ type WorkCompletedPayload struct {
 type PSCompletedPayload struct {
 	DigestID int64  // ID of the PSDigest record
 	Digest   string // Natural-language session digest
+}
+
+// OwnedSpaceInspectedPayload is the bounded metadata result of inspect_owned_space.
+type OwnedSpaceInspectedPayload struct {
+	Scope  string
+	Result string
 }
 
 // AlarmCreatedPayload is the payload type for EventTypeAlarmCreated events.

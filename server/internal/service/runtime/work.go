@@ -3,6 +3,7 @@ package runtime
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"qingqiu-world-server/internal/database"
@@ -14,13 +15,14 @@ import (
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/focusedwork"
 	"qingqiu-world-server/internal/service/memory"
-	"qingqiu-world-server/internal/service/task"
 	"qingqiu-world-server/internal/service/tools"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
-// work represents a unit of task execution for an agent.
-// It is created when the agent decides to CreateTask, and it may absorb
+// work represents a unit of focused-work execution for an agent.
+// It is created when the agent decides to StartFocusedWork, and it may absorb
 // subsequent events (e.g., guidance, cancellation) during its execution.
 //
 // Two-layer model: Agent (long-lived) → Work (coherent goal with ReAct loop).
@@ -30,15 +32,16 @@ import (
 // understanding). This ensures the execution layer has full context
 // without re-interpreting the event.
 type work struct {
-	ID            int64
-	agent         *agentRuntime
-	sessionID     int64
-	plan          *action.WorkPlan // From Decide phase: guidance
-	maxIterations int
-	comprehension *comprehendTypes.Comprehension // Results from the Comprehend phase
-	taskResult    *task.TaskResult               // Task execution result
-	guidanceCh    chan task.GuidanceDirective    // Channel for sending guidance/cancel directives to TaskLoop
-	done          chan struct{}                  // Closed when work finishes (normal or abandoned)
+	ID                int64
+	agent             *agentRuntime
+	sessionID         int64
+	plan              *action.WorkPlan // From Decide phase: guidance
+	maxIterations     int
+	focusContext      string                             // Runtime-selected prior handoffs and shared session notes
+	comprehension     *comprehendTypes.Comprehension     // Results from the Comprehend phase
+	focusedWorkResult *focusedwork.FocusedWorkResult     // Focused-work result
+	guidanceCh        chan focusedwork.GuidanceDirective // Channel for sending guidance/cancel directives to FocusedLoop
+	done              chan struct{}                      // Closed when work finishes (normal or abandoned)
 
 	// triggerAction carries the originating Action's cognitive context for the
 	// WorkCompleted event (provenance only — Background and Reason).
@@ -49,67 +52,79 @@ type work struct {
 	startedAt time.Time // Set in Run(), read by Decide
 }
 
-// Run executes the task work using Guidance from the Decide phase.
+// Run executes focused work using Guidance from the Decide phase.
 // On completion, sends a WorkCompleted event to the event loop and
 // signals removal from active works.
 // Respects context cancellation: exits early if the work is cancelled.
 func (w *work) Run(ctx context.Context) {
 	w.startedAt = time.Now() // Record start time for Decide-phase duration awareness
 	defer close(w.done)      // Signal completion regardless of how work exits
+	if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
+		Updates(map[string]interface{}{"focus_phase": model.FocusPhaseExecuting, "checkpoint": "Focus is executing its current guidance."}).Error; err != nil {
+		applogger.Error("work: failed to mark focus executing", "work_id", w.ID, "error", err)
+	}
 
 	defer func() {
-		// Finalize the DB status from the real outcome: a task-reported
+		// Finalize the DB status from the real outcome: a focused-work-reported
 		// failure must not be recorded as Completed. The update only applies
 		// when the work is still Running — abandon() may have already set
 		// Abandoned, in which case this is a no-op.
 		finalStatus := model.WorkStatusCompleted
-		if w.taskResult != nil && w.taskResult.Status != "success" {
+		if w.focusedWorkResult != nil && w.focusedWorkResult.Status != "success" {
 			finalStatus = model.WorkStatusFailed
 		}
+		finalPhase, finalCheckpoint := focusTerminalState(finalStatus, w.focusedWorkResult)
 		if err := database.DB.Model(&model.Work{}).
 			Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
-			Update("status", finalStatus).Error; err != nil {
+			Updates(map[string]interface{}{"status": finalStatus, "focus_phase": finalPhase, "checkpoint": finalCheckpoint}).Error; err != nil {
 			applogger.Error("work: failed to update work status", "work_id", w.ID, "error", err)
 		}
 
 		// Re-read the final status from DB. abandon() may have set Abandoned
-		// while taskResult is nil (e.g. cancelled before the pipeline), so the
+		// while focusedWorkResult is nil (e.g. cancelled before the pipeline), so the
 		// in-memory result alone cannot be trusted to derive the outcome.
 		var workRow model.Work
 		if err := database.DB.Select("status").First(&workRow, w.ID).Error; err != nil {
 			applogger.Error("work: failed to load final status for memory event",
 				"work_id", w.ID, "error", err)
+			return
 		}
 
-		// Derive the outcome from the real final DB status, not from taskResult
+		// Derive the outcome from the real final DB status, not from focusedWorkResult
 		// alone, so abandoned works are never misreported as success.
 		status := "success"
-		var output, taskErr string
+		var output, workErr string
 		switch workRow.Status {
 		case model.WorkStatusAbandoned:
 			status = "abandoned"
 		case model.WorkStatusFailed:
 			status = "failure"
-			if w.taskResult != nil {
-				taskErr = w.taskResult.Error
+			if w.focusedWorkResult != nil {
+				workErr = w.focusedWorkResult.Error
+			}
+		case model.WorkStatusCompleted:
+			if w.focusedWorkResult != nil {
+				output = w.focusedWorkResult.Output
 			}
 		default:
-			if w.taskResult != nil {
-				output = w.taskResult.Output
-			}
+			applogger.Error("work: final status is not terminal; skipping terminal side effects",
+				"work_id", w.ID, "status", workRow.Status)
+			return
 		}
+
+		persistWorkHandoff(w, workRow.Status, output, workErr)
 
 		// Episodic gist for the memory event. The works row only carries
 		// description and status, so this text is the retrievable content.
-		// TaskOutput is used as-is (head-truncated) without re-summarization.
+		// WorkOutput is used as-is (head-truncated) without re-summarization.
 		gist := fmt.Sprintf("Guidance: %s\nStatus: %s\nDuration: %s",
 			w.plan.Guidance, status, time.Since(w.startedAt).Truncate(time.Second))
 		if output != "" {
 			truncated, _ := tools.TruncateHead(output, tools.DefaultTruncateBytes)
 			gist += "\nOutput: " + truncated
 		}
-		if taskErr != "" {
-			truncated, _ := tools.TruncateHead(taskErr, tools.DefaultTruncateBytes)
+		if workErr != "" {
+			truncated, _ := tools.TruncateHead(workErr, tools.DefaultTruncateBytes)
 			gist += "\nError: " + truncated
 		}
 
@@ -133,8 +148,8 @@ func (w *work) Run(ctx context.Context) {
 				WorkID:     w.ID,
 				Guidance:   w.plan.Guidance,
 				Status:     status,
-				TaskOutput: output,
-				TaskError:  taskErr,
+				WorkOutput: output,
+				WorkError:  workErr,
 			},
 		})
 	}()
@@ -152,7 +167,7 @@ func (w *work) Run(ctx context.Context) {
 		return
 	}
 
-	w.runTask(ctx)
+	w.runFocusedWork(ctx)
 
 	applogger.Info("work completed",
 		"work_id", w.ID,
@@ -160,8 +175,147 @@ func (w *work) Run(ctx context.Context) {
 	)
 }
 
-// runTask executes the task path using Guidance from the Decide phase.
-func (w *work) runTask(ctx context.Context) {
+// focusTerminalState maps a terminal Work status to its runtime-owned Focus checkpoint.
+func focusTerminalState(workStatus model.WorkStatus, result *focusedwork.FocusedWorkResult) (model.FocusPhase, string) {
+	if workStatus == model.WorkStatusCompleted {
+		return model.FocusPhaseCompleted, "Focus completed. See the handoff for its final result."
+	}
+	if workStatus == model.WorkStatusAbandoned {
+		return model.FocusPhaseCancelled, "Focus was cancelled or abandoned before normal completion."
+	}
+	if result != nil && strings.Contains(strings.ToLower(result.Error), "max iterations") {
+		return model.FocusPhasePaused, "Focus paused at its iteration budget. See notes and handoff before resuming."
+	}
+	return model.FocusPhaseFailed, "Focus failed. See the handoff for the recorded error and next step."
+}
+
+// persistWorkHandoff records compact runtime-owned continuity metadata. It
+// intentionally does not attribute the shared session notes to this Work.
+func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr string) {
+	handoffStatus := model.FocusHandoffCompleted
+	unresolved := ""
+	nextStep := ""
+	switch workStatus {
+	case model.WorkStatusFailed:
+		handoffStatus = model.FocusHandoffFailed
+		unresolved = workErr
+		nextStep = "Investigate the recorded failure before retrying."
+		if strings.Contains(strings.ToLower(workErr), "max iterations") {
+			handoffStatus = model.FocusHandoffPaused
+			nextStep = "Review the saved notes and handoff, then decide whether to resume this focus."
+		}
+	case model.WorkStatusAbandoned:
+		handoffStatus = model.FocusHandoffCancelled
+		unresolved = "The work was abandoned before a normal completion."
+		nextStep = "Review the current session context before deciding whether to continue."
+	}
+	summary := output
+	if summary == "" {
+		summary = unresolved
+	}
+	if summary == "" {
+		summary = "No additional result was recorded."
+	}
+	if truncated, changed := tools.TruncateHead(summary, tools.DefaultTruncateBytes); changed {
+		summary = truncated
+	}
+	confirmedFindings := confirmedFindingsForWork(workStatus, summary)
+	artifactReferences := extractHandoffSection(summary, "artifacts", "artifact", "产物", "交付")
+	if extracted := extractHandoffSection(summary, "unresolved", "未决", "未解决"); extracted != "" {
+		unresolved = extracted
+	}
+	if extracted := extractHandoffSection(summary, "next step", "next", "下一步"); extracted != "" {
+		nextStep = extracted
+	}
+	record := &model.FocusHandoff{
+		PersonID:           w.agent.agentPersonID,
+		SessionID:          w.sessionID,
+		WorkID:             w.ID,
+		Source:             model.FocusSourceExternal,
+		Status:             handoffStatus,
+		Orientation:        w.plan.Guidance,
+		Summary:            summary,
+		ConfirmedFindings:  confirmedFindings,
+		ArtifactReferences: artifactReferences,
+		Unresolved:         unresolved,
+		NextStep:           nextStep,
+	}
+	if err := dops.CreateFocusHandoff(record); err != nil {
+		applogger.Error("work: failed to persist focus handoff", "work_id", w.ID, "error", err)
+		return
+	}
+	// The database is the canonical handoff store. AOSMeta is an append-only
+	// operational projection, so its failure cannot create a duplicate database record.
+	if err := workspace.AppendFocusHandoff(record); err != nil {
+		applogger.Error("work: failed to project focus handoff to AOSMeta", "work_id", w.ID, "handoff_id", record.ID, "error", err)
+	}
+}
+
+// confirmedFindingsForWork keeps terminal output separate from confirmed
+// findings. A failed or paused Focus must not promote its partial output.
+func confirmedFindingsForWork(workStatus model.WorkStatus, summary string) string {
+	if workStatus != model.WorkStatusCompleted {
+		return ""
+	}
+	if extracted := extractHandoffSection(summary, "confirmed findings", "confirmed", "已确认", "确认结果"); extracted != "" {
+		return extracted
+	}
+	return summary
+}
+
+// extractHandoffSection reads one compact final-output section. It accepts
+// English and Chinese headings while preserving the original content.
+func extractHandoffSection(content string, labels ...string) string {
+	lines := strings.Split(content, "\n")
+	collecting := false
+	var collected []string
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(strings.TrimLeft(line, "#-* "))
+		lower := strings.ToLower(trimmed)
+		matched := ""
+		for _, label := range labels {
+			if strings.HasPrefix(lower, label+":") || strings.HasPrefix(lower, label+"：") {
+				matched = label
+				break
+			}
+		}
+		if matched != "" {
+			collecting = true
+			value := ""
+			separator, width := strings.Index(trimmed, ":"), len(":")
+			if chineseSeparator := strings.Index(trimmed, "："); chineseSeparator >= 0 && (separator < 0 || chineseSeparator < separator) {
+				separator, width = chineseSeparator, len("：")
+			}
+			if separator >= 0 {
+				value = strings.TrimSpace(trimmed[separator+width:])
+			}
+			if value != "" {
+				collected = append(collected, value)
+			}
+			continue
+		}
+		if collecting && isHandoffHeading(lower) {
+			break
+		}
+		if collecting && trimmed != "" {
+			collected = append(collected, trimmed)
+		}
+	}
+	return strings.TrimSpace(strings.Join(collected, "\n"))
+}
+
+// isHandoffHeading reports whether a line begins a recognized handoff section.
+func isHandoffHeading(line string) bool {
+	for _, label := range []string{"confirmed findings", "confirmed", "artifacts", "artifact", "unresolved", "next step", "next", "已确认", "确认结果", "产物", "交付", "未决", "未解决", "下一步"} {
+		if strings.HasPrefix(line, label+":") || strings.HasPrefix(line, label+"：") {
+			return true
+		}
+	}
+	return false
+}
+
+// runFocusedWork executes the focused-work path using Guidance from the Decide phase.
+func (w *work) runFocusedWork(ctx context.Context) {
 	session := w.loadSession()
 	if session == nil {
 		w.abandon()
@@ -169,44 +323,47 @@ func (w *work) runTask(ctx context.Context) {
 	}
 
 	// Fetch agent info at the point of use — do not hold the pointer across
-	// the long-running task execution.
+	// the long-running focused-work execution.
 	a, err := agent.GetAgent(w.agent.agentPersonID)
 	if err != nil {
-		applogger.Error("runTask: failed to load agent", "person_id", w.agent.agentPersonID, "error", err)
+		applogger.Error("runFocusedWork: failed to load agent", "person_id", w.agent.agentPersonID, "error", err)
 		w.abandon()
 		return
 	}
 
 	notify(notification.AgentProcessingStarted{SessionID: w.sessionID})
 
-	w.taskResult = task.RunTask(task.RunTaskParams{
-		LLMConfig:  &a.LLM,
-		SessionID:  w.sessionID,
-		PersonID:   a.Person.ID,
-		WorkID:     w.ID,
-		Guidance:   w.plan.Guidance,
-		Background: w.triggerAction.Background,
-		Metadata:   w.plan.Metadata,
-		Ctx:        ctx,
-		GuidanceCh: w.guidanceCh,
+	w.focusedWorkResult = focusedwork.RunFocusedWork(focusedwork.RunFocusedWorkParams{
+		LLMConfig:    &a.LLM,
+		SessionID:    w.sessionID,
+		PersonID:     a.Person.ID,
+		WorkID:       w.ID,
+		Guidance:     w.plan.Guidance,
+		Background:   w.triggerAction.Background,
+		FocusContext: w.focusContext,
+		FocusPhase:   model.FocusPhaseExecuting,
+		Checkpoint:   "Focus is executing its current guidance.",
+		Metadata:     w.plan.Metadata,
+		Ctx:          ctx,
+		GuidanceCh:   w.guidanceCh,
 	})
 
-	applogger.Info("TaskWork completed",
+	applogger.Info("Focus completed",
 		"work_id", w.ID,
 		"session_id", w.sessionID,
-		"status", w.taskResult.Status,
+		"status", w.focusedWorkResult.Status,
 	)
 }
 
 // FeedGuidance sends a guidance directive to the work's guidance channel.
 // This is called when the Decide phase routes an event to an existing
-// TaskWork or cancels it - the directive becomes an environment event
-// that the TaskLoop observes at the next iteration boundary.
+// Focus or cancels it - the directive becomes an environment event
+// that the FocusedLoop observes at the next iteration boundary.
 //
 // For cancel, the directive carries guidance like "save progress and stop"
-// and the reason explaining why. The TaskLoop's LLM processes this and
+// and the reason explaining why. The FocusedLoop's LLM processes this and
 // decides how to wrap up - this is "appealable" cancellation, not forceful kill.
-func (w *work) FeedGuidance(directive task.GuidanceDirective) {
+func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) {
 	if w.guidanceCh == nil {
 		applogger.Error("FeedGuidance called on work with nil guidanceCh",
 			"work_id", w.ID,
@@ -215,6 +372,11 @@ func (w *work) FeedGuidance(directive task.GuidanceDirective) {
 	}
 	select {
 	case w.guidanceCh <- directive:
+		checkpoint := fmt.Sprintf("Latest routed guidance: %s", directive.Guidance)
+		if err := database.DB.Model(&model.Work{}).Where("id = ?", w.ID).
+			Updates(map[string]interface{}{"focus_phase": model.FocusPhaseExecuting, "checkpoint": checkpoint}).Error; err != nil {
+			applogger.Error("work: failed to update focus checkpoint from guidance", "work_id", w.ID, "error", err)
+		}
 		applogger.Info("Guidance fed to work",
 			"work_id", w.ID,
 			"guidance", directive.Guidance,
@@ -231,14 +393,14 @@ func (w *work) FeedGuidance(directive task.GuidanceDirective) {
 // abandon marks the work as abandoned.
 // This is the fallback mechanism for when context is cancelled or
 // dependencies cannot be loaded. Normal cancellation goes through
-// FeedGuidance, allowing the TaskLoop's LLM to wrap up gracefully.
+// FeedGuidance, allowing the FocusedLoop's LLM to wrap up gracefully.
 // This method is the safety net.
 //
 // Directly sets status to Abandoned in DB. The defer in Run() will not
 // overwrite it because it only transitions from Running -> Completed.
 func (w *work) abandon() {
 	if err := database.DB.Model(&model.Work{}).Where("id = ?", w.ID).
-		Update("status", model.WorkStatusAbandoned).Error; err != nil {
+		Updates(map[string]interface{}{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhaseCancelled, "checkpoint": "Focus was abandoned before normal completion."}).Error; err != nil {
 		applogger.Error("work: failed to mark work as abandoned", "work_id", w.ID, "error", err)
 	}
 }

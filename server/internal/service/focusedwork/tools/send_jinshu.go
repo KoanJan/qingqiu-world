@@ -2,8 +2,6 @@ package tools
 
 import (
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 
@@ -15,14 +13,13 @@ import (
 	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
-	servicetools "qingqiu-world-server/internal/service/tools"
 )
 
 // sessionContextMessageLimit bounds the number of recent messages embedded in
 // a jinshu description so long conversations don't bloat the record.
 const sessionContextMessageLimit = 5
 
-// SendJinshuTool sends files from the agent's output/ directory to another
+// SendJinshuTool sends files from the agent's Agent Owned Space to another
 // person as a jinshu (锦书). The actual record creation and file copying are
 // delegated to the shared jinshu.Send core; this tool only resolves the
 // session-scoped source directory and merges session context.
@@ -47,14 +44,14 @@ func (s *SendJinshuTool) Name() ToolName { return ToolNameSendJinshu }
 
 // Description returns a brief description of the tool.
 func (s *SendJinshuTool) Description() string {
-	return "Send files from your output directory to another person as a jinshu (锦书)"
+	return "Send selected Agent Owned Space files to another person as a jinshu (锦书)"
 }
 
 // Schema returns the LLM function definition for the tool.
 func (s *SendJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: s.Name().String(),
-		Description: "Send files from your output/ directory to another person as a jinshu (锦书). " +
+		Description: "Send files from your Agent Owned Space to another person as a jinshu (锦书). " +
 			"The files are copied to the recipient's jinshu/received/ directory, and a copy is kept " +
 			"in your jinshu/sent/ directory. Use this to deliver completed work or send something " +
 			"to another person.",
@@ -75,7 +72,7 @@ func (s *SendJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"paths": map[string]interface{}{
 					"type":        "array",
-					"description": "List of file or directory paths to send (relative to your output/ directory)",
+					"description": "List of AOS paths to send. Use work/<session_id>/... or private/...; bare relative paths remain relative to this session's output/ directory.",
 					"items": map[string]interface{}{
 						"type": "string",
 					},
@@ -86,7 +83,7 @@ func (s *SendJinshuTool) Schema() llm.FunctionDefinition {
 	}
 }
 
-// Execute resolves the source paths relative to output/, builds the Files map,
+// Execute resolves source paths through the constrained AOS locator, builds the Files map,
 // and delegates the delivery to the shared jinshu.Send core.
 func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 	receiverName, ok := args["receiver"].(string)
@@ -114,25 +111,9 @@ func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	// Validate each source path and resolve it relative to output/.
-	outputDir := workspace.GetOutputDir(s.personID, s.sessionID)
-	sessionRoot := workspace.GetWorkspacePath(s.personID, s.sessionID)
-	files := make(map[string]string, len(paths))
-	relPaths := make([]string, 0, len(paths))
-	for _, p := range paths {
-		resolved, err := servicetools.ResolvePath(p, sessionRoot, outputDir)
-		if err != nil {
-			return "", fmt.Errorf("invalid path '%s': %w", p, err)
-		}
-		if _, err := os.Stat(resolved); os.IsNotExist(err) {
-			return "", fmt.Errorf("path '%s' does not exist in your output/ directory", p)
-		}
-		relPath, err := filepath.Rel(outputDir, resolved)
-		if err != nil {
-			return "", fmt.Errorf("failed to resolve relative path for '%s': %w", p, err)
-		}
-		files[relPath] = resolved
-		relPaths = append(relPaths, relPath)
+	files, relPaths, err := workspace.ResolveAOSFiles(s.personID, workspace.GetOutputDir(s.personID, s.sessionID), paths)
+	if err != nil {
+		return "", fmt.Errorf("resolve Agent Owned Space delivery paths: %w", err)
 	}
 
 	// Merge the session context into the description as plain text so the

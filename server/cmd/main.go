@@ -71,7 +71,7 @@ func main() {
 	memCtx, memCancel := context.WithCancel(context.Background())
 	go memory.Start(memCtx)
 
-	// Experience system: semantic retrieval for tasks + heartbeat-triggered reflection.
+	// Experience system: semantic retrieval for focused work + heartbeat-triggered reflection.
 	experience.Init(embSvc, notificationPublisher)
 	jinshu.SetNotificationPublisher(notificationPublisher)
 

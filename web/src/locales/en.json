@@ -298,6 +298,8 @@
     "title": "Agent Activity Log",
     "noRecords": "No activity records",
     "loadError": "Failed to load activities",
+    "retry": "Retry",
+    "loadEarlier": "Load earlier activities",
     "expand": "Expand",
     "collapse": "Collapse",
     "tool": {

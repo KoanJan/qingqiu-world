@@ -13,7 +13,7 @@ import (
 // Comprehend phase. It covers both in-progress works (from the in-memory
 // active set) and recently failed works in the same session (from the
 // database), so the LLM sees not only what the agent is doing but also what
-// recently went wrong — e.g. to avoid re-issuing a doomed task.
+// recently went wrong — e.g. to avoid re-issuing a doomed focusedwork.
 // Returns empty string when there is nothing to report.
 func buildActiveWorksSummary(works []*work, personID, sessionID int64) string {
 	var parts []string

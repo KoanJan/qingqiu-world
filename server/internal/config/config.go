@@ -14,8 +14,9 @@
 //   - SUMMARY_WINDOW_SIZE: Number of messages before triggering summary generation (default: 5)
 //   - SUMMARY_TOKEN_THRESHOLD: Token budget threshold for fallback summary trigger (default: 32000)
 //   - LOG_LEVEL: Logging level (default: INFO)
-//   - TASK_MAX_ITERATIONS: Maximum iterations for task loop (default: 50)
-//   - WORKSPACE_ROOT: Root directory for task workspace files (default: DATA_ROOT/workspace)
+//   - FOCUSED_WORK_MAX_ITERATIONS: Maximum iterations for FocusedLoop (default: 300)
+//   - AOS_ROOT: Root directory for agent-owned resources (default: DATA_ROOT/aos)
+//   - AOS_META_ROOT: Root directory for runtime-owned agent metadata (default: DATA_ROOT/aosmeta)
 //   - JINSHU_ROOT: Root directory for person-level jinshu (锦书) files (default: DATA_ROOT/jinshu)
 //   - CONTEXT_WINDOW_ITERATIONS: Number of recent iterations visible to agent (default: 10)
 //   - NOTES_MAX_CHARS: Maximum character limit for agent notes (default: 5000)
@@ -28,25 +29,25 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.12"
+const AppVersion = "0.1.13"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings
 
 // Settings holds all application configuration values.
 type Settings struct {
-	DataRoot              string // Root directory for all data storage
-	LogDir                string // Directory for log files (default: logs/)
-	SummaryWindowSize     int    // Number of messages before triggering summary generation
-	SummaryTokenThreshold int    // Token budget threshold for fallback summary trigger
-	LogLevel              string // Logging level (DEBUG, INFO, WARN, ERROR)
-	TaskMaxIterations     int    // Maximum iterations for task loop
-	WorkspaceRoot         string // Root directory for task workspace files
-	PrivateSpaceRoot      string // Root directory for agent private-space directories
-	JinshuRoot            string // Root directory for person-level jinshu (锦书) files
-	MinIterationWindow    int    // Minimum iterations visible to agent (anchor size)
-	MaxIterationWindow    int    // Maximum iterations before bulk-shrink triggers
-	NotesMaxChars         int    // Maximum character limit for agent notes
+	DataRoot                 string // Root directory for all data storage
+	LogDir                   string // Directory for log files (default: logs/)
+	SummaryWindowSize        int    // Number of messages before triggering summary generation
+	SummaryTokenThreshold    int    // Token budget threshold for fallback summary trigger
+	LogLevel                 string // Logging level (DEBUG, INFO, WARN, ERROR)
+	FocusedWorkMaxIterations int    // Maximum iterations for FocusedLoop
+	AOSRoot                  string // Root directory for agent-owned resources
+	AOSMetaRoot              string // Root directory for runtime-owned agent metadata
+	JinshuRoot               string // Root directory for person-level jinshu (锦书) files
+	MinIterationWindow       int    // Minimum iterations visible to agent (anchor size)
+	MaxIterationWindow       int    // Maximum iterations before bulk-shrink triggers
+	NotesMaxChars            int    // Maximum character limit for agent notes
 }
 
 // Init loads configuration from environment variables with defaults.
@@ -54,19 +55,35 @@ func Init() {
 	dataRoot := expandHome(getEnv("DATA_ROOT", filepath.Join("..", "data")))
 
 	globalSettings = &Settings{
-		DataRoot:              dataRoot,
-		LogDir:                expandHome(getEnv("LOG_DIR", "logs")),
-		SummaryWindowSize:     getEnvInt("SUMMARY_WINDOW_SIZE", 50),
-		SummaryTokenThreshold: getEnvInt("SUMMARY_TOKEN_THRESHOLD", 16000),
-		LogLevel:              getEnv("LOG_LEVEL", "INFO"),
-		TaskMaxIterations:     getEnvInt("TASK_MAX_ITERATIONS", 300),
-		WorkspaceRoot:         expandHome(getEnv("WORKSPACE_ROOT", "")),
-		PrivateSpaceRoot:      expandHome(getEnv("PRIVATE_SPACE_ROOT", "")),
-		JinshuRoot:            expandHome(getEnv("JINSHU_ROOT", "")),
-		MinIterationWindow:    getEnvInt("MIN_ITERATION_WINDOW", 10),
-		MaxIterationWindow:    getEnvInt("MAX_ITERATION_WINDOW", 100),
-		NotesMaxChars:         getEnvInt("NOTES_MAX_CHARS", 10000),
+		DataRoot:                 dataRoot,
+		LogDir:                   expandHome(getEnv("LOG_DIR", "logs")),
+		SummaryWindowSize:        getEnvInt("SUMMARY_WINDOW_SIZE", 50),
+		SummaryTokenThreshold:    getEnvInt("SUMMARY_TOKEN_THRESHOLD", 16000),
+		LogLevel:                 getEnv("LOG_LEVEL", "INFO"),
+		FocusedWorkMaxIterations: getEnvInt("FOCUSED_WORK_MAX_ITERATIONS", 300),
+		AOSRoot:                  expandHome(getEnv("AOS_ROOT", "")),
+		AOSMetaRoot:              expandHome(getEnv("AOS_META_ROOT", "")),
+		JinshuRoot:               expandHome(getEnv("JINSHU_ROOT", "")),
+		MinIterationWindow:       getEnvInt("MIN_ITERATION_WINDOW", 10),
+		MaxIterationWindow:       getEnvInt("MAX_ITERATION_WINDOW", 100),
+		NotesMaxChars:            getEnvInt("NOTES_MAX_CHARS", 10000),
 	}
+}
+
+// GetAOSRoot returns the root directory that contains agent-owned resources.
+func (s *Settings) GetAOSRoot() string {
+	if s.AOSRoot != "" {
+		return s.AOSRoot
+	}
+	return filepath.Join(s.DataRoot, "aos")
+}
+
+// GetAOSMetaRoot returns the root directory for runtime-owned agent metadata.
+func (s *Settings) GetAOSMetaRoot() string {
+	if s.AOSMetaRoot != "" {
+		return s.AOSMetaRoot
+	}
+	return filepath.Join(s.DataRoot, "aosmeta")
 }
 
 // Get returns the global Settings instance, initializing it if necessary.
@@ -85,24 +102,6 @@ func (s *Settings) GetDataRoot() string {
 // DatabaseURL returns the SQLite database file path.
 func (s *Settings) DatabaseURL() string {
 	return filepath.Join(s.DataRoot, "db", "database.db")
-}
-
-// GetWorkspaceRoot returns the workspace root directory path.
-// Falls back to DATA_ROOT/workspace if WORKSPACE_ROOT is not explicitly set.
-func (s *Settings) GetWorkspaceRoot() string {
-	if s.WorkspaceRoot != "" {
-		return s.WorkspaceRoot
-	}
-	return filepath.Join(s.DataRoot, "workspace")
-}
-
-// GetPrivateSpaceRoot returns the private-space root directory path.
-// Falls back to DATA_ROOT/private_space if PRIVATE_SPACE_ROOT is not explicitly set.
-func (s *Settings) GetPrivateSpaceRoot() string {
-	if s.PrivateSpaceRoot != "" {
-		return s.PrivateSpaceRoot
-	}
-	return filepath.Join(s.DataRoot, "private_space")
 }
 
 // GetJinshuRoot returns the jinshu (锦书) root directory path.

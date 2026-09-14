@@ -80,6 +80,9 @@ func Comprehend(
 		// description (the digest) as-is — no LLM pass is needed.
 		c.Type = types.ComprehensionTypeNone
 		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeOwnedSpaceInspected:
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeScheduled,
 		eventqueue.EventTypeAlarmCreated,
 		eventqueue.EventTypeGroupChatJoined,

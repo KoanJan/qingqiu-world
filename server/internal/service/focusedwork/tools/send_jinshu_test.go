@@ -25,7 +25,6 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 		t.Fatalf("failed to resolve temp dir: %v", err)
 	}
 	os.Setenv("DATA_ROOT", realRoot)
-	os.Setenv("WORKSPACE_ROOT", filepath.Join(realRoot, "workspace"))
 	os.Setenv("LOG_DIR", filepath.Join(realRoot, "logs"))
 
 	// Initialize logger and DB

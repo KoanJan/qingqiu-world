@@ -26,7 +26,7 @@ const (
 	NoteTypeFinding NoteType = 3
 	// NoteTypeCorrection records a correction to previous information.
 	NoteTypeCorrection NoteType = 4
-	// NoteTypeProgress records progress on a task.
+	// NoteTypeProgress records progress on a focusedwork.
 	NoteTypeProgress NoteType = 5
 )
 

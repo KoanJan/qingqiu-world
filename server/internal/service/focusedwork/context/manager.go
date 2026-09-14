@@ -1,9 +1,9 @@
-// Package taskcontext manages the agent's internal message history within a task execution.
+// Package focusedworkcontext manages the agent's internal message history within focused-work execution.
 //
-// This package implements a dynamic expanding window architecture for the task
+// This package implements a dynamic expanding window architecture for the FocusedLoop's
 // loop's context management, optimized for LLM prefix caching:
 //
-//  1. system: pure static rules (stable across all iterations and task sessions)
+//  1. system: pure static rules (stable across all iterations and focused-work sessions)
 //  2. dynamic iterations: expanding window with bulk shrink — new iterations
 //     append to the end, anchor stays fixed across expansions, only shrinks
 //     in large batches when the window exceeds 2x the base size
@@ -14,7 +14,7 @@
 // bulk shrinks (only the new iteration appended each round), and all
 // per-iteration dynamic content is at the tail where it cannot break the
 // cached prefix.
-package taskcontext
+package focusedworkcontext
 
 import (
 	"fmt"
@@ -26,7 +26,7 @@ import (
 	"qingqiu-world-server/internal/service/llm"
 )
 
-// ContextManager manages the internal message history for a single task execution.
+// ContextManager manages the internal message history for one FocusedWork execution.
 type ContextManager struct {
 	systemPrompt       string // Pure static system prompt (rules only, no dynamic info)
 	minIterationWindow int    // Minimum visible iterations (anchor size after shrink)
@@ -155,7 +155,7 @@ func (cm *ContextManager) buildLastMessage(visibleCount, invisibleIterations int
 
 	var parts []string
 
-	// Directive History — accumulated across the entire task, never dropped
+	// Directive History — accumulated across the entire FocusedWork, never dropped
 	if cm.guidanceHistory != "" {
 		parts = append(parts,
 			"[Directive History]",
@@ -170,7 +170,7 @@ func (cm *ContextManager) buildLastMessage(visibleCount, invisibleIterations int
 		fmt.Sprintf("Your default working directory is: %s", cm.outputDir),
 		fmt.Sprintf("Operating system: %s", runtime.GOOS),
 		"",
-		fmt.Sprintf("This task has produced %d iterations total. Only the last %d are visible to you, %d earlier iterations are outside your visible range.", cm.totalIterations, visibleCount, invisibleIterations),
+		fmt.Sprintf("This FocusedWork has produced %d iterations total. Only the last %d are visible to you, %d earlier iterations are outside your visible range.", cm.totalIterations, visibleCount, invisibleIterations),
 		fmt.Sprintf("Your NOTES are currently %d chars (max: %d chars).", notesLength, notesMaxChars),
 	)
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync"
 
+	"qingqiu-world-server/internal/config"
 	applogger "qingqiu-world-server/internal/logger"
 )
 
@@ -52,11 +53,12 @@ func checkDarwinSandbox() bool {
 }
 
 // seatbeltTemplate is the Seatbelt sandbox policy template for macOS.
-// $WORKSPACE is replaced at runtime with the actual session workspace path.
+// $WORKSPACE and $DATAROOT are replaced at runtime with canonical paths.
 //
 // Design principle (availability over security):
-//   - file-read* and process-exec are fully allowed (via allow default)
-//   - file-write* is restricted to workspace + tmp dirs + /dev nodes
+//   - access under data/ is limited to the current agent's AOS
+//   - outside data/, reads and process execution are allowed by default
+//   - writes to protected system directories remain denied
 //   - network-outbound and socket operations are fully allowed (via allow default)
 //   - mach-lookup is NOT covered by (allow default) — explicit allow rules
 //     are required for DNS (mDNSResponder) and network config (configd)
@@ -85,24 +87,25 @@ func runDarwin(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, erro
 		return fallbackExec(cmd), false, nil
 	}
 
-	if _, err := os.Stat(absPolicyPath); err != nil {
-		if !os.IsNotExist(err) {
-			applogger.Error("sandbox: failed to stat policy file, falling back to plain exec",
-				"path", absPolicyPath, "error", err)
-			return fallbackExec(cmd), false, nil
-		}
+	policy := generatePolicy(absolutePath(workspace), absolutePath(config.Get().GetDataRoot()))
+	existingPolicy, readErr := os.ReadFile(absPolicyPath)
+	if readErr != nil && !os.IsNotExist(readErr) {
+		applogger.Error("sandbox: failed to read policy file, falling back to plain exec",
+			"path", absPolicyPath, "error", readErr)
+		return fallbackExec(cmd), false, nil
+	}
+	if readErr != nil || string(existingPolicy) != policy {
 		if err := os.MkdirAll(policyDir, 0700); err != nil {
 			applogger.Error("sandbox: failed to create policy directory, falling back to plain exec",
 				"dir", policyDir, "error", err)
 			return fallbackExec(cmd), false, nil
 		}
-		policy := generatePolicy(workspace)
 		if err := os.WriteFile(absPolicyPath, []byte(policy), 0600); err != nil {
 			applogger.Error("sandbox: failed to write policy file, falling back to plain exec",
 				"path", absPolicyPath, "error", err)
 			return fallbackExec(cmd), false, nil
 		}
-		applogger.Info("sandbox: generated Seatbelt policy",
+		applogger.Info("sandbox: generated or updated Seatbelt policy",
 			"path", absPolicyPath, "workspace", workspace)
 	}
 
@@ -111,10 +114,17 @@ func runDarwin(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, erro
 	return exec.Command("/usr/bin/sandbox-exec", sandboxArgs...), true, nil
 }
 
-// generatePolicy replaces the $WORKSPACE placeholder in the Seatbelt template
-// with the actual workspace path.
-func generatePolicy(workspace string) string {
-	return strings.ReplaceAll(seatbeltTemplate, "$WORKSPACE", workspace)
+// generatePolicy replaces the $WORKSPACE and $DATAROOT placeholders in the
+// Seatbelt template with the actual paths. The policy confines access under the
+// data root to the agent's own Agent Owned Space root ($WORKSPACE), keeping all
+// other data/ subtrees invisible and unwritable. Everything outside data/ keeps
+// the (allow default) behavior.
+func generatePolicy(workspace, dataRoot string) string {
+	replacer := strings.NewReplacer(
+		"$WORKSPACE", workspace,
+		"$DATAROOT", dataRoot,
+	)
+	return replacer.Replace(seatbeltTemplate)
 }
 
 // fallbackExec returns a plain exec.Cmd as a fallback when sandbox setup fails.

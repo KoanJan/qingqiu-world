@@ -2,7 +2,7 @@
 //
 // This package provides the context assembly services that build the LLM message
 // sequence from various context sources: summaries, narratives, retrieval results,
-// person state, and task results. It matches Python's chat/context module.
+// person state, and focused-work results. It matches Python's chat/context module.
 package chat
 
 import (
@@ -53,10 +53,10 @@ const oneBigMessageNoStoryTemplate = `%s%sConversation record:
 
 Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
 
-// TaskResultForAssembly represents the task execution result for context assembly.
-// Mirrors Python's TaskResult DTO used in context assembly.
+// FocusedWorkResultForAssembly represents the focused-work result for context assembly.
+// Mirrors Python's FocusedWorkResult DTO used in context assembly.
 // Status is "success" or "failure"; Result/Reason/Notes are populated accordingly.
-type TaskResultForAssembly struct {
+type FocusedWorkResultForAssembly struct {
 	Status string `json:"status"`
 	Result string `json:"result"`
 	Reason string `json:"reason"`
@@ -141,34 +141,34 @@ func formatAlarmTriggerSection(alarmNotification string) string {
 	return fmt.Sprintf("%s\n\n", alarmNotification)
 }
 
-// formatTaskResultSection formats agent delivery section for the prompt.
+// formatFocusedWorkResultSection formats agent delivery section for the prompt.
 // Provides execution status and results for LLM to formulate response:
 //   - success: includes result content and delivery guidance
 //   - failure: includes reason and progress notes
-func formatTaskResultSection(taskResult *TaskResultForAssembly) string {
-	if taskResult == nil {
+func formatFocusedWorkResultSection(focusedWorkResult *FocusedWorkResultForAssembly) string {
+	if focusedWorkResult == nil {
 		return ""
 	}
 
-	if taskResult.Status == "success" {
-		result := "Task completed."
-		if taskResult.Result != "" {
-			result = taskResult.Result
+	if focusedWorkResult.Status == "success" {
+		result := "Focused work completed."
+		if focusedWorkResult.Result != "" {
+			result = focusedWorkResult.Result
 		}
-		return fmt.Sprintf("[Task Execution Result]\nThe following task was completed successfully:\n\n%s\n\n[Delivery Instructions]\nYou must now let the person you are talking to know about the completed task:\n- If files were delivered via send_jinshu, the recipient can find them in their jinshu received area — do NOT include file paths or directory locations\n- If the result is information, present it directly in your response\n- Use your character's tone and style\n\n---\n\n", result)
+		return fmt.Sprintf("[FocusedWork Result]\nThe following focused work completed successfully:\n\n%s\n\n[Delivery Instructions]\nYou must now let the person you are talking to know about the completed work:\n- If files were delivered via send_jinshu, the recipient can find them in their jinshu received area — do NOT include file paths or directory locations\n- If the result is information, present it directly in your response\n- Use your character's tone and style\n\n---\n\n", result)
 	}
 
 	notesSection := ""
-	if taskResult.Notes != "" {
-		notesSection = fmt.Sprintf("\n\nProgress notes:\n%s", taskResult.Notes)
+	if focusedWorkResult.Notes != "" {
+		notesSection = fmt.Sprintf("\n\nProgress notes:\n%s", focusedWorkResult.Notes)
 	}
 
 	reason := "Unknown error"
-	if taskResult.Reason != "" {
-		reason = taskResult.Reason
+	if focusedWorkResult.Reason != "" {
+		reason = focusedWorkResult.Reason
 	}
 
-	return fmt.Sprintf("[Task Execution Interrupted]\nThe task could not be completed.\n\nReason: %s%s\n\n---\n\n", reason, notesSection)
+	return fmt.Sprintf("[FocusedWork Interrupted]\nThe focused work could not be completed.\n\nReason: %s%s\n\n---\n\n", reason, notesSection)
 }
 
 // assembleContext assembles context into one big message for LLM processing.
@@ -194,7 +194,7 @@ func formatTaskResultSection(taskResult *TaskResultForAssembly) string {
 //   - summaryVersion: version number of the summary (covers messages 1 to summaryVersion)
 //   - personStateDescription: natural language description of inferred person state,
 //     placed in instruction area to guide response strategy
-//   - taskResult: agent execution result for world-interaction tasks,
+//   - focusedWorkResult: agent execution result for world-interaction work,
 //     provides execution status and results for LLM to formulate response
 //   - guidance: execution intent from the Decide phase, placed as self-instruction
 //     after person state and before the response directive
@@ -208,7 +208,7 @@ func assembleContext(
 	relevantSegments []comprehendTypes.Segment,
 	summaryVersion int,
 	personStateDescription string,
-	taskResult *TaskResultForAssembly,
+	focusedWorkResult *FocusedWorkResultForAssembly,
 	partnerName string,
 	selfName string,
 	selfPersonID int64,
@@ -218,7 +218,7 @@ func assembleContext(
 	characterSection := formatCharacterSection(selfName, characterSettings)
 	alarmTriggerSection := formatAlarmTriggerSection(alarmNotification)
 	personStateInstruction := formatPersonStateInstruction(personStateDescription)
-	taskResultSection := formatTaskResultSection(taskResult)
+	focusedWorkResultSection := formatFocusedWorkResultSection(focusedWorkResult)
 	guidanceSection := formatGuidanceSection(guidance)
 
 	// Role labeling is keyed on the agent's own person ID (selfPersonID), not
@@ -245,7 +245,7 @@ func assembleContext(
 			backgroundStory,
 			dialogSection,
 			segmentsSection,
-			taskResultSection,
+			focusedWorkResultSection,
 			personStateInstruction,
 			alarmTriggerSection,
 			guidanceSection,
@@ -257,7 +257,7 @@ func assembleContext(
 			entityProfiles,
 			dialogSection,
 			segmentsSection,
-			taskResultSection,
+			focusedWorkResultSection,
 			personStateInstruction,
 			alarmTriggerSection,
 			guidanceSection,
@@ -273,7 +273,7 @@ func assembleContext(
 	applogger.Info("Assembled context",
 		"message_count", len(messages),
 		"has_person_state", personStateDescription != "",
-		"has_task_result", taskResult != nil,
+		"has_focused_work_result", focusedWorkResult != nil,
 		"segments", len(relevantSegments),
 	)
 

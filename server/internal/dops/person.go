@@ -132,7 +132,7 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 			// In multi-agent/group chat, deleting one agent should NOT cascade delete the entire session.
 			tables := []interface{}{
 				&model.Work{}, &model.Interaction{},
-				&model.AgentNarrative{}, &model.Summary{},
+				&model.AgentNarrative{}, &model.Summary{}, &model.FocusHandoff{},
 				&model.ParticipantSession{}, &model.Message{},
 			}
 			for _, table := range tables {
@@ -156,6 +156,9 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 			return err
 		}
 		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentBiography{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.FocusHandoff{}).Error; err != nil {
 			return err
 		}
 

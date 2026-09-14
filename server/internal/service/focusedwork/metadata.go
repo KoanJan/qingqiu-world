@@ -1,4 +1,4 @@
-package task
+package focusedwork
 
 import "fmt"
 
@@ -24,7 +24,7 @@ type SessionMeta struct {
 }
 
 // Metadata carries system-generated traceability info from work creation.
-// It is injected into the task loop's system prompt as a [Metadata] section
+// It is injected into the FocusedLoop's system prompt as a [Metadata] section
 // so the agent knows where it came from and can use tools like
 // search_chat_histories with the correct session context.
 type Metadata struct {

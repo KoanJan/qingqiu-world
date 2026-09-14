@@ -49,7 +49,7 @@ func (s *ScanExperienceTool) Description() string {
 func (s *ScanExperienceTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: s.Name().String(),
-		Description: "Search your private experiences (lessons learned from past tasks) by keyword. " +
+		Description: "Search your private experiences (lessons learned from past FocusedWork runs and other work) by keyword. " +
 			"Returns a list of matching experiences with id, title, description, and when_to_use. " +
 			"Use recall_my_experience with the exp_id to read the full content of a specific experience.",
 		Parameters: map[string]interface{}{

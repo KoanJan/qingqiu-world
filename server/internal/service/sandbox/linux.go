@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"qingqiu-world-server/internal/config"
 	applogger "qingqiu-world-server/internal/logger"
 )
 
@@ -107,10 +108,21 @@ func runLinux(workspace string, cmd []string) (*exec.Cmd, bool, error) {
 
 	var args []string
 
+	// Canonicalize once so the tmpfs and bind targets match the kernel's
+	// symlink-resolved path evaluation.
+	workspace = absolutePath(workspace)
+
 	// --- Read-only root filesystem (allow-default for reads) ---
 	args = append(args, "--ro-bind", "/", "/")
 
-	// --- Read-write workspace ---
+	// --- Data confinement: hide all of data/ except the agent's own AOS ---
+	// Mount an empty tmpfs over the data root so that AOSMeta, the SQLite DB,
+	// jinshu, KB, avatars and other agents' AOS are all invisible inside the
+	// sandbox, then re-expose the agent's own workspace below. bwrap creates
+	// the missing bind-target directories as needed.
+	args = append(args, "--tmpfs", absolutePath(config.Get().GetDataRoot()))
+
+	// --- Read-write workspace (re-exposed inside the emptied data/ tmpfs) ---
 	args = append(args, "--bind", workspace, workspace)
 
 	// --- Basic devices and proc ---

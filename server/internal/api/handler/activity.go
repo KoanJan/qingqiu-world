@@ -1,74 +1,109 @@
 package handler
 
 import (
+	"fmt"
+	"strconv"
+
 	"github.com/gin-gonic/gin"
 
 	"qingqiu-world-server/internal/api/response"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
-	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/schema"
+	"qingqiu-world-server/internal/service/focusedwork"
 )
 
-// GetSessionActivities returns a flat activity timeline for all task works in a session.
+const (
+	activityDefaultPageSize = 100
+	activityMaxPageSize     = 200
+)
+
+// GetSessionActivities returns one cursor-bounded, chronological page of the
+// activity timeline for a session's focused works.
 //
-// GET /api/sessions/:id/activities
-//
-// Queries works of type=2 (Task) for the session, collects all their interactions,
-// and converts them into a flat timeline of human-readable activity events.
+// GET /api/sessions/:id/activities?before_interaction_id=<id>&limit=<n>
 func (h *Handler) GetSessionActivities(c *gin.Context) {
 	sessionID := getPathID(c)
-
-	// Verify session exists
-	_, err := dops.GetSession(sessionID)
+	beforeInteractionID, limit, err := activityPageParams(c)
 	if err != nil {
+		response.BadRequest(c, err.Error())
+		return
+	}
+
+	// Verify session exists before querying its related work records.
+	if _, err := dops.GetSession(sessionID); err != nil {
 		response.NotFound(c, "Session not found")
 		return
 	}
 
-	// Collect all task work IDs for this session
-	workIDs, err := dops.ListTaskWorks(sessionID)
+	// Keep each Work's owner so multi-agent sessions render attribution from
+	// the actual producer instead of an arbitrary session participant.
+	works, err := dops.ListSessionActivityWorks(sessionID)
 	if err != nil {
 		applogger.Error("GetSessionActivities: failed to query works",
 			"session_id", sessionID, "error", err)
 		response.InternalError(c, "Failed to query activities")
 		return
 	}
-
-	if len(workIDs) == 0 {
-		response.Success(c, []struct{}{})
+	if len(works) == 0 {
+		response.Success(c, schema.ActivityPage{Events: []schema.ActivityEvent{}})
 		return
 	}
 
-	// Query all interactions across all task works, ordered by creation time
-	interactions, err := dops.ListInteractions(workIDs)
+	workPersonIDs := make(map[int64]int64, len(works))
+	validWorkCount := 0
+	for _, work := range works {
+		if work.PersonID <= 0 {
+			applogger.Error("GetSessionActivities: work has invalid owner",
+				"session_id", sessionID, "work_id", work.ID, "person_id", work.PersonID)
+			continue
+		}
+		workPersonIDs[work.ID] = work.PersonID
+		validWorkCount++
+	}
+	if validWorkCount == 0 {
+		response.Success(c, schema.ActivityPage{Events: []schema.ActivityEvent{}})
+		return
+	}
+
+	interactions, hasMore, err := dops.ListSessionActivityInteractions(sessionID, beforeInteractionID, limit)
 	if err != nil {
 		applogger.Error("GetSessionActivities: failed to query interactions",
-			"session_id", sessionID, "error", err)
+			"session_id", sessionID, "before_interaction_id", beforeInteractionID, "limit", limit, "error", err)
 		response.InternalError(c, "Failed to query activities")
 		return
 	}
 
-	// Get the agent participant for this session by joining persons table (type=1=AI)
-	personIDs, err := dops.GetSessionAIParticipantIDs(sessionID)
-	if err != nil {
-		applogger.Error("GetSessionActivities: failed to query agent participant", "session_id", sessionID, "error", err)
-		response.InternalError(c, "Failed to query activities")
-		return
+	page := schema.ActivityPage{
+		Events:  focusedwork.BuildActivityEvents(interactions, workPersonIDs),
+		HasMore: hasMore,
 	}
-	agentPersonID := personIDs[0]
+	if hasMore && len(interactions) > 0 {
+		page.NextBeforeInteractionID = interactions[0].ID
+	}
+	response.Success(c, page)
+}
 
-	// Find the actual agent config ID from the person_id
-	_, err = dops.GetAgentConfigByPersonID(agentPersonID)
-	if err != nil {
-		applogger.Error("GetSessionActivities: failed to find agent for person",
-			"person_id", agentPersonID, "error", err)
-		response.InternalError(c, "Failed to query activities")
+// activityPageParams validates the interaction cursor and page size. The
+// limit is deliberately bounded so one Activity request cannot monopolize the
+// application's single SQLite connection.
+func activityPageParams(c *gin.Context) (int64, int, error) {
+	beforeInteractionID := int64(0)
+	if rawBefore := c.Query("before_interaction_id"); rawBefore != "" {
+		parsed, err := strconv.ParseInt(rawBefore, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, 0, fmt.Errorf("before_interaction_id must be a positive integer")
+		}
+		beforeInteractionID = parsed
 	}
 
-	// Build flat timeline of events and inject person_id as agent_id for frontend.
-	events := task.BuildActivityEvents(interactions)
-	for i := range events {
-		events[i].PersonID = agentPersonID
+	limit := activityDefaultPageSize
+	if rawLimit := c.Query("limit"); rawLimit != "" {
+		parsed, err := strconv.Atoi(rawLimit)
+		if err != nil || parsed < 1 || parsed > activityMaxPageSize {
+			return 0, 0, fmt.Errorf("limit must be between 1 and %d", activityMaxPageSize)
+		}
+		limit = parsed
 	}
-	response.Success(c, events)
+	return beforeInteractionID, limit, nil
 }

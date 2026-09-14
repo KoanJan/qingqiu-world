@@ -2,7 +2,7 @@
 //
 // The single external entry point is:
 //
-//	Run(workspace string, personID, sessionID int64, cmd []string) (*exec.Cmd, bool, error)
+//	Run(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, error)
 //
 // Internally dispatches to platform-native mechanisms:
 //   - macOS: sandbox-exec (Seatbelt MACF)
@@ -10,7 +10,7 @@
 //   - Windows: plain exec (AppContainer not yet implemented)
 //
 // Design principle: availability over security. When the platform sandbox is unavailable,
-// fall back to plain os/exec without blocking the task.
+// fall back to plain os/exec without blocking focused work.
 //
 // The returned *exec.Cmd is managed by the caller (BashTool) — stdout/stderr collection,
 // truncation, and timeout kill remain unchanged.
@@ -19,6 +19,7 @@ package sandbox
 import (
 	"fmt"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -51,4 +52,25 @@ func Run(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, error) {
 			"goos", runtime.GOOS)
 		return exec.Command(cmd[0], cmd[1:]...), false, nil
 	}
+}
+
+// absolutePath resolves a filesystem path to its canonical absolute form by
+// following symlinks. Seatbelt subpath filters and bubblewrap mounts match
+// against the symlink-resolved ("real") path, so a symlinked component (e.g.
+// macOS /var -> /private/var, /tmp -> /private/tmp) must be resolved or the
+// filters silently fail to match. Falls back to the non-resolved absolute form
+// (logging the fallback) when resolution is impossible.
+func absolutePath(path string) string {
+	abs, absErr := filepath.Abs(path)
+	if absErr != nil {
+		applogger.Error("sandbox: failed to make path absolute", "path", path, "error", absErr)
+		abs = path
+	}
+	real, err := filepath.EvalSymlinks(abs)
+	if err != nil {
+		applogger.Error("sandbox: failed to resolve symlinks for path, using absolute form",
+			"path", abs, "error", err)
+		return abs
+	}
+	return real
 }

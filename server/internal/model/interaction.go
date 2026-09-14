@@ -12,7 +12,7 @@ const (
 // Interaction captures one step of the ReAct loop for agent-world interactions.
 //
 // Interactions are grouped by work_id, representing the Work that produced them.
-// This directly models the relationship: a Work (task execution) produces
+// This directly models the relationship: a Work (focused-work execution) produces
 // multiple iterations of interactions, independent of the message stream.
 //
 // Each iteration produces two records: a request (type=1) and a response (type=2).

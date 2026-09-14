@@ -69,6 +69,11 @@ var migrations = []migration{
 		description: "Migrate agent_configs.knowledge_base_ids bindings into kb_access grants, then drop the column",
 		fn:          migrate_0_1_9,
 	},
+	{
+		version:     "0.1.13",
+		description: "Copy legacy workspace and private-space data into Agent Owned Space",
+		fn:          migrate_0_1_13,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

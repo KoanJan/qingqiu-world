@@ -17,7 +17,7 @@ type WriteTextFileTool struct {
 func NewWriteTextFileTool(personID, sessionID int64) *WriteTextFileTool {
 	return &WriteTextFileTool{
 		core: servicetools.NewWriteFileTool(
-			workspace.GetWorkspacePath(personID, sessionID),
+			workspace.GetAgentOwnedSpacePath(personID),
 			workspace.GetOutputDir(personID, sessionID),
 		),
 	}
@@ -35,7 +35,7 @@ func (w *WriteTextFileTool) Schema() llm.FunctionDefinition {
 			"properties": map[string]interface{}{
 				"file_path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the file to write. Relative paths are resolved against your working directory. Parent directories are created automatically.",
+					"description": "Path to the file to write. Relative paths default to this Focus's working directory; absolute paths may address any resource inside Agent Owned Space. Parent directories are created automatically.",
 				},
 				"content": map[string]interface{}{
 					"type":        "string",

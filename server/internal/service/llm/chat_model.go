@@ -293,8 +293,8 @@ func (cm *ChatModel) ChatStream(ctx context.Context, messages []Message) (*strea
 }
 
 // ChatWithTools sends a non-streaming chat completion request with tool definitions.
-// Used by the task loop's ReAct pattern where the LLM decides which tools to call.
-// This is the Go equivalent of Python's TaskLLMClient.invoke(), using the OpenAI Tools API
+// Used by FocusedLoop's ReAct pattern where the LLM decides which tools to call.
+// This is the Go equivalent of the former Python focused-work client invocation, using the OpenAI Tools API.
 // (not the deprecated Functions API) for proper tool_calls support.
 func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
 	logMessages(messages)

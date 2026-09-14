@@ -1,10 +1,10 @@
-// Package tools provides the tool abstractions and implementations for the task agent system.
+// Package tools provides the tool abstractions and implementations for FocusedWork execution.
 //
 // All tools must implement the Tool interface, which requires a unique name,
 // a short description for the system prompt, a function definition schema,
 // and an execute method. Tools are registered by name and provide their
 // schema for LLM tool calling. Reusable domain-agnostic tool cores live in
-// service/tools; this package binds them to task-specific contracts and
+// service/tools; this package binds them to FocusedWork-specific contracts and
 // person-scoped authorization.
 //
 // Available tools:
@@ -44,6 +44,7 @@ const (
 	ToolNameCopyFromJinshu                      // copy_from_jinshu
 	ToolNameScanKB                              // scan_kb
 	ToolNameListKBDocuments                     // list_kb_documents
+	toolNameCount                               // Sentinel; must remain last.
 )
 
 // nameStrings maps ToolName values to their string representation for LLM function calling.
@@ -63,6 +64,16 @@ var nameStrings = map[ToolName]string{
 	ToolNameCopyFromJinshu:      "copy_from_jinshu",
 	ToolNameScanKB:              "scan_kb",
 	ToolNameListKBDocuments:     "list_kb_documents",
+}
+
+// AllToolNames returns every registered ToolName in stable enum order. It is
+// used by cross-cutting registries, such as Activity display coverage tests.
+func AllToolNames() []ToolName {
+	result := make([]ToolName, 0, toolNameCount)
+	for toolName := ToolNameBash; toolName < toolNameCount; toolName++ {
+		result = append(result, toolName)
+	}
+	return result
 }
 
 // String returns the string representation of the ToolName for use in LLM function definitions.

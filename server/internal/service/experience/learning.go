@@ -42,7 +42,7 @@ func CheckLearning(ctx context.Context, personID int64) {
 	}
 
 	// Load session-level entity profiles for this agent.
-	// These narratives describe what domains/tasks the agent actually works on.
+	// These narratives describe what domains and work patterns the agent actually pursues.
 	var profiles []model.EntityProfile
 	if err := database.DB.Where("entity_type = ? AND person_id = ?", model.EntityTypeSession, personID).
 		Find(&profiles).Error; err != nil {
@@ -186,12 +186,12 @@ func judgeLearning(ctx context.Context, ac *model.AgentConfig, llmCfg *model.LLM
 
 Judge which candidates are worth learning. For each candidate, consider:
 - Does the experience address a domain you actually work in?
-- Would you likely encounter the problem pattern or task signature described?
-- Is the guidance applicable to the types of tasks you perform?
+- Would you likely encounter the problem pattern or work signature described?
+- Is the guidance applicable to the types of work you perform?
 
 Reject a candidate if:
-- It shares surface-level technology with your work but targets a different task category (e.g., both involve H5/canvas, but one is game development and the other is generative art)
-- Its core methodology is not transferable to the types of tasks you actually perform
+- It shares surface-level technology with your work but targets a different work category (e.g., both involve H5/canvas, but one is game development and the other is generative art)
+- Its core methodology is not transferable to the types of work you actually perform
 - You are uncertain — when in doubt, do not learn
 
 Only include IDs of clearly relevant experiences. It is better to learn nothing than to learn irrelevant knowledge.

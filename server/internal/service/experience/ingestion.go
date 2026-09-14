@@ -50,7 +50,7 @@ type SectionRef struct {
 type ingestOutput struct {
 	Title       string     `json:"title" jsonschema:"description=Transferable lesson stated as a general principle (FALLBACK — only used when YAML frontmatter parsing fails)"`
 	Description string     `json:"description" jsonschema:"description=One sentence stating what this teaches (FALLBACK — only used when YAML frontmatter parsing fails)"`
-	WhenToUse   SectionRef `json:"when_to_use" jsonschema:"description=What task signatures, trigger phrases, or problem patterns indicate this experience applies. Each on its own line."`
+	WhenToUse   SectionRef `json:"when_to_use" jsonschema:"description=What work patterns, trigger phrases, or problem patterns indicate this experience applies. Each on its own line."`
 	Guidelines  SectionRef `json:"guidelines" jsonschema:"description=Actionable advice with rationale. What to do, why, and in what order. Decision heuristics, sequencing rules, proven patterns."`
 	Pitfalls    SectionRef `json:"pitfalls" jsonschema:"description=Known failure modes. What can go wrong, early warning signs, and how to prevent or recover."`
 	Procedure   SectionRef `json:"procedure" jsonschema:"description=Numbered steps. Only include if a repeatable, cross-project workflow emerged. Leave empty if none."`
@@ -353,7 +353,7 @@ For each field (when_to_use, guidelines, pitfalls, procedure), you must decide:
 title: If the skill file has a YAML frontmatter with a ` + "`name`" + ` field, copy that value directly — do not modify. If no frontmatter or no ` + "`name`" + ` field exists, generate a short, transferable principle name derived from the skill's core method.
 description: If the skill file has a YAML frontmatter with a ` + "`description`" + ` field, copy that value directly — do not modify. If no frontmatter or no ` + "`description`" + ` field exists, generate one sentence stating the core skill insight — used for semantic matching.
 
-when_to_use: What task signatures, trigger phrases, or problem patterns indicate this skill applies.
+when_to_use: What work patterns, trigger phrases, or problem patterns indicate this skill applies.
 guidelines: Actionable advice with rationale. What to do, why, and in what order.
 pitfalls: Known failure modes. What can go wrong, early warning signs, and how to prevent or recover.
 procedure: Numbered steps. Only include if a repeatable workflow is described.

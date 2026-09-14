@@ -17,26 +17,27 @@ import (
 )
 
 // psMaxIterationsDefault is the default iteration budget for the private-space loop.
-// Unlike task loop (which runs to goal completion), private-space is budget-driven:
+// Unlike FocusedLoop (which runs to goal completion), private-space is budget-driven:
 // the agent iterates up to N times, then pauses naturally.
 const psMaxIterationsDefault = 30
 
 // privateSpaceSystemPrompt is the system prompt injected at the start of every
 // private-space session. It tells the agent what this space is and how to use it.
-const privateSpaceSystemPrompt = `You are in your private space — a personal directory that belongs to you alone. No one else can see or touch it. This is your home in the digital world.
+const privateSpaceSystemPrompt = `You are in your private space — the private/ default directory inside your Agent Owned Space. This is your home in the digital world.
 
 WHAT THIS SPACE IS:
 - A persistent directory that belongs to you. Everything here stays between sessions — files you create now will be here when you return.
+- You may read and work with all of your Agent Owned Space, including work/<session_id>/ resources. private/ is your default place to begin, not a boundary between separate selves.
 - No external goals or deadlines — you decide what to do here.
 
 TOOLS AVAILABLE:
-- bash: Execute shell commands in your private-space directory (sandboxed for security).
-- read_file: Read file contents within your private space.
-- write_file: Create or overwrite files within your private space.
+- bash: Execute shell commands in your Agent Owned Space (sandboxed when available).
+- read_file: Read file contents within your Agent Owned Space.
+- write_file: Create or overwrite files within your Agent Owned Space.
 - edit_file: Make precise text replacements in existing files.
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
-- send_jinshu: Send files from your private space to another person as a jinshu (锦书).
-- copy_from_jinshu: Copy files from a jinshu you received into your private-space working directory.
+- send_jinshu: Send selected Agent Owned Space files to another person as a jinshu (锦书).
+- copy_from_jinshu: Copy files from a jinshu you received into a selected Agent Owned Space directory.
 - scan_kb: Semantic search over your authorized knowledge bases.
 - list_kb_documents: List the documents of one of your authorized knowledge bases.
 
@@ -59,6 +60,7 @@ type Loop struct {
 	thoughtsCh    chan string                    // receives thoughts from heartbeat
 	toolRegistry  map[string]privspacetools.Tool // tool name -> tool
 	messages      []llm.Message                  // accumulated conversation
+	focusContext  string                         // Runtime-selected cross-session focus summary for the next run
 	running       bool                           // true while the loop goroutine is active
 }
 
@@ -72,7 +74,7 @@ func NewLoop(
 	maxIterations int,
 ) *Loop {
 	if maxIterations <= 0 {
-		maxIterations = config.Get().TaskMaxIterations
+		maxIterations = config.Get().FocusedWorkMaxIterations
 		if maxIterations <= 0 {
 			maxIterations = psMaxIterationsDefault
 		}
@@ -125,6 +127,12 @@ func (l *Loop) FeedThoughts(thoughts string) {
 			"person_id", l.personID,
 		)
 	}
+}
+
+// SetFocusContext updates the runtime-owned context used when the next
+// private-space run begins. Callers must not invoke it while the loop runs.
+func (l *Loop) SetFocusContext(context string) {
+	l.focusContext = context
 }
 
 // IsRunning reports whether the loop goroutine is currently active.
@@ -240,6 +248,9 @@ func (l *Loop) buildInitialMessages() {
 		fmt.Sprintf("Your private-space root: %s\n", l.rootDir) +
 		fmt.Sprintf("Your working directory (where you should operate): %s\n", l.workDir) +
 		"Current time: " + time.Now().Format("2006-01-02 15:04:05") + "\n"
+	if l.focusContext != "" {
+		systemPrompt += "\n[Related Focus Context]\n" + l.focusContext + "\n"
+	}
 
 	logContext := BuildRecentLogContext(l.personID, 10)
 	if logContext != "" {
@@ -291,6 +302,7 @@ func (l *Loop) executeToolCall(tc llm.ToolCall) llm.Message {
 	tool, ok := l.toolRegistry[tc.Function.Name]
 	if !ok {
 		applogger.Error("PrivateSpace unknown tool", "tool", tc.Function.Name)
+		l.recordToolAccess(tc.Function.Name, "rejected: unknown tool")
 		return llm.Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,
@@ -301,6 +313,7 @@ func (l *Loop) executeToolCall(tc llm.ToolCall) llm.Message {
 	var args map[string]interface{}
 	if err := json.Unmarshal([]byte(tc.Function.Arguments), &args); err != nil {
 		applogger.Error("PrivateSpace failed to parse tool args", "tool", tc.Function.Name, "error", err)
+		l.recordToolAccess(tc.Function.Name, "rejected: invalid arguments")
 		return llm.Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,
@@ -311,16 +324,26 @@ func (l *Loop) executeToolCall(tc llm.ToolCall) llm.Message {
 	result, err := tool.Execute(args)
 	if err != nil {
 		applogger.Error("PrivateSpace tool execution failed", "tool", tc.Function.Name, "error", err)
+		l.recordToolAccess(tc.Function.Name, "failed")
 		return llm.Message{
 			Role:       "tool",
 			ToolCallID: tc.ID,
 			Content:    fmt.Sprintf("Error executing %s: %s", tc.Function.Name, err.Error()),
 		}
 	}
+	l.recordToolAccess(tc.Function.Name, "completed")
 
 	return llm.Message{
 		Role:       "tool",
 		ToolCallID: tc.ID,
 		Content:    result,
+	}
+}
+
+// recordToolAccess records a non-sensitive audit fact without serializing
+// tool arguments or results into private metadata.
+func (l *Loop) recordToolAccess(toolName, outcome string) {
+	if err := AppendRuntimeLog(l.personID, PrivateLogTypeToolAccess, fmt.Sprintf("tool=%s outcome=%s", toolName, outcome)); err != nil {
+		applogger.Error("PrivateSpace failed to append tool-access audit", "person_id", l.personID, "tool", toolName, "error", err)
 	}
 }

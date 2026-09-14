@@ -7,10 +7,12 @@ import (
 
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/tools"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
 // digestTimeout bounds the digest LLM call so a stalled provider cannot
@@ -72,6 +74,24 @@ func (l *Loop) generateDigest() {
 			"person_id", l.personID, "error", err,
 		)
 		return
+	}
+	handoff := &model.FocusHandoff{
+		PersonID:           l.personID,
+		SessionID:          0,
+		WorkID:             0,
+		Source:             model.FocusSourcePrivate,
+		Status:             model.FocusHandoffCompleted,
+		Orientation:        "Private-space reflection",
+		Summary:            digest,
+		ConfirmedFindings:  "",
+		ArtifactReferences: "",
+		Unresolved:         "",
+		NextStep:           "Review this handoff when a later focus is relevant.",
+	}
+	if err := dops.CreateFocusHandoff(handoff); err != nil {
+		applogger.Error("PrivateSpace failed to persist focus handoff", "person_id", l.personID, "digest_id", record.ID, "error", err)
+	} else if err := workspace.AppendFocusHandoff(handoff); err != nil {
+		applogger.Error("PrivateSpace failed to project focus handoff to AOSMeta", "person_id", l.personID, "digest_id", record.ID, "handoff_id", handoff.ID, "error", err)
 	}
 
 	eventID, err := memory.RecordPSDigestEvent(record.ID, digest)

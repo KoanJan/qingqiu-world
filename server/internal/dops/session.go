@@ -18,7 +18,7 @@ func GetSession(sessionID int64) (*model.Session, error) {
 	return &session, nil
 }
 
-// HasInteractions checks whether any task interaction records exist for the given session.
+// HasInteractions checks whether any focused-work interaction records exist for the given session.
 func HasInteractions(sessionID int64) (bool, error) {
 	var count int64
 	if err := database.DB.Model(&model.Interaction{}).
@@ -226,7 +226,7 @@ func DeleteSessionCascade(sessionID int64) (personID int64, agentConfigID int64,
 
 		tables := []interface{}{
 			&model.Work{}, &model.Interaction{},
-			&model.AgentNarrative{}, &model.Summary{},
+			&model.AgentNarrative{}, &model.Summary{}, &model.FocusHandoff{},
 			&model.ParticipantSession{}, &model.Message{},
 		}
 		for _, table := range tables {

@@ -66,7 +66,7 @@ func authorizedKBNames(kbs []model.KnowledgeBase) string {
 }
 
 // Shared LLM-facing wording for the kb tools, exported as plain data so that
-// wrapper packages (task/tools, privatespace/tools) stay single-sourced. The
+// wrapper packages (focusedwork/tools, privatespace/tools) stay single-sourced. The
 // llm.FunctionDefinition assembly itself stays in the wrapper layers.
 const (
 	// ScanKBDescription is the short one-line description of scan_kb.
@@ -138,7 +138,7 @@ func ListKBDocumentsParameters() map[string]interface{} {
 //
 // Person-free core: the authorized inventory is injected via KBAuthorizer and
 // resolved at call time. Domain-agnostic by package contract: no
-// Tool/ToolName/Schema interfaces here; higher-level packages (task/tools,
+// Tool/ToolName/Schema interfaces here; higher-level packages (focusedwork/tools,
 // privatespace/tools) wrap this core with their own contracts.
 type ScanKBTool struct {
 	authorize     KBAuthorizer

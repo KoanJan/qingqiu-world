@@ -32,7 +32,7 @@ type AgentStatusChanged struct {
 func (AgentStatusChanged) isNotificationIntent() {}
 
 // AgentProcessingStarted asks the notification layer to surface the beginning
-// of an agent task. It is a lifecycle hint, not a user message.
+// of an agent focusedwork. It is a lifecycle hint, not a user message.
 type AgentProcessingStarted struct{ SessionID int64 }
 
 func (AgentProcessingStarted) isNotificationIntent() {}

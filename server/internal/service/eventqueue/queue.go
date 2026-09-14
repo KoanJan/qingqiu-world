@@ -6,7 +6,7 @@
 // Dependency direction:
 //
 //	handler  → eventqueue ← runtime
-//	task/tools → eventqueue   (wake_me_when goroutine calls SendEvent directly)
+//	focusedwork/tools → eventqueue   (wake_me_when goroutine calls SendEvent directly)
 //	chat     → eventqueue     (replaces the old agentevent.NotifyAgentNewMessage)
 //
 // The package owns the event type definitions (AgentEvent, payload types) and

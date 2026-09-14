@@ -19,7 +19,7 @@ type ReadTextFileTool struct {
 func NewReadTextFileTool(personID, sessionID int64) *ReadTextFileTool {
 	return &ReadTextFileTool{
 		core: servicetools.NewReadFileTool(
-			workspace.GetWorkspacePath(personID, sessionID),
+			workspace.GetAgentOwnedSpacePath(personID),
 			workspace.GetOutputDir(personID, sessionID),
 		),
 	}
@@ -39,7 +39,7 @@ func (r *ReadTextFileTool) Schema() llm.FunctionDefinition {
 			"properties": map[string]interface{}{
 				"file_path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the file to read. Relative paths are resolved against your working directory.",
+					"description": "Path to the file to read. Relative paths default to this Focus's working directory; absolute paths may address any resource inside Agent Owned Space.",
 				},
 				"offset": map[string]interface{}{
 					"type":        "integer",

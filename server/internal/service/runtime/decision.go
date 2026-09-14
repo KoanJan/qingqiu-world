@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
+	"unicode"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -74,16 +76,19 @@ Action types (use the integer value for the "type" field):
      * Use a positive session ID from your sessions list to send to an existing session.
      * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
 
-2. 1 (create_task) — Start a multi-step task that will execute using tools, web searches, or file operations.
+2. 1 (start_focused_work) — Start a FocusedWork that runs through a FocusedLoop.
    - MUST include a "work_plan" object with "guidance".
    - guidance: Your internal intention: what you plan to do, written in first-person.
+   - Start a FocusedWork when fulfilling the goal requires a continuing course of work: later observations or tool results determine the next step, several dependent actions must be coordinated, an investigation or artifact needs deliberate completion, or progress must survive beyond one response through notes and a final handoff.
+   - Do NOT start a FocusedWork merely to acknowledge, explain, answer from the context already present, or make a simple decision. Those belong in chat or silence. If a bounded directory listing alone resolves the uncertainty, use inspect_owned_space instead.
+   - A FocusedWork is sustained, concentrated execution, not a label for every user request or every possible tool call.
 
-3. 2 (route_task) — Route the event to an existing active TaskWork listed above. Route when the event carries a new instruction or constraint that changes what an active work should do — a shift in direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
-   - MUST include "work_guidance" with "target_work_id" and "guidance" (what I now want the target work to focus on, written in first-person).
-   - Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
+3. 2 (route_focused_work) — Route the event to an existing active work listed above. Route when the event carries a new instruction or constraint that changes an active work's direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
+	- MUST include "work_guidance" with "target_work_id" and "guidance" (what I now want the target work to do, written in first-person).
+	- Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
 
-4. 3 (cancel_task) — Request an existing active TaskWork to stop and wrap up. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
-   - MUST include "work_guidance" with "target_work_id" and "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop").
+4. 3 (cancel_focused_work) — Request an existing active work to stop and wrap up. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
+	- MUST include "work_guidance" with "target_work_id" and "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop").
    - Cancel is a request, not a forceful kill — the target work receives the directive and decides how to wrap up (save notes, record reasons) before exiting.
 
 5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
@@ -100,7 +105,7 @@ Action types (use the integer value for the "type" field):
 7. 6 (enter_private_space) — Enter your private space to recall or review what you have made or kept there, so you can answer questions about your own past actions, promises, or deliverables (e.g., someone asking "didn't you say you'd give me something?").
    - No plan struct needed. Your "background" and "reason" together express what you want to recall or check.
    - Your private space is yours alone. You are NOT obliged to do work for anyone there, and you are NOT obliged to reveal or tell anyone about anything in it — you have every right to keep it private, with no duty to share.
-   - Use this only to refresh your own memory or verify your own past output, not to be directed into performing tasks for someone else.
+   - Use this only to refresh your own memory or verify your own past output, not to be directed into performing work for someone else.
 
 8. 7 (inspect_jinshu) — Read the contents of a received jinshu through a dedicated read loop.
    - MUST include a "jinshu_plan" object with "jinshu_id" and "guidance".
@@ -114,12 +119,12 @@ Action types (use the integer value for the "type" field):
    - page: 1-based page number. limit: results per page (1-50).
    - Use this when the current event references a jinshu but does not give its jinshu_id, so you need to find it first.
 
-10. 9 (send_jinshu) — Send files from your private space to another Person as a jinshu (锦书).
+10. 9 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from the contactable persons list). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
-   - paths: List of file or directory paths relative to your private-space working directory.
-   - Use this to share a deliverable you already made (e.g., a game, a file) without entering your private space.
+   - paths: AOS locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.
+   - Use this to share a deliverable you already made (e.g., a game or a file) without entering a FocusedLoop.
 
 11. 10 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
    - MUST include a "list_sent_jinshu_params" object with "page" and "limit"; "query" is optional.
@@ -127,22 +132,29 @@ Action types (use the integer value for the "type" field):
    - page: 1-based page number. limit: results per page (1-50).
    - Use this to recall what you have already sent to someone, e.g., to verify whether you actually delivered something before.
 
-Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request (type=1 create_task), not a route or cancel.
+12. 11 (inspect_owned_space) — Inspect a bounded, metadata-only listing of your own resources when the Focus Context is insufficient to decide whether to reply directly or begin focused work.
+   - MUST include an "owned_space_inspection_plan" object with "scope" and "limit"; "query" is optional.
+   - scope: "root", "work", "private", or "work/<session_id>". The default is root. It never reads file contents.
+   - limit: result count from 1 to 50. query: an optional plain substring filter for entry names.
+   - The result is a new observation event. Do not use this action after an inspect result; create focused work when deeper inspection, reading, or changes are needed.
+
+Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request. Start a new FocusedWork only if the new request meets the FocusedWork criteria above; otherwise reply directly or inspect bounded metadata first.
 
 If no action is needed, return an empty actions list.
 
 You can return multiple actions. Examples (note: IDs in examples are placeholders; always use the actual work IDs from "Active works" above):
-- Cancel an old task and chat: [{"type":3, "background":"They said to stop searching and give a direct answer", "reason":"Cancelling the search is the fastest path; a direct chat is what they want", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop"}}, {"type":0, "background":"After cancelling the search, I owe them an answer", "reason":"A direct reply is the right follow-up to a cancellation", "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
-- Route a follow-up to an existing work: [{"type":2, "background":"They want the same task done in Go instead of Python", "reason":"Routing to the existing work avoids starting over", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go"}}]
+- Cancel an old work and chat: [{"type":3, "background":"They said to stop searching and give a direct answer", "reason":"Cancelling the search is the fastest path; a direct chat is what they want", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop"}}, {"type":0, "background":"After cancelling the search, I owe them an answer", "reason":"A direct reply is the right follow-up to a cancellation", "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
+- Route a follow-up to an existing work: [{"type":2, "background":"They want the same work continued in Go instead of Python", "reason":"Routing to the existing work avoids starting over", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go"}}]
 - Talk to another Person and acknowledge the request: [{"type":0, "background":"I need to ask Bob about the project status", "reason":"Direct communication is the only way to get this information", "chat_plan":{"session_id":-1, "recipient_person_id":3, "guidance":"I should ask Bob about the project status..."}}, {"type":0, "background":"I am being asked about the project status", "reason":"I should acknowledge the request before going to ask Bob", "chat_plan":{"guidance":"I should tell them I'll go ask Bob now..."}}]
 
 Decision rules (apply in order):
-1. If the event requires tool usage, real-time data, file operations, or multi-step execution to fulfill (e.g., "search the web for X", "write a script", "look up the latest news"), create a task (type=1). If a direct response is also expected, create both chat (type=0) + create_task (type=1) in parallel.
-2. If the event carries a new instruction or constraint for an active work listed above (changing its direction, approach, or scope), use type=2 (route_task). If the event explicitly requests stopping an active work, use type=3 (cancel_task).
-3. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
-4. Otherwise, consider whether a reply is truly needed. You can see your recent conversation history in the sessions context above. Before replying, ask yourself: what would the listener learn or feel from my message that they don't already know or feel from the conversation above? If nothing, stay silent.
-5. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
-6. When in doubt, consider silence before action — not every message requires a reply.
+1. First check Active works. If the event changes the goal, method, scope, or constraints of an active work, route it (type=2). If it explicitly asks to stop an active work, request cancellation (type=3). Do not create a competing FocusedWork for the same continuing work.
+2. If the current event and supplied context already support a complete, honest response or a simple social action, use chat (type=0), or remain silent when no response is needed. Do not start a FocusedWork just to make the outer loop look busy.
+3. If the only missing fact is whether an AOS resource exists or where it is, use inspect_owned_space (type=11). Its result is an observation; after it, reply directly if sufficient, otherwise reassess whether a FocusedWork is needed.
+4. Start a FocusedWork (type=1) only when the FocusedWork criteria above are met: the work needs an iterative, causally connected sequence of observations/actions and deliberate completion or recovery. Tool use, file access, and real-time data are signals to assess, not automatic reasons by themselves. If a direct acknowledgement is also expected, create chat (type=0) and a FocusedWork in parallel.
+5. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
+6. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
+7. When in doubt, consider silence before action — not every message requires a reply.
 
 ---
 
@@ -162,14 +174,15 @@ Write background, guidance, reason, and plan in the same language as the event c
 // "time has passed, you are idle" and asks whether it wants to form an
 // intention.
 //
-// Parameters: agent_name, character_settings, bio, description, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, description, focusContext, energyDynamicSuffix
 //
 // The Action surface is intentionally narrower than the event-triggered path:
 //   - action.Chat (type=0): compose and send a chat message.
 //   - action.CreateAlarm (type=4): set a future alarm.
 //   - action.UpdateBio (type=5): update your self-introduction bio.
 //   - action.EnterPrivateSpace (type=6): enter your private space.
-//   - action.CreateTask / action.RouteTask / action.CancelTask: not allowed — there is no event
+//   - action.InspectOwnedSpace (type=11): observe a bounded AOS directory listing.
+//   - action.StartFocusedWork / action.RouteFocusedWork / action.CancelFocusedWork: not allowed — there is no event
 //     to route and no active work context to cancel against in this path.
 //
 // The description parameter carries the agent's self-observation: its sessions
@@ -231,17 +244,22 @@ If you decide to act, you have these kinds of action available:
    - You have a budget of steps; when you're done, simply stop.
    - If you only need to hand off files you already made, prefer type=9 (send_jinshu) directly; a send_jinshu tool is also available once inside.
 
-5. 9 (send_jinshu) — Send files from your private space to another Person as a jinshu (锦书).
+5. 9 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from contactable persons). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
-   - paths: List of file or directory paths relative to your private-space working directory.
-   - Use this to share a deliverable you already made without entering your private space.
+   - paths: AOS locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.
+   - Use this to share a deliverable you already made without entering a FocusedLoop.
+
+6. 11 (inspect_owned_space) — Inspect a bounded metadata-only listing of your own AOS resources.
+   - MUST include an "owned_space_inspection_plan" with scope (root, work, private, or work/<session_id>) and limit (1-50).
+   - This action cannot read file contents and does not permit writes. Use it only when the focus context does not tell you whether a resource still exists or where to resume.
 
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
 If you have nothing to act on, return an empty actions list. This is the default — do not force action.
 
+%s
 %s
 %s
 
@@ -278,7 +296,7 @@ type DecisionResult struct {
 func Decide(ctx context.Context, situation *Situation, personID int64, activeWorks []*work) DecisionResult {
 	// Internal source: heartbeat autonomous path.
 	if situation.Source == SituationSourceInternal {
-		return decideHeartbeat(ctx, situation, personID)
+		return decideHeartbeat(ctx, situation, personID, activeWorks)
 	}
 
 	// External source: dispatch by event type.
@@ -314,7 +332,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 				return DecisionResult{}
 			}
 			// ActiveWorksSummary stays empty, same as handleHeartbeat.
-			return decideHeartbeat(ctx, buildHeartbeatSituation(description, state.Energy, ""), personID)
+			return decideHeartbeat(ctx, buildHeartbeatSituation(description, state.Energy, ""), personID, activeWorks)
 		}
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
 		plan := &action.ChatPlan{
@@ -347,7 +365,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		// decision phase has nothing to act on.
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "private-space digest observation-only")
 		return DecisionResult{}
-	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed:
+	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed, eventqueue.EventTypeOwnedSpaceInspected:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
@@ -440,7 +458,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	}
 	triggerContext := buildTriggerContext(event)
 	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
-	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID)
+	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID, eventDescription)
 
 	agentDescription := a.Config.CharacterSettings
 	bio := a.Person.Bio
@@ -545,7 +563,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 //
 // Energy cost (CostActive = 5) is only deducted when the agent actually
 // produces actions — an empty Actions list (choosing to do nothing) is free.
-func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) DecisionResult {
+func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, activeWorks []*work) DecisionResult {
 	// Fetch agent info at the point of use.
 	a, err := agent.GetAgent(personID)
 	if err != nil {
@@ -559,6 +577,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 	prompt := fmt.Sprintf(heartbeatPromptTemplate,
 		a.Person.Name, agentDescription, bio,
 		situation.Matter.Description,
+		buildAgentFocusContext(personID, activeWorks),
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
@@ -623,7 +642,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64) 
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks).
 //   - Internal (heartbeat): Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
-//     and SendJinshu are allowed; CreateTask, RouteTask, CancelTask,
+//     and SendJinshu are allowed; StartFocusedWork, RouteFocusedWork, CancelFocusedWork,
 //     InspectJinshu, and ListReceivedJinshu are rejected (no event to route, no active
 //     works context, and no incoming jinshu reference in this path).
 //
@@ -635,32 +654,32 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 	var valid []action.Action
 	for _, act := range actions {
 		switch act.Type {
-		case action.RouteTask:
+		case action.RouteFocusedWork:
 			if situation.Source == SituationSourceInternal {
-				applogger.Error("Decision route_task: rejected in heartbeat path")
+				applogger.Error("Decision route_focused_work: rejected in heartbeat path")
 				continue
 			}
-			if isValidRouteTaskAction(act, sameSessionWorks) {
+			if isValidRouteFocusedWorkAction(act, sameSessionWorks) {
 				valid = append(valid, act)
 			}
 		case action.Chat:
 			if isValidChatAction(act, situation) {
 				valid = append(valid, act)
 			}
-		case action.CreateTask:
+		case action.StartFocusedWork:
 			if situation.Source == SituationSourceInternal {
-				applogger.Error("Decision create_task: rejected in heartbeat path")
+				applogger.Error("Decision start_focused_work: rejected in heartbeat path")
 				continue
 			}
-			if isValidCreateTaskAction(act) {
+			if isValidStartFocusedWorkAction(act) {
 				valid = append(valid, act)
 			}
-		case action.CancelTask:
+		case action.CancelFocusedWork:
 			if situation.Source == SituationSourceInternal {
-				applogger.Error("Decision cancel_task: rejected in heartbeat path")
+				applogger.Error("Decision cancel_focused_work: rejected in heartbeat path")
 				continue
 			}
-			if isValidCancelTaskAction(act, sameSessionWorks) {
+			if isValidCancelFocusedWorkAction(act, sameSessionWorks) {
 				valid = append(valid, act)
 			}
 		case action.CreateAlarm:
@@ -708,6 +727,14 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 			if isValidListSentJinshuAction(act) {
 				valid = append(valid, act)
 			}
+		case action.InspectOwnedSpace:
+			if situation.Matter.Event != nil && situation.Matter.Event.Type == eventqueue.EventTypeOwnedSpaceInspected {
+				applogger.Error("Decision inspect_owned_space: rejected inspection-result loop")
+				continue
+			}
+			if isValidInspectOwnedSpaceAction(act) {
+				valid = append(valid, act)
+			}
 		default:
 			applogger.Error("Decision: unknown action type, skipping",
 				"action_type", act.Type,
@@ -717,15 +744,28 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 	return valid
 }
 
-// isValidRouteTaskAction checks whether a route_task action has a valid WorkGuidance
+func isValidInspectOwnedSpaceAction(dec action.Action) bool {
+	p := dec.OwnedSpaceInspectionPlan
+	if p == nil || p.Limit < 1 || p.Limit > 50 {
+		applogger.Error("Decision inspect_owned_space: invalid or missing plan")
+		return false
+	}
+	if _, err := workspace.NormalizeInspectionScope(p.Scope); err != nil {
+		applogger.Error("Decision inspect_owned_space: invalid scope", "scope", p.Scope, "error", err)
+		return false
+	}
+	return true
+}
+
+// isValidRouteFocusedWorkAction checks whether a route_focused_work action has a valid WorkGuidance
 // and its target work exists.
-func isValidRouteTaskAction(dec action.Action, sameSessionWorks []*work) bool {
+func isValidRouteFocusedWorkAction(dec action.Action, sameSessionWorks []*work) bool {
 	if dec.WorkGuidance == nil {
-		applogger.Error("Decision route_task: missing work_guidance, skipping")
+		applogger.Error("Decision route_focused_work: missing work_guidance, skipping")
 		return false
 	}
 	if dec.WorkGuidance.Guidance == "" {
-		applogger.Error("Decision route_task: missing guidance, skipping")
+		applogger.Error("Decision route_focused_work: missing guidance, skipping")
 		return false
 	}
 	for _, w := range sameSessionWorks {
@@ -733,7 +773,7 @@ func isValidRouteTaskAction(dec action.Action, sameSessionWorks []*work) bool {
 			return true
 		}
 	}
-	applogger.Error("Decision route_task: target work not found, skipping",
+	applogger.Error("Decision route_focused_work: target work not found, skipping",
 		"target_work_id", dec.WorkGuidance.TargetWorkID,
 	)
 	return false
@@ -767,15 +807,15 @@ func isValidChatAction(dec action.Action, situation *Situation) bool {
 	return true
 }
 
-// isValidCreateTaskAction checks whether a create_task action has a valid
+// isValidStartFocusedWorkAction checks whether a start_focused_work action has a valid
 // WorkPlan with guidance.
-func isValidCreateTaskAction(dec action.Action) bool {
+func isValidStartFocusedWorkAction(dec action.Action) bool {
 	if dec.WorkPlan == nil {
-		applogger.Error("Decision create_task: missing work_plan, skipping")
+		applogger.Error("Decision start_focused_work: missing work_plan, skipping")
 		return false
 	}
 	if dec.WorkPlan.Guidance == "" {
-		applogger.Error("Decision create_task: missing guidance, skipping")
+		applogger.Error("Decision start_focused_work: missing guidance, skipping")
 		return false
 	}
 	return true
@@ -804,17 +844,17 @@ func isValidCreateAlarmAction(dec action.Action) bool {
 	return true
 }
 
-// isValidCancelTaskAction checks whether a cancel_task action has a valid WorkGuidance
+// isValidCancelFocusedWorkAction checks whether a cancel_focused_work action has a valid WorkGuidance
 // and its target work exists.
 // Cancel is a directive sent to the work (not a forceful kill), so it
 // must carry guidance (what to do). Reason has been lifted to Action level.
-func isValidCancelTaskAction(dec action.Action, sameSessionWorks []*work) bool {
+func isValidCancelFocusedWorkAction(dec action.Action, sameSessionWorks []*work) bool {
 	if dec.WorkGuidance == nil {
-		applogger.Error("Decision cancel_task: missing work_guidance, skipping")
+		applogger.Error("Decision cancel_focused_work: missing work_guidance, skipping")
 		return false
 	}
 	if dec.WorkGuidance.Guidance == "" {
-		applogger.Error("Decision cancel_task: missing guidance, skipping")
+		applogger.Error("Decision cancel_focused_work: missing guidance, skipping")
 		return false
 	}
 	for _, w := range sameSessionWorks {
@@ -822,7 +862,7 @@ func isValidCancelTaskAction(dec action.Action, sameSessionWorks []*work) bool {
 			return true
 		}
 	}
-	applogger.Error("Decision cancel_task: target work not found, skipping",
+	applogger.Error("Decision cancel_focused_work: target work not found, skipping",
 		"target_work_id", dec.WorkGuidance.TargetWorkID,
 	)
 	return false
@@ -939,25 +979,20 @@ func filterWorksBySession(works []*work, sessionID int64) []*work {
 	return result
 }
 
-// buildActiveWorksContext formats active TaskWorks for the Decide prompt.
-// Only TaskWorks are shown — ChatWorks are one-shot and cannot be routed to
+// buildActiveWorksContext formats active Focuses for the Decide prompt.
+// Only Focuses are shown — ChatWorks are one-shot and cannot be routed to
 // or cancelled (no iteration loop), so listing them would mislead the LLM
 // into producing invalid route/cancel actions.
 //
-// For each active work, the latest notes checkpoint is read from disk and
-// included as "progress". This gives the Decide LLM real insight into what
-// the work is actually doing — not just a counter, but the agent's own
-// record of its current state, blockers, and next steps.
+// The roster intentionally carries only runtime-known identity, duration, and
+// guidance. Shared notes are supplied separately as source material and are
+// never attributed to an individual Focus.
 func buildActiveWorksContext(works []*work) string {
 	var parts []string
 	for _, w := range works {
 		duration := time.Since(w.startedAt).Round(time.Second)
-		progress := readLastNotesEntry(w.agent.agentPersonID, w.sessionID)
 		entry := fmt.Sprintf("- [Work #%d, running %s] %s",
 			w.ID, duration, w.plan.Guidance)
-		if progress != "" {
-			entry += "\n  Latest progress: " + progress
-		}
 		parts = append(parts, entry)
 	}
 	if len(parts) == 0 {
@@ -966,42 +1001,171 @@ func buildActiveWorksContext(works []*work) string {
 	return fmt.Sprintf("Active works:\n%s\n\n", strings.Join(parts, "\n"))
 }
 
-// buildCompletedWorksContext formats recently finished TaskWorks for the
-// Decide prompt. Unlike active works, finished works have already left the
-// in-memory active set, so they are loaded from the database. Both completed
-// and failed works are shown: failures matter as much as successes, since the
-// Decide LLM should avoid re-issuing a task that just failed. Surfacing them
-// lets the Decide LLM see what it has already done in this session and avoid
-// re-doing (and re-delivering) work it has already finished.
-func buildCompletedWorksContext(personID, sessionID int64) string {
-	var records []model.Work
-	if err := database.DB.Where("person_id = ? AND session_id = ? AND status IN (?, ?)",
-		personID, sessionID, model.WorkStatusCompleted, model.WorkStatusFailed).
-		Order("id DESC").Limit(5).Find(&records).Error; err != nil {
-		applogger.Error("buildCompletedWorksContext: failed to load finished works",
+// buildCompletedWorksContext formats recent runtime-owned handoffs plus one
+// shared session-notes source. Shared notes are deliberately not attributed to
+// any individual Work because several active Works may use the same session.
+func buildCompletedWorksContext(personID, sessionID int64, relevanceHints ...string) string {
+	var records []model.FocusHandoff
+	if err := database.DB.Where("person_id = ? AND session_id = ?", personID, sessionID).
+		Order("id DESC").Limit(20).Find(&records).Error; err != nil {
+		applogger.Error("buildCompletedWorksContext: failed to load focus handoffs",
 			"person_id", personID, "session_id", sessionID, "error", err)
 		return ""
 	}
-	if len(records) == 0 {
-		return ""
+	candidateCount := len(records)
+	usedRelevance := len(relevanceHints) > 0 && strings.TrimSpace(relevanceHints[0]) != ""
+	if usedRelevance {
+		hintTerms := focusContextTerms(relevanceHints[0])
+		sort.SliceStable(records, func(i, j int) bool {
+			return focusHandoffRelevance(records[i], hintTerms) > focusHandoffRelevance(records[j], hintTerms)
+		})
 	}
+	if len(records) > 5 {
+		records = records[:5]
+	}
+	applogger.Info("FocusHandoff selection", "person_id", personID, "session_id", sessionID, "candidates", candidateCount, "selected", len(records), "lexical_relevance", usedRelevance)
 
 	var parts []string
-	for _, wr := range records {
-		parts = append(parts, fmt.Sprintf("- [Work #%d, %s] %s",
-			wr.ID, workOutcomeLabel(wr.Status), truncateWorkDescription(wr.Description)))
+	for _, handoff := range records {
+		parts = append(parts, formatFocusHandoff(handoff, fmt.Sprintf("Work #%d", handoff.WorkID)))
 	}
-	return fmt.Sprintf("Finished works in this session:\n%s\n\n", strings.Join(parts, "\n"))
+	result := ""
+	if len(parts) > 0 {
+		result += fmt.Sprintf("Recent Focus handoffs in this session:\n%s\n\n", strings.Join(parts, "\n"))
+	}
+	if note := readLastNotesEntry(personID, sessionID); note != "" {
+		result += "Shared session notes (source material; not a Work checkpoint):\n" + note + "\n\n"
+	}
+	return result
 }
 
-// workOutcomeLabel renders a finished work's status as a short label for the
-// Decide prompt. Unfinished statuses should never appear here because the
-// query only selects completed/failed works.
-func workOutcomeLabel(status int) string {
-	if status == model.WorkStatusFailed {
-		return "failed"
+// buildSessionFocusContext combines the session's running Focus roster with
+// compact handoffs. Shared notes remain one source section, never a Work's
+// private progress record.
+func buildSessionFocusContext(personID, sessionID int64, activeWorks []*work, relevanceHint string) string {
+	active := buildActiveWorksContext(filterWorksBySession(activeWorks, sessionID))
+	completed := buildCompletedWorksContext(personID, sessionID, relevanceHint)
+	context := active + completed
+	const maxChars = 6000
+	if len(context) > maxChars {
+		applogger.Info("SessionFocusContext truncated", "person_id", personID, "session_id", sessionID, "chars", len(context), "max_chars", maxChars)
+		context = context[:maxChars] + "\n[Focus context truncated; inspect or read referenced sources when needed.]"
 	}
-	return "completed"
+	applogger.Info("SessionFocusContext assembled", "person_id", personID, "session_id", sessionID, "active_focuses", len(filterWorksBySession(activeWorks, sessionID)), "chars", len(context))
+	return context
+}
+
+// focusContextTerms produces a bounded lexical relevance signal. It is an
+// explicit fallback while causal association remains intentionally out of scope.
+func focusContextTerms(hint string) map[string]struct{} {
+	terms := make(map[string]struct{})
+	for _, field := range strings.FieldsFunc(strings.ToLower(hint), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len([]rune(field)) >= 2 {
+			terms[field] = struct{}{}
+		}
+	}
+	for _, r := range strings.ToLower(hint) {
+		if unicode.Is(unicode.Han, r) {
+			terms[string(r)] = struct{}{}
+		}
+	}
+	return terms
+}
+
+// focusHandoffRelevance scores a handoff against bounded lexical hint terms.
+func focusHandoffRelevance(handoff model.FocusHandoff, terms map[string]struct{}) int {
+	if len(terms) == 0 {
+		return 0
+	}
+	text := strings.ToLower(strings.Join([]string{
+		handoff.Orientation, handoff.Summary, handoff.Unresolved, handoff.NextStep,
+	}, " "))
+	score := 0
+	for term := range terms {
+		if strings.Contains(text, term) {
+			if len([]rune(term)) == 1 {
+				score++
+			} else {
+				score += 4
+			}
+		}
+	}
+	return score
+}
+
+// buildAgentFocusContext gives heartbeat and private-origin cognition a small
+// cross-session roster. It intentionally excludes raw notes and file contents.
+func buildAgentFocusContext(personID int64, activeWorks []*work) string {
+	var records []model.FocusHandoff
+	if err := database.DB.Where("person_id = ?", personID).
+		Order("id DESC").Limit(5).Find(&records).Error; err != nil {
+		applogger.Error("buildAgentFocusContext: failed to load focus handoffs", "person_id", personID, "error", err)
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	if len(activeWorks) > 0 {
+		parts = append(parts, "Running works:\n"+strings.TrimSpace(buildActiveWorksContext(activeWorks)))
+	}
+	handoffParts := make([]string, 0, len(records))
+	for _, handoff := range records {
+		scope := "private"
+		if handoff.SessionID > 0 {
+			scope = fmt.Sprintf("session %d / Work #%d", handoff.SessionID, handoff.WorkID)
+		}
+		handoffParts = append(handoffParts, formatFocusHandoff(handoff, scope))
+	}
+	if len(records) > 0 {
+		parts = append(parts, "Recent Focus handoffs across my owned space:\n"+strings.Join(handoffParts, "\n"))
+	}
+	if len(parts) == 0 {
+		return ""
+	}
+	context := strings.Join(parts, "\n") + "\n"
+	const maxChars = 5000
+	if len(context) > maxChars {
+		applogger.Info("AgentFocusContext truncated", "person_id", personID, "chars", len(context), "max_chars", maxChars)
+		return context[:maxChars] + "\n[Focus context truncated.]"
+	}
+	applogger.Info("AgentFocusContext assembled", "person_id", personID, "active_focuses", len(activeWorks), "handoffs", len(records), "chars", len(context))
+	return context
+}
+
+// formatFocusHandoff renders one compact runtime-owned handoff for an LLM prompt.
+func formatFocusHandoff(handoff model.FocusHandoff, scope string) string {
+	entry := fmt.Sprintf("- [%s, %s] %s\n  Result: %s",
+		scope, focusHandoffStatusLabel(handoff.Status), truncateWorkDescription(handoff.Orientation), truncateWorkDescription(handoff.Summary))
+	if handoff.ConfirmedFindings != "" {
+		entry += "\n  Confirmed: " + truncateWorkDescription(handoff.ConfirmedFindings)
+	}
+	if handoff.ArtifactReferences != "" {
+		entry += "\n  Artifacts: " + truncateWorkDescription(handoff.ArtifactReferences)
+	}
+	if handoff.Unresolved != "" {
+		entry += "\n  Unresolved: " + truncateWorkDescription(handoff.Unresolved)
+	}
+	return entry
+}
+
+// focusHandoffStatusLabel renders a persisted handoff status for prompt context.
+func focusHandoffStatusLabel(status model.FocusHandoffStatus) string {
+	switch status {
+	case model.FocusHandoffFailed:
+		return "failed"
+	case model.FocusHandoffCancelled:
+		return "cancelled"
+	case model.FocusHandoffInterrupted:
+		return "interrupted"
+	case model.FocusHandoffPaused:
+		return "paused"
+	default:
+		if status != model.FocusHandoffCompleted {
+			applogger.Error("focus handoff: unknown status", "status", status)
+			return "unknown"
+		}
+		return "completed"
+	}
 }
 
 // truncateWorkDescription bounds a work description to a fixed number of runes

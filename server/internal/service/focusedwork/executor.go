@@ -1,22 +1,22 @@
-// Package task implements the autonomous task execution system for world-interaction requests.
+// Package focusedwork implements sustained, multi-step execution for world-interaction requests.
 //
-// This package provides the task execution pipeline that handles agent-based
-// task execution when the chat system determines that a user request requires
+// This package provides the FocusedWork execution pipeline when the runtime
+// determines that a request requires a sustained course of action with
 // world interaction (e.g., file operations, web searches, code execution).
 //
 // The main entry point is Execute, which:
 //  1. Initializes the session workspace structure
 //  2. Builds the system prompt and tool list
 //  3. Creates the context manager with iteration window
-//  4. Runs the ReAct task loop to completion
-//  5. Returns a TaskResult with success/failure status
+//  4. Runs the ReAct FocusedLoop to completion
+//  5. Returns a FocusedWorkResult with success/failure status
 //
 // Design principles:
-//   - Input: task requirement (structured, not raw user message)
+//   - Input: focused-work guidance (structured, not raw user message)
 //   - Output: final result (success result or failure with reason)
 //   - Internal isolation: all process info is hidden from the outside
 //   - No pollution of the chat system
-package task
+package focusedwork
 
 import (
 	"context"
@@ -26,19 +26,18 @@ import (
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
-	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/llm"
-	taskcontext "qingqiu-world-server/internal/service/task/context"
-	"qingqiu-world-server/internal/service/task/tools"
-	"qingqiu-world-server/internal/service/workspace"
-
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	focusedworkcontext "qingqiu-world-server/internal/service/focusedwork/context"
+	"qingqiu-world-server/internal/service/focusedwork/tools"
+	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/workspace"
 )
 
-// TaskResult represents the outcome of a task execution.
+// FocusedWorkResult represents the outcome of focused-work execution.
 // On success, Output contains the final content. On failure, Error contains the reason.
 // Notes and Workspace are always populated for observability.
-type TaskResult struct {
+type FocusedWorkResult struct {
 	Status      string `json:"status"`
 	Output      string `json:"output,omitempty"`
 	Error       string `json:"error,omitempty"`
@@ -48,34 +47,37 @@ type TaskResult struct {
 }
 
 // GuidanceDirective is a structured guidance message sent from the Runtime
-// to the TaskLoop during execution. It carries both the executable directive
+// to the FocusedLoop during execution. It carries both the executable directive
 // (Guidance) and the cognitive context explaining why (Reason).
 //
 // This struct is passed through the guidance channel instead of a bare string,
-// so the TaskLoop's LLM can understand the full context of a route or cancel
+// so the FocusedLoop's LLM can understand the full context of a route or cancel
 // decision — not just the "what" but also the "why".
 type GuidanceDirective struct {
 	Guidance string // What to do: the executable directive
 	Reason   string // Why: user's original message, inferred intent, and Decide's reasoning
 }
 
-// RunTaskParams contains all parameters needed for the full task pipeline.
+// RunFocusedWorkParams contains all parameters needed for the full FocusedWork pipeline.
 // After the cognitive order refactoring, Guidance from the Decide phase
 // replaces the old Rewrite step — comprehension and decision have already
 // produced a clear execution intent, so rewriting is unnecessary.
-type RunTaskParams struct {
-	LLMConfig  *model.LLMConfig
-	SessionID  int64
-	PersonID   int64 // Person ID of the executing agent
-	WorkID     int64
-	Guidance   string    // Execution intent from Decide phase (replaces Rewrite)
-	Background string    // Full context from Decide phase: trigger event, participants, comprehension
-	Metadata   *Metadata // System-generated traceability info from work creation
-	Ctx        context.Context
-	GuidanceCh <-chan GuidanceDirective // Channel for receiving new guidance during execution
+type RunFocusedWorkParams struct {
+	LLMConfig    *model.LLMConfig
+	SessionID    int64
+	PersonID     int64 // Person ID of the executing agent
+	WorkID       int64
+	Guidance     string           // Execution intent from Decide phase (replaces Rewrite)
+	Background   string           // Full context from Decide phase: trigger event, participants, comprehension
+	FocusContext string           // Runtime-selected related Focus handoffs and shared notes
+	FocusPhase   model.FocusPhase // Runtime-owned phase at FocusedLoop entry
+	Checkpoint   string           // Compact runtime-owned checkpoint at FocusedLoop entry
+	Metadata     *Metadata        // System-generated traceability info from work creation
+	Ctx          context.Context
+	GuidanceCh   <-chan GuidanceDirective // Channel for receiving new guidance during execution
 }
 
-// RunTask executes the full task pipeline using Guidance as the task requirement.
+// RunFocusedWork executes the full FocusedWork pipeline using Guidance as its requirement.
 //
 // After the cognitive order refactoring, the Comprehend-Decide pipeline has
 // already produced a clear execution intent (Guidance). This replaces the
@@ -83,11 +85,11 @@ type RunTaskParams struct {
 // all cognitive work (understanding intent, resolving references, determining
 // what to do) was completed before this point.
 //
-// New guidance can arrive via GuidanceCh during execution. The TaskLoop
+// New guidance can arrive via GuidanceCh during execution. The FocusedLoop
 // observes the channel at each iteration boundary and injects new directives
 // as environment events in the ReAct cycle.
-func RunTask(params RunTaskParams) *TaskResult {
-	applogger.Info("RunTask: starting with Guidance",
+func RunFocusedWork(params RunFocusedWorkParams) *FocusedWorkResult {
+	applogger.Info("RunFocusedWork: starting with Guidance",
 		"session_id", params.SessionID,
 		"guidance", params.Guidance,
 	)
@@ -98,50 +100,56 @@ func RunTask(params RunTaskParams) *TaskResult {
 		applogger.Error("failed to load active search config, proceeding without search", "error", err)
 	}
 
-	return Execute(TaskParams{
-		TaskRequirement: params.Guidance, // Guidance IS the task requirement
-		Guidance:        params.Guidance,
-		Background:      params.Background,
-		Metadata:        params.Metadata,
-		LLMConfig:       params.LLMConfig,
-		MaxIterations:   0,
-		SessionID:       params.SessionID,
-		PersonID:        params.PersonID,
-		WorkID:          params.WorkID,
-		SearchConfig:    &searchConfig,
-		Ctx:             params.Ctx,
-		GuidanceCh:      params.GuidanceCh,
+	return ExecuteFocusedWork(FocusedWorkParams{
+		FocusedWorkRequirement: params.Guidance, // Guidance IS the focused-work requirement
+		Guidance:               params.Guidance,
+		Background:             params.Background,
+		FocusContext:           params.FocusContext,
+		FocusPhase:             params.FocusPhase,
+		Checkpoint:             params.Checkpoint,
+		Metadata:               params.Metadata,
+		LLMConfig:              params.LLMConfig,
+		MaxIterations:          0,
+		SessionID:              params.SessionID,
+		PersonID:               params.PersonID,
+		WorkID:                 params.WorkID,
+		SearchConfig:           &searchConfig,
+		Ctx:                    params.Ctx,
+		GuidanceCh:             params.GuidanceCh,
 	})
 }
 
-// TaskParams contains all parameters needed for task execution.
-type TaskParams struct {
-	TaskRequirement string                   // The task description to execute (from Decide phase Guidance)
-	Guidance        string                   // Execution intent from Decide phase, injected into system prompt
-	Background      string                   // Full context from Decide phase: trigger event, participants, comprehension
-	Metadata        *Metadata                // System-generated traceability info from work creation
-	LLMConfig       *model.LLMConfig         // LLM configuration for the task
-	MaxIterations   int                      // Override for max loop iterations (0 = use default)
-	SessionID       int64                    // Session ID for interaction records and workspace
-	PersonID        int64                    // Person ID for tools that need person context (e.g., wake_me_when)
-	WorkID          int64                    // Work ID for interaction record association
-	SearchConfig    *model.SearchConfig      // Search configuration for web search tool
-	Ctx             context.Context          // Cancellation context from the caller
-	GuidanceCh      <-chan GuidanceDirective // Channel for receiving new guidance during execution
+// FocusedWorkParams contains all parameters needed for focused-work execution.
+type FocusedWorkParams struct {
+	FocusedWorkRequirement string                   // The focused-work requirement from Decide guidance
+	Guidance               string                   // Execution intent from Decide phase, injected into system prompt
+	Background             string                   // Full context from Decide phase: trigger event, participants, comprehension
+	FocusContext           string                   // Runtime-selected related Focus handoffs and shared notes
+	FocusPhase             model.FocusPhase         // Runtime-owned phase at FocusedLoop entry
+	Checkpoint             string                   // Compact runtime-owned checkpoint at FocusedLoop entry
+	Metadata               *Metadata                // System-generated traceability info from work creation
+	LLMConfig              *model.LLMConfig         // LLM configuration for focused work
+	MaxIterations          int                      // Override for max loop iterations (0 = use default)
+	SessionID              int64                    // Session ID for interaction records and workspace
+	PersonID               int64                    // Person ID for tools that need person context (e.g., wake_me_when)
+	WorkID                 int64                    // Work ID for interaction record association
+	SearchConfig           *model.SearchConfig      // Search configuration for web search tool
+	Ctx                    context.Context          // Cancellation context from the caller
+	GuidanceCh             <-chan GuidanceDirective // Channel for receiving new guidance during execution
 }
 
-// Execute runs a task and returns the result.
+// ExecuteFocusedWork runs focused work and returns the result.
 //
-// This is the single entry point for task execution.
+// This is the single entry point for focused-work execution.
 // It creates all necessary components internally and runs
-// the task loop to completion.
-func Execute(params TaskParams) *TaskResult {
+// the FocusedLoop to completion.
+func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 	maxIterations := params.MaxIterations
 	if maxIterations <= 0 {
-		maxIterations = config.Get().TaskMaxIterations
+		maxIterations = config.Get().FocusedWorkMaxIterations
 	}
 
-	applogger.Info("TaskExecutor starting",
+	applogger.Info("FocusedWorkExecutor starting",
 		"session_id", params.SessionID,
 		"max_iterations", maxIterations,
 	)
@@ -165,12 +173,22 @@ func Execute(params TaskParams) *TaskResult {
 	}
 	toolDescStr := strings.Join(toolDescLines, "\n")
 
-	systemPrompt := buildSystemPrompt(params.Background, params.Metadata, buildKBSection(params.PersonID))
+	systemPrompt := buildSystemPrompt(
+		params.Background,
+		params.FocusContext,
+		params.Metadata,
+		buildKBSection(params.PersonID),
+		workspace.GetAgentOwnedSpacePath(params.PersonID),
+		workspace.GetOutputDir(params.PersonID, params.SessionID),
+		params.WorkID,
+		params.FocusPhase,
+		params.Checkpoint,
+	)
 
 	workspaceDir := workspace.GetWorkspacePath(params.PersonID, params.SessionID)
 	outputDir := workspace.GetOutputDir(params.PersonID, params.SessionID)
 
-	contextManager := taskcontext.NewContextManager(
+	contextManager := focusedworkcontext.NewContextManager(
 		systemPrompt,
 		iterationWindow,
 		maxIterationWindow,
@@ -180,7 +198,7 @@ func Execute(params TaskParams) *TaskResult {
 		toolDescStr,
 	)
 
-	// Initial task directive from Decide phase — recorded in guidance history
+	// Initial focused-work directive from Decide — recorded in guidance history
 	// (last user message) instead of the static system prompt for cache optimization.
 	if params.Guidance != "" {
 		contextManager.AddGuidance(params.Guidance, "")
@@ -193,7 +211,7 @@ func Execute(params TaskParams) *TaskResult {
 		llm.TemperatureCreative,
 	)
 
-	taskLoop := NewTaskLoop(
+	focusedLoop := NewFocusedLoop(
 		llmClient,
 		params.LLMConfig,
 		toolList,
@@ -206,7 +224,7 @@ func Execute(params TaskParams) *TaskResult {
 		params.GuidanceCh,
 	)
 
-	loopResult := taskLoop.Run(params.Ctx)
+	loopResult := focusedLoop.Run(params.Ctx)
 
 	finalNotes := writeNotesTool.ReadNotes()
 
@@ -217,7 +235,7 @@ func Execute(params TaskParams) *TaskResult {
 	// compares the current notes.jsonl hash against this file to decide whether
 	// to re-trigger reflection.
 
-	result := &TaskResult{
+	result := &FocusedWorkResult{
 		Workspace: ws,
 		Notes:     finalNotes,
 	}
@@ -229,7 +247,7 @@ func Execute(params TaskParams) *TaskResult {
 	if loopResult.Status == "success" && loopResult.Result != "" {
 		result.Status = "success"
 		result.Output = loopResult.Result
-		applogger.Info("TaskExecutor completed successfully",
+		applogger.Info("FocusedWorkExecutor completed successfully",
 			"session_id", params.SessionID,
 			"output_len", len(result.Output),
 		)
@@ -240,7 +258,7 @@ func Execute(params TaskParams) *TaskResult {
 		} else {
 			result.Error = "Unknown error"
 		}
-		applogger.Error("TaskExecutor failed",
+		applogger.Error("FocusedWorkExecutor failed",
 			"session_id", params.SessionID,
 			"error", result.Error,
 		)
@@ -249,15 +267,31 @@ func Execute(params TaskParams) *TaskResult {
 	return result
 }
 
-// buildSystemPrompt constructs the static system prompt for the task loop.
-// Built once at task start; includes background context, basic rules, and
+// buildSystemPrompt constructs the static system prompt for the FocusedLoop.
+// Built once at FocusedWork start; includes background context, basic rules, and
 // static instruction blocks. Directives (from Decide phase and routeWork)
 // are managed separately by ContextManager and injected into the last user
 // message to preserve LLM prefix caching on the system prompt.
-func buildSystemPrompt(background string, metadata *Metadata, kbSection string) string {
+func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSection, aosRoot, defaultDir string, focusID int64, focusPhase model.FocusPhase, checkpoint string) string {
 	parts := []string{
+		"[Focus Brief]",
+		fmt.Sprintf("FocusedWork ID: %d", focusID),
+		fmt.Sprintf("Runtime phase: %s", focusPhaseLabel(focusPhase)),
+		"Runtime checkpoint: " + checkpoint,
+		"",
+		"[Focused Mode]",
+		"You are already inside a FocusedLoop: a sustained course of work whose next steps may depend on what you observe and do.",
+		"Own the course from the current guidance through verification, notes, and a clear handoff. Do not reduce it to a one-shot reply when further investigation or action is needed.",
+		"Use tools iteratively when their results affect your next decision. Keep durable progress in notes so a later Focus can understand what happened without relying on this conversation window.",
+		"Finish when the guidance is genuinely satisfied, or when you have recorded the blocker, unresolved work, and a concrete next step.",
+		"Treat notes and handoffs as source material. Confirm facts before presenting them as current results.",
+		"When finishing, use explicit sections named Confirmed Findings, Artifacts, Unresolved, and Next Step. List only Jinshu IDs or AOS resource references under Artifacts; use 'none' when there are no artifacts.",
+		"",
 		"[Background]",
 		background,
+	}
+	if focusContext != "" {
+		parts = append(parts, "[Related Focus Context]", focusContext)
 	}
 
 	// Inject Metadata as a [Metadata] section if available.
@@ -286,7 +320,10 @@ func buildSystemPrompt(background string, metadata *Metadata, kbSection string) 
 		"Always verify your actions by checking the results.",
 		"",
 		"WORKSPACE ORGANIZATION:",
-		"- Before creating files, consider whether this task relates to an existing project:",
+		fmt.Sprintf("- Your Agent Owned Space resource root is %s. You may read and write any resource beneath it.", aosRoot),
+		fmt.Sprintf("- This FocusedWork defaults to %s. Other work/<session_id>/ directories and private/ remain available when useful.", defaultDir),
+		"- Runtime metadata is outside Agent Owned Space and is not a file resource you can access.",
+		"- Before creating files, consider whether this Focus relates to an existing project:",
 		"  - If starting a new project (e.g., building an app, writing a report), create a dedicated subdirectory for it",
 		"  - If continuing or modifying existing work, first check what subdirectories exist and work within the appropriate one",
 		"- This keeps your workspace organized but is not enforced — use your judgment",
@@ -332,7 +369,7 @@ func buildSystemPrompt(background string, metadata *Metadata, kbSection string) 
 		"- Each entry is APPENDED, not overwritten",
 		"- Write CONCISE entries — notes have a size limit",
 		"- Only write IMPORTANT information — skip trivial or obvious facts",
-		"- Ask: would losing this information hurt the task? If not, skip it",
+		"- Ask: would losing this information hurt a later continuation of this FocusedWork? If not, skip it",
 		"- Include file references when relevant",
 		"- Use conflicts_with when correcting earlier decisions",
 		"- Write self-contained entries (future LLM calls have no memory)",
@@ -347,20 +384,39 @@ func buildSystemPrompt(background string, metadata *Metadata, kbSection string) 
 		"- External API response IDs, user-provided tokens, and unique session identifiers should be preserved.",
 		"",
 		"[Past Experience]",
-		"You have past experiences (lessons learned from prior tasks). Use scan_my_experience to search for relevant experiences by keyword, then recall_my_experience to read the full content of a specific one.",
+		"You have past experiences (lessons learned from prior FocusedWork runs and other work). Use scan_my_experience to search for relevant experiences by keyword, then recall_my_experience to read the full content of a specific one.",
 	)
 
 	return strings.Join(parts, "\n")
 }
 
-// buildKBSection renders the authorized knowledge base inventory for the task
+// focusPhaseLabel renders a persisted Focus phase for the execution prompt.
+func focusPhaseLabel(phase model.FocusPhase) string {
+	switch phase {
+	case model.FocusPhaseExecuting:
+		return "executing"
+	case model.FocusPhasePaused:
+		return "paused"
+	case model.FocusPhaseCompleted:
+		return "completed"
+	case model.FocusPhaseFailed:
+		return "failed"
+	case model.FocusPhaseCancelled:
+		return "cancelled"
+	default:
+		applogger.Error("focused work: unknown focus phase", "focus_phase", phase)
+		return "unknown"
+	}
+}
+
+// buildKBSection renders the authorized knowledge base inventory for the FocusedWork
 // system prompt. KB contents are reachable only through scan_kb /
 // list_kb_documents (retrieval, never raw file reads). Returns an empty string
 // when the agent has no authorized KBs so the section is omitted entirely.
 func buildKBSection(personID int64) string {
 	kbs, err := dops.ListAuthorizedKBs(personID)
 	if err != nil {
-		applogger.Error("failed to load authorized KBs for task prompt", "person_id", personID, "error", err)
+		applogger.Error("failed to load authorized KBs for focused-work prompt", "person_id", personID, "error", err)
 		return ""
 	}
 	if len(kbs) == 0 {
@@ -380,14 +436,14 @@ func buildKBSection(personID int64) string {
 	return b.String()
 }
 
-// buildToolList creates the list of available tools for the task loop.
+// buildToolList creates the list of available tools for the FocusedLoop.
 // Always includes read_text_file, write_text_file, edit_text_file, bash,
 // write_notes, scan_my_experience, recall_my_experience, scan_kb and
 // list_kb_documents; adds web_search if search config is available.
 //
 // Note: wake_me_when was promoted to a top-level Action (ActionCreateAlarm)
 // in 0.1.3 — setting an alarm is a world action, not a workspace operation.
-// It is no longer registered as a TaskLoop tool.
+// It is no longer registered as a FocusedLoop tool.
 func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
 	toolList := []tools.Tool{
 		tools.NewReadTextFileTool(personID, sessionID),

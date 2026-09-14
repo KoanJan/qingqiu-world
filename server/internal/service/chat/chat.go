@@ -24,7 +24,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
-	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/service/focusedwork"
 )
 
 // User-friendly error message for unexpected failures
@@ -51,7 +51,7 @@ type ChatResult struct {
 //   - trigger: trigger source that caused this pipeline run.
 //     TriggerNone for autonomous (heartbeat) Chat actions.
 //   - chatCtx: optional background context (nil when neither Comprehend nor
-//     task result provides it).
+//     focused-work result provides it).
 func ExecuteChat(
 	ctx context.Context,
 	session *model.Session,
@@ -82,19 +82,22 @@ func ExecuteChat(
 		p.needsClarification = chatCtx.NeedsClarification
 		p.clarification = chatCtx.Clarification
 
-		if chatCtx.TaskResult != nil {
-			p.taskResult = &TaskResultForAssembly{
-				Status: chatCtx.TaskResult.Status,
+		if chatCtx.FocusedWorkResult != nil {
+			p.focusedWorkResult = &FocusedWorkResultForAssembly{
+				Status: chatCtx.FocusedWorkResult.Status,
 			}
-			if chatCtx.TaskResult.Output != "" {
-				p.taskResult.Result = chatCtx.TaskResult.Output
+			if chatCtx.FocusedWorkResult.Output != "" {
+				p.focusedWorkResult.Result = chatCtx.FocusedWorkResult.Output
 			}
-			if chatCtx.TaskResult.Error != "" {
-				p.taskResult.Reason = chatCtx.TaskResult.Error
+			if chatCtx.FocusedWorkResult.Error != "" {
+				p.focusedWorkResult.Reason = chatCtx.FocusedWorkResult.Error
 			}
-			if chatCtx.TaskResult.Notes != "" {
-				p.taskResult.Notes = chatCtx.TaskResult.Notes
+			if chatCtx.FocusedWorkResult.Notes != "" {
+				p.focusedWorkResult.Notes = chatCtx.FocusedWorkResult.Notes
 			}
+		}
+		if chatCtx.FocusContext != "" {
+			p.guidance += "\n\n[Related Focus Context]\n" + chatCtx.FocusContext
 		}
 	}
 
@@ -128,7 +131,7 @@ func ExecuteChat(
 // semantically required. The caller populates different subsets depending on
 // the chat trigger path:
 //   - External events: PersonState, HistorySegments, KBSegments, NeedsClarification, Clarification
-//   - Task completion: TaskResult set alongside external event fields
+//   - Focused-work completion: FocusedWorkResult set alongside external event fields
 //   - Heartbeat (autonomous): nil (guidance alone drives the chat)
 type ChatContext struct {
 	// PersonState is the inferred state of the other participant.
@@ -141,8 +144,10 @@ type ChatContext struct {
 	NeedsClarification bool
 	// Clarification is the clarifying question text.
 	Clarification string
-	// TaskResult carries the result of a completed TaskWork.
-	TaskResult *task.TaskResult
+	// FocusedWorkResult carries the result of completed focused work.
+	FocusedWorkResult *focusedwork.FocusedWorkResult
+	// FocusContext carries runtime-selected handoffs and shared session notes.
+	FocusContext string
 }
 
 // formatAlarmNotification builds the alarm notification prompt section from

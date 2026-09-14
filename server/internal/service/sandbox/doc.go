@@ -1,6 +1,6 @@
 // Package sandbox provides cross-platform kernel-level sandbox execution for agent commands.
 //
-// The single external entry point is Run(workspace, personID, sessionID, cmd).
+// The single external entry point is Run(workspace, policyDir, cmd).
 // Internally dispatches to platform-native mechanisms:
 //   - macOS: sandbox-exec (Seatbelt MACF), with a per-session policy file
 //   - Linux: bubblewrap (user namespaces + mount namespaces), embedded bwrap binary
@@ -9,7 +9,7 @@
 // # Design principle: availability over security
 //
 // When the platform sandbox is unavailable, commands fall back to plain os/exec
-// rather than blocking the task. This trade-off is deliberate: an agent that
+// rather than blocking focused work. This trade-off is deliberate: an agent that
 // cannot execute commands is useless, while a sandbox breach (even if unlikely)
 // is limited by the fact that agents operate on isolated session workspaces.
 //
@@ -18,17 +18,19 @@
 // macOS (darwin.go):
 //   - A one-time probe tests whether sandbox-exec can load Seatbelt policies
 //     (SIP may block sandbox_apply). Result is cached via sync.Once.
-//   - Policy template (seatbelt_template.sb) restricts file-write to the
-//     workspace directory + /tmp + /dev nodes. file-read and network are
-//     allowed by default (allow-default).
+//   - Policy template (seatbelt_template.sb) hides all data/ subtrees except
+//     the current agent's AOS. Outside data/, read, execution and network
+//     remain available by default, while protected system directories stay
+//     write-denied.
 //   - Policy files are stored outside the workspace ({DATA_ROOT}/aac/{personID}/{sessionID}/sandbox.sb)
 //     to prevent tampering. Generated once per session, reused for subsequent calls.
 //
 // Linux (linux.go):
 //   - The bwrap binary is embedded per-architecture (bwrap_linux_{amd64,arm64,arm,386}).
 //     It is extracted to a temp file at runtime, cached for the process lifetime.
-//   - Sandbox strategy: allow-default (entire root filesystem read-only, workspace
-//     read-write). Simpler than per-path binding — no need to enumerate FHS symlinks.
+//   - Sandbox strategy: the root filesystem is read-only; data/ is hidden by a
+//     tmpfs and the current agent's AOS is re-bound read-write. This avoids
+//     enumerating host paths while keeping runtime data inaccessible.
 //   - Process isolation: new session, PID namespace, IPC namespace, drop all caps.
 //     Network is shared with host (/tmp, /var/tmp, /dev/shm are tmpfs).
 //   - BwrapAvailable() tests namespace creation with a 5-second timeout.

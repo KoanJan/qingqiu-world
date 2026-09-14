@@ -87,6 +87,12 @@ func serializeEventPayload(event *eventqueue.AgentEvent) (string, error) {
 			return "", fmt.Errorf("invalid jinshu sent listed payload")
 		}
 		payloadJSON, err = json.Marshal(payload)
+	case eventqueue.EventTypeOwnedSpaceInspected:
+		payload, ok := event.Payload.(*eventqueue.OwnedSpaceInspectedPayload)
+		if !ok || payload == nil {
+			return "", fmt.Errorf("invalid owned space inspected payload")
+		}
+		payloadJSON, err = json.Marshal(payload)
 	default:
 		return "", fmt.Errorf("unsupported event type %d", event.Type)
 	}
@@ -182,6 +188,12 @@ func unmarshalEventPayload(event *eventqueue.AgentEvent, raw json.RawMessage) er
 		event.Payload = payload
 	case eventqueue.EventTypeJinshuSentListed:
 		payload := &eventqueue.JinshuSentListedPayload{}
+		if err := json.Unmarshal(raw, payload); err != nil {
+			return err
+		}
+		event.Payload = payload
+	case eventqueue.EventTypeOwnedSpaceInspected:
+		payload := &eventqueue.OwnedSpaceInspectedPayload{}
 		if err := json.Unmarshal(raw, payload); err != nil {
 			return err
 		}

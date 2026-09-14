@@ -298,6 +298,8 @@
     "title": "Agent 活动日志",
     "noRecords": "暂无 Agent 活动记录",
     "loadError": "加载活动记录失败",
+    "retry": "重试",
+    "loadEarlier": "加载更早的活动记录",
     "expand": "展开",
     "collapse": "收起",
     "tool": {

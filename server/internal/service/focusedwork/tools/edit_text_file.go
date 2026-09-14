@@ -17,7 +17,7 @@ type EditTextFileTool struct {
 func NewEditTextFileTool(personID, sessionID int64) *EditTextFileTool {
 	return &EditTextFileTool{
 		core: servicetools.NewEditFileTool(
-			workspace.GetWorkspacePath(personID, sessionID),
+			workspace.GetAgentOwnedSpacePath(personID),
 			workspace.GetOutputDir(personID, sessionID),
 		),
 	}
@@ -37,7 +37,7 @@ func (e *EditTextFileTool) Schema() llm.FunctionDefinition {
 			"properties": map[string]interface{}{
 				"file_path": map[string]interface{}{
 					"type":        "string",
-					"description": "Path to the file to edit. Relative paths are resolved against your working directory.",
+					"description": "Path to the file to edit. Relative paths default to this Focus's working directory; absolute paths may address any resource inside Agent Owned Space.",
 				},
 				"old_str": map[string]interface{}{
 					"type":        "string",

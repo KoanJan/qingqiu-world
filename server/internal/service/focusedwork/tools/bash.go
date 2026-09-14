@@ -19,7 +19,7 @@ type BashTool struct {
 // Workspace paths are derived via the workspace package; sandbox policy
 // directory is built as {DATA_ROOT}/aac/{personID}/{sessionID}.
 func NewBashTool(personID, sessionID int64) *BashTool {
-	sessionRoot := workspace.GetWorkspacePath(personID, sessionID)
+	sessionRoot := workspace.GetAgentOwnedSpacePath(personID)
 	outputDir := workspace.GetOutputDir(personID, sessionID)
 	policyDir := workspace.GetSandboxPolicyDir(personID, sessionID)
 	return &BashTool{

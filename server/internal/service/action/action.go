@@ -5,7 +5,7 @@
 package action
 
 import (
-	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/service/focusedwork"
 )
 
 // ActionType represents the type of action the Decide phase concludes.
@@ -14,23 +14,23 @@ import (
 //   - Self-contained actions: Chat, CreateAlarm, UpdateBio — the Action
 //     itself is a complete description of what to do; no Work iteration is
 //     required.
-//   - Task-oriented actions: CreateTask, RouteTask, CancelTask — these
-//     operate on TaskWorks that run a multi-step ReAct loop.
+//   - Focus-oriented actions: StartFocusedWork, RouteFocusedWork, CancelFocusedWork — these
+//     operate on FocusedLoops that run a multi-step ReAct loop.
 type ActionType int
 
 const (
 	// Chat sends a chat message to another Person. No iteration loop.
 	Chat ActionType = iota
-	// CreateTask starts a new multi-step TaskWork. The task will enter a
-	// ReAct loop using tools (search, file operations, etc.).
-	CreateTask
-	// RouteTask routes the current event to an existing active TaskWork as
+	// StartFocusedWork starts a new multi-step FocusedWork. It enters a
+	// FocusedLoop using tools (search, file operations, etc.).
+	StartFocusedWork
+	// RouteFocusedWork routes the current event to an existing active work as
 	// a new directive or constraint.
-	RouteTask
-	// CancelTask requests an existing active TaskWork to stop and wrap up.
-	CancelTask
+	RouteFocusedWork
+	// CancelFocusedWork requests an existing active work to stop and wrap up.
+	CancelFocusedWork
 	// CreateAlarm creates a scheduled alarm directly, without entering
-	// TaskLoop. This is a self-contained world action.
+	// FocusedLoop. This is a self-contained world action.
 	CreateAlarm
 	// UpdateBio updates the agent's own Bio field — a self-reflective action.
 	// Available during heartbeat. No iteration loop.
@@ -44,16 +44,16 @@ const (
 
 	// InspectJinshu reads the contents of a received jinshu through a dedicated
 	// lightweight loop (read + summarize tools only). It is separate from the
-	// full task loop — reading one's own delivery is perception, not a task.
+	// full FocusedLoop — reading one's own delivery is perception, not focused work.
 	InspectJinshu
 
 	// ListReceivedJinshu lists the agent's received jinshu through a paginated keyword
 	// search, so the agent can locate a jinshu_id before inspecting it.
 	ListReceivedJinshu
 
-	// SendJinshu sends files from the agent's private space to another person
-	// as a jinshu. This is the Decide-level "share a deliverable" action,
-	// distinct from EnterPrivateSpace (which is for working inside the space).
+	// SendJinshu sends selected resources from the agent's Agent Owned Space to
+	// another person as a jinshu. This is the Decide-level "share a deliverable"
+	// action, distinct from EnterPrivateSpace (which is for working inside private/).
 	// Available during heartbeat. No iteration loop — direct delivery.
 	SendJinshu
 
@@ -61,15 +61,18 @@ const (
 	// search, mirroring ListReceivedJinshu but over outbound deliveries instead of
 	// inbound ones. Available during external events only.
 	ListSentJinshu
+
+	// InspectOwnedSpace lists bounded filesystem metadata from Agent Owned Space.
+	InspectOwnedSpace
 )
 
-// WorkPlan describes a task to be created via CreateTask action.
-// It carries Guidance (the execution intent) so the task knows what to do
+// WorkPlan describes a FocusedWork to be created via StartFocusedWork action.
+// It carries Guidance (the execution intent) so the focused work knows what to do
 // without re-interpreting the event. Background and Reason have been lifted
 // to the Action level.
 type WorkPlan struct {
-	Guidance string         `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
-	Metadata *task.Metadata `json:"-"` // System-generated traceability info, not written by LLM
+	Guidance string                `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
+	Metadata *focusedwork.Metadata `json:"-"` // System-generated traceability info, not written by LLM
 }
 
 // JinshuPlan describes a received jinshu the agent wants to read via the
@@ -96,13 +99,20 @@ type ListSentJinshuParams struct {
 	Limit int    `json:"limit" jsonschema:"description=Results per page (1-50),required"`
 }
 
-// SendJinshuPlan describes files the agent wants to send from its private
-// space to another person as a jinshu, produced by the SendJinshu action.
+// SendJinshuPlan describes Agent Owned Space resources the agent wants to
+// send to another person as a jinshu, produced by the SendJinshu action.
 type SendJinshuPlan struct {
 	ToPersonID  int64    `json:"to_person_id" jsonschema:"description=ID of the recipient person,required"`
 	Topic       string   `json:"topic" jsonschema:"description=Short subject/topic for the jinshu,required"`
 	Description string   `json:"description,omitempty" jsonschema:"description=Optional note describing what is being sent and why"`
-	Paths       []string `json:"paths" jsonschema:"description=List of file or directory paths relative to your private-space working directory,required"`
+	Paths       []string `json:"paths" jsonschema:"description=List of AOS file or directory locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.,required"`
+}
+
+// OwnedSpaceInspectionPlan is a bounded metadata-only AOS inspection request.
+type OwnedSpaceInspectionPlan struct {
+	Scope string `json:"scope" jsonschema:"description=One of work, private, root, or work/<session_id>. Default is root."`
+	Query string `json:"query,omitempty" jsonschema:"description=Optional plain substring filter for path names; shell and glob syntax are not supported."`
+	Limit int    `json:"limit" jsonschema:"description=Maximum result count from 1 to 50,required"`
 }
 
 // ChatPlan describes a chat message delivery via the Chat action.
@@ -161,15 +171,15 @@ type BioUpdate struct {
 // Action is a single atomic decision from the Decide phase.
 // Each Action is self-contained: it carries its own type and all associated data.
 // A DecisionResult can contain multiple Actions of different types, enabling
-// compound decisions like "cancel a task and reply to the person".
+// compound decisions like "cancel focused work and reply to the person".
 //
 // Background and Reason capture the cognitive "why" of the action at the
 // decision level. Plan sub-structures capture the executive "how".
 //
 // The payload depends on the action type:
 //   - Chat:         uses ChatPlan (guidance + delivery target for the message)
-//   - CreateTask:   uses WorkPlan (guidance for the new task)
-//   - RouteTask / CancelTask: uses WorkGuidance (target_work_id + guidance)
+//   - StartFocusedWork:   uses WorkPlan (guidance for the new focused work)
+//   - RouteFocusedWork / CancelFocusedWork: uses WorkGuidance (target_work_id + guidance)
 //   - CreateAlarm:  uses AlarmPlan (trigger_at + message + action + action_content)
 //   - UpdateBio:    uses BioUpdate (new bio text)
 //   - EnterPrivateSpace: uses Background+Reason as Thoughts (no plan struct)
@@ -178,7 +188,7 @@ type BioUpdate struct {
 //   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
 //   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
 type Action struct {
-	Type ActionType `json:"type" jsonschema:"description=Action type: 0=chat (send a chat message), 1=create_task (start a multi-step task), 2=route_task (route event to an active task), 3=cancel_task (cancel an active task), 4=create_alarm (set a future alarm), 5=update_bio (update your self-introduction), 6=enter_private_space (enter your private space), 7=inspect_jinshu (read a received jinshu's contents), 8=list_received_jinshu (list your received jinshu by keyword+page), 9=send_jinshu (send private-space files to a person as a jinshu), 10=list_sent_jinshu (list your sent jinshu by keyword+page),enum=0,enum=1,enum=2,enum=3,enum=4,enum=5,enum=6,enum=7,enum=8,enum=9,enum=10,required"`
+	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=inspect_jinshu, 8=list_received_jinshu, 9=send_jinshu, 10=list_sent_jinshu, 11=inspect_owned_space,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -187,12 +197,13 @@ type Action struct {
 	Reason string `json:"reason" jsonschema:"description=Why you chose this specific action rather than alternatives. What led to this choice.,required"`
 
 	ChatPlan                 *ChatPlan                 `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
-	WorkPlan                 *WorkPlan                 `json:"work_plan,omitempty" jsonschema:"description=When type is create_task(1): the task work plan"`
-	WorkGuidance             *WorkGuidance             `json:"work_guidance,omitempty" jsonschema:"description=When type is route_task(2) or cancel_task(3): the directive to send to the target work"`
+	WorkPlan                 *WorkPlan                 `json:"work_plan,omitempty" jsonschema:"description=When type is start_focused_work(1): the focused work plan"`
+	WorkGuidance             *WorkGuidance             `json:"work_guidance,omitempty" jsonschema:"description=When type is route_focused_work(2) or cancel_focused_work(3): the directive to send to the target work"`
 	AlarmPlan                *AlarmPlan                `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
 	BioUpdate                *BioUpdate                `json:"bio_update,omitempty" jsonschema:"description=When type is update_bio(5): the new bio text"`
 	JinshuPlan               *JinshuPlan               `json:"jinshu_plan,omitempty" jsonschema:"description=When type is inspect_jinshu(7): the jinshu reading plan"`
 	ListReceivedJinshuParams *ListReceivedJinshuParams `json:"list_received_jinshu_params,omitempty" jsonschema:"description=When type is list_received_jinshu(8): the paginated jinshu search params"`
 	SendJinshuPlan           *SendJinshuPlan           `json:"send_jinshu_plan,omitempty" jsonschema:"description=When type is send_jinshu(9): the jinshu delivery plan"`
 	ListSentJinshuParams     *ListSentJinshuParams     `json:"list_sent_jinshu_params,omitempty" jsonschema:"description=When type is list_sent_jinshu(10): the paginated sent-jinshu search params"`
+	OwnedSpaceInspectionPlan *OwnedSpaceInspectionPlan `json:"owned_space_inspection_plan,omitempty" jsonschema:"description=When type is inspect_owned_space(11): the bounded metadata inspection request"`
 }

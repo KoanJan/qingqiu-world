@@ -170,7 +170,7 @@ func (l *ReadLoop) Run(ctx context.Context) (string, error) {
 	return l.finalize(ctx)
 }
 
-// buildInitialMessages sets up the system prompt plus the initial read task.
+// buildInitialMessages sets up the system prompt plus the initial read focusedwork.
 func (l *ReadLoop) buildInitialMessages() {
 	l.messages = nil
 

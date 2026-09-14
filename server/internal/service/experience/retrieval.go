@@ -21,15 +21,15 @@ type SearchResult struct {
 // experiences. Returns results sorted by descending cosine similarity,
 // filtered by minScore.
 // Returns nil, nil when the embedding service is not configured.
-func SearchExperiences(ctx context.Context, personID int64, taskDescription string, topN int, minScore float64) ([]SearchResult, error) {
+func SearchExperiences(ctx context.Context, personID int64, workDescription string, topN int, minScore float64) ([]SearchResult, error) {
 	if embeddingSvc == nil {
 		return nil, nil
 	}
 	panicIfNotReady()
 
-	queryVec, err := embeddingSvc.EmbedSingle(ctx, taskDescription)
+	queryVec, err := embeddingSvc.EmbedSingle(ctx, workDescription)
 	if err != nil {
-		return nil, fmt.Errorf("embed task description: %w", err)
+		return nil, fmt.Errorf("embed work description: %w", err)
 	}
 	if len(queryVec) == 0 {
 		return nil, nil

@@ -7,12 +7,10 @@ import (
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/workspace"
-
-	servicetools "qingqiu-world-server/internal/service/tools"
 )
 
 // CopyFromJinshuTool copies the files delivered by a received jinshu into the
-// agent's session output directory.
+// agent's Agent Owned Space.
 type CopyFromJinshuTool struct {
 	personID      int64
 	sessionID     int64
@@ -33,15 +31,15 @@ func (c *CopyFromJinshuTool) Name() ToolName { return ToolNameCopyFromJinshu }
 
 // Description returns a brief description of the tool.
 func (c *CopyFromJinshuTool) Description() string {
-	return "Copy files from a received jinshu into your output directory"
+	return "Copy files from a received jinshu into your Agent Owned Space"
 }
 
 // Schema returns the LLM function definition for the tool.
 func (c *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: c.Name().String(),
-		Description: "Copy the files delivered by a received jinshu into a directory under your " +
-			"output/ directory. The target directory is created if it does not exist, and existing " +
+		Description: "Copy the files delivered by a received jinshu into an Agent Owned Space directory. " +
+			"Use work/<session_id>/... or private/...; bare paths remain relative to output/. The target directory is created if it does not exist, and existing " +
 			"files with the same name are overwritten.",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -52,7 +50,7 @@ func (c *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"target_relative_dir": map[string]interface{}{
 					"type":        "string",
-					"description": "Directory under your output/ directory to copy the files into.",
+					"description": "Target Agent Owned Space directory.",
 				},
 			},
 			"required": []string{"jinshu_id", "target_relative_dir"},
@@ -77,8 +75,7 @@ func (c *CopyFromJinshuTool) Execute(args map[string]interface{}) (string, error
 		return "", err
 	}
 
-	outputDir := workspace.GetOutputDir(c.personID, c.sessionID)
-	targetDir, err := servicetools.ResolvePath(targetRel, outputDir, outputDir)
+	targetDir, _, err := workspace.ResolveAOSLocator(c.personID, c.sessionID, targetRel)
 	if err != nil {
 		return "", fmt.Errorf("invalid target_relative_dir %q: %w", targetRel, err)
 	}

@@ -49,7 +49,7 @@ type pipeline struct {
 	kbSegments         []comprehendTypes.Segment
 	needsClarification bool
 	clarification      string
-	taskResult         *TaskResultForAssembly
+	focusedWorkResult  *FocusedWorkResultForAssembly
 }
 
 // loadMessages loads the trigger message from the database (when applicable),
@@ -168,7 +168,7 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 		p.kbSegments,
 		-1,
 		personStateDescription,
-		p.taskResult,
+		p.focusedWorkResult,
 		p.partnerName,
 		p.selfName,
 		p.aiPersonID,
@@ -270,7 +270,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 		relevantSegments,
 		summaryVersion,
 		personStateDescription,
-		p.taskResult,
+		p.focusedWorkResult,
 		p.partnerName,
 		p.selfName,
 		p.aiPersonID,
@@ -317,7 +317,7 @@ func (p *pipeline) streamResponse(ctx context.Context, messages []llm.Message) (
 	return fullContent, nil
 }
 
-// postProcess handles post-response tasks.
+// postProcess handles post-response work.
 // Note: Summary generation is now triggered at the message creation level
 // (after any message is committed, regardless of sender), not here.
 func (p *pipeline) postProcess(ctx context.Context) {

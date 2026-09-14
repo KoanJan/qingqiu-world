@@ -635,7 +635,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 
 // workStatusLabel renders a work status as a short human-readable label for
 // profile evidence text.
-func workStatusLabel(status int) string {
+func workStatusLabel(status model.WorkStatus) string {
 	switch status {
 	case model.WorkStatusCompleted:
 		return "completed"

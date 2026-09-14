@@ -38,19 +38,26 @@ func sandboxExecRunnable() bool {
 	return err == nil
 }
 
-// TestGeneratePolicy_WorkspaceReplaced verifies that the generated Seatbelt policy replaces
-// the $WORKSPACE placeholder with the actual workspace path.
-func TestGeneratePolicy_WorkspaceReplaced(t *testing.T) {
+// TestGeneratePolicy_PlaceholdersReplaced verifies that the generated Seatbelt policy replaces
+// the $WORKSPACE and $DATAROOT placeholders with the actual paths.
+func TestGeneratePolicy_PlaceholdersReplaced(t *testing.T) {
 	requireDarwin(t)
 
 	workspace := "/tmp/test-workspace"
-	policy := generatePolicy(workspace)
+	dataRoot := "/tmp/test-data"
+	policy := generatePolicy(workspace, dataRoot)
 
 	if strings.Contains(policy, "$WORKSPACE") {
 		t.Error("policy still contains $WORKSPACE placeholder after generation")
 	}
 	if !strings.Contains(policy, workspace) {
 		t.Errorf("policy does not contain workspace path %q", workspace)
+	}
+	if strings.Contains(policy, "$DATAROOT") {
+		t.Error("policy still contains $DATAROOT placeholder after generation")
+	}
+	if !strings.Contains(policy, dataRoot) {
+		t.Errorf("policy does not contain data root path %q", dataRoot)
 	}
 }
 
@@ -160,5 +167,76 @@ func TestRunDarwin_EmptyCmd(t *testing.T) {
 	_, _, err := Run("/tmp/ws", "/tmp/ws", []string{})
 	if err == nil {
 		t.Error("expected error for empty cmd")
+	}
+}
+
+// runSandboxExec applies the given Seatbelt policy file to a command and returns
+// the error from sandbox-exec. A nil error means the command ran successfully
+// under the policy; a non-nil error means the policy blocked it (or exec failed).
+func runSandboxExec(policyPath string, args ...string) error {
+	cmdArgs := append([]string{"-f", policyPath}, args...)
+	_, err := exec.Command("/usr/bin/sandbox-exec", cmdArgs...).CombinedOutput()
+	return err
+}
+
+// TestSeatbeltDataConfinement verifies the data/ confinement rule: the agent's own
+// AOS subdir is readable and writable, while every other subtree under data/ is
+// denied (invisible and unwritable).
+func TestSeatbeltDataConfinement(t *testing.T) {
+	requireDarwin(t)
+	if !sandboxExecRunnable() {
+		t.Skip("sandbox-exec cannot apply policies (sandbox_apply denied)")
+	}
+
+	dataRoot := t.TempDir()
+	workspace := filepath.Join(dataRoot, "aos", "2")
+	if err := os.MkdirAll(workspace, 0700); err != nil {
+		t.Fatalf("failed to create workspace: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(dataRoot, "aosmeta"), 0700); err != nil {
+		t.Fatalf("failed to create aosmeta: %v", err)
+	}
+
+	// Canonicalize to match the symlink-resolved paths Seatbelt actually evaluates
+	// (macOS exposes /var -> /private/var, /tmp -> /private/tmp).
+	dataRoot = absolutePath(dataRoot)
+	workspace = absolutePath(workspace)
+
+	// Pre-create files used for the read checks.
+	if err := os.WriteFile(filepath.Join(workspace, "ok.txt"), []byte("hello"), 0600); err != nil {
+		t.Fatalf("failed to write workspace file: %v", err)
+	}
+	secret := filepath.Join(dataRoot, "aosmeta", "secret.txt")
+	if err := os.WriteFile(secret, []byte("topsecret"), 0600); err != nil {
+		t.Fatalf("failed to write secret file: %v", err)
+	}
+
+	policy := generatePolicy(workspace, dataRoot)
+	policyFile, err := os.CreateTemp("", "pbsb-confinement-*.sb")
+	if err != nil {
+		t.Fatalf("failed to create policy file: %v", err)
+	}
+	defer os.Remove(policyFile.Name())
+	if _, err := policyFile.WriteString(policy); err != nil {
+		policyFile.Close()
+		t.Fatalf("failed to write policy: %v", err)
+	}
+	policyFile.Close()
+
+	// Read inside own AOS must be allowed.
+	if err := runSandboxExec(policyFile.Name(), "cat", filepath.Join(workspace, "ok.txt")); err != nil {
+		t.Errorf("read inside own AOS should succeed, got: %v", err)
+	}
+	// Write inside own AOS must be allowed.
+	if err := runSandboxExec(policyFile.Name(), "touch", filepath.Join(workspace, "new.txt")); err != nil {
+		t.Errorf("write inside own AOS should succeed, got: %v", err)
+	}
+	// Read a sibling subtree under data/ must be denied.
+	if err := runSandboxExec(policyFile.Name(), "cat", secret); err == nil {
+		t.Error("read of data/aosmeta/secret.txt should have been denied")
+	}
+	// Write a sibling subtree under data/ must be denied.
+	if err := runSandboxExec(policyFile.Name(), "touch", filepath.Join(dataRoot, "aosmeta", "evil.txt")); err == nil {
+		t.Error("write to data/aosmeta/evil.txt should have been denied")
 	}
 }

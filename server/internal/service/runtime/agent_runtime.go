@@ -19,10 +19,11 @@ import (
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/focusedwork"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/privatespace"
-	"qingqiu-world-server/internal/service/task"
+	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -355,7 +356,7 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation, actions []action.Action) {
 	for _, act := range actions {
 		switch act.Type {
-		case action.RouteTask, action.CancelTask:
+		case action.RouteFocusedWork, action.CancelFocusedWork:
 			if act.WorkGuidance == nil {
 				applogger.Error("work guidance is missing", "agent_config_id", r.agentConfigID, "action_type", act.Type)
 				continue
@@ -365,20 +366,20 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				applogger.Error("target work not found", "agent_config_id", r.agentConfigID, "work_id", act.WorkGuidance.TargetWorkID)
 				continue
 			}
-			if act.Type == action.CancelTask {
+			if act.Type == action.CancelFocusedWork {
 				target.abandon()
 				continue
 			}
-			target.FeedGuidance(task.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason})
+			target.FeedGuidance(focusedwork.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason})
 		case action.Chat:
 			if act.ChatPlan == nil {
 				applogger.Error("chat action has no chat plan", "agent_config_id", r.agentConfigID)
 				continue
 			}
 			go r.executeChat(ctx, situation, act.ChatPlan)
-		case action.CreateTask:
+		case action.StartFocusedWork:
 			if act.WorkPlan == nil {
-				applogger.Error("create_task action has no work plan", "agent_config_id", r.agentConfigID)
+				applogger.Error("start_focused_work action has no work plan", "agent_config_id", r.agentConfigID)
 				continue
 			}
 			w, success := r.newWork(situation, act)
@@ -388,7 +389,7 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			}
 			if situation.Matter.Event != nil {
 				if payload, ok := situation.Matter.Event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil {
-					w.taskResult = &task.TaskResult{Status: payload.Status, Output: payload.TaskOutput, Error: payload.TaskError}
+					w.focusedWorkResult = &focusedwork.FocusedWorkResult{Status: payload.Status, Output: payload.WorkOutput, Error: payload.WorkError}
 				}
 			}
 			r.activeWorks = append(r.activeWorks, w)
@@ -442,8 +443,37 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				continue
 			}
 			go r.handleListSentJinshu(act)
+		case action.InspectOwnedSpace:
+			if act.OwnedSpaceInspectionPlan == nil {
+				applogger.Error("inspect_owned_space: missing plan", "agent_config_id", r.agentConfigID)
+				continue
+			}
+			r.handleInspectOwnedSpace(situation, act)
 		}
 	}
+}
+
+func (r *agentRuntime) handleInspectOwnedSpace(situation *Situation, act action.Action) {
+	plan := act.OwnedSpaceInspectionPlan
+	scope := plan.Scope
+	entries, err := workspace.InspectOwnedSpace(r.agentPersonID, scope, plan.Query, plan.Limit)
+	if err != nil {
+		applogger.Error("inspect_owned_space failed", "agent_config_id", r.agentConfigID, "error", err)
+		return
+	}
+	var lines []string
+	for _, entry := range entries {
+		lines = append(lines, fmt.Sprintf("- %s (%s, %d bytes, %s)", entry.Path, entry.Type, entry.Size, entry.Modified))
+	}
+	result := "no matching resources"
+	if len(lines) > 0 {
+		result = strings.Join(lines, "\n")
+	}
+	sessionID := int64(0)
+	if situation != nil && situation.Matter.Event != nil {
+		sessionID = situation.Matter.Event.SessionID
+	}
+	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{Type: eventqueue.EventTypeOwnedSpaceInspected, SessionID: sessionID, Payload: &eventqueue.OwnedSpaceInspectedPayload{Scope: scope, Result: result}, TriggerAction: &eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}})
 }
 
 // handleEnterPrivateSpace manages the private-space loop lifecycle.
@@ -482,6 +512,7 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 			"person_id", r.agentPersonID,
 		)
 	} else {
+		r.privateSpaceLoop.SetFocusContext(buildAgentFocusContext(r.agentPersonID, r.activeWorks))
 		// Feed the initial thoughts, then start the loop in a new goroutine.
 		r.privateSpaceLoop.FeedThoughts(thoughts)
 		go func() {
@@ -701,9 +732,9 @@ func (r *agentRuntime) sendJinshuSentListed(query string, page int, items []even
 	})
 }
 
-// handleSendJinshu delivers private-space files to another person as a jinshu
-// and reflows the outcome back as a JinshuSent event so the agent knows whether
-// the delivery succeeded.
+// handleSendJinshu delivers selected Agent Owned Space resources to another
+// person as a jinshu and reflows the outcome back as a JinshuSent event so the
+// agent knows whether the delivery succeeded.
 func (r *agentRuntime) handleSendJinshu(act action.Action) {
 	plan := act.SendJinshuPlan
 
@@ -724,7 +755,7 @@ func (r *agentRuntime) handleSendJinshu(act action.Action) {
 	}
 
 	workDir := privatespace.GetWorkDirPath(r.agentPersonID)
-	files, _, err := jinshu.ResolveWorkDirFiles(workDir, plan.Paths)
+	files, _, err := workspace.ResolveAOSFiles(r.agentPersonID, workDir, plan.Paths)
 	if err != nil {
 		applogger.Error("send_jinshu: failed to resolve paths",
 			"agent_config_id", r.agentConfigID, "error", err)
@@ -912,8 +943,18 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 		}
 		readMessageRange = comprehension.Chat.ReadMessageRange
 	}
+	if targetSessionID > 0 {
+		if chatCtx == nil {
+			chatCtx = &chat.ChatContext{}
+		}
+		focusHint := ""
+		if event != nil {
+			focusHint = event.FormatDescription()
+		}
+		chatCtx.FocusContext = buildSessionFocusContext(r.agentPersonID, targetSessionID, r.activeWorks, focusHint)
+	}
 
-	// A work-completed event carries the TaskLoop's final summary in its
+	// A work-completed event carries the FocusedLoop's final summary in its
 	// payload. Surface it into the chat context so the agent can reference
 	// what was actually produced when notifying the user.
 	if event != nil {
@@ -921,10 +962,10 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 			if chatCtx == nil {
 				chatCtx = &chat.ChatContext{}
 			}
-			chatCtx.TaskResult = &task.TaskResult{
+			chatCtx.FocusedWorkResult = &focusedwork.FocusedWorkResult{
 				Status: payload.Status,
-				Output: payload.TaskOutput,
-				Error:  payload.TaskError,
+				Output: payload.WorkOutput,
+				Error:  payload.WorkError,
 			}
 		}
 	}
@@ -970,8 +1011,8 @@ func (r *agentRuntime) findActiveWorkByID(workID int64) *work {
 	return nil
 }
 
-// newWork creates a new TaskWork from a Situation and anaction.Action, persists it to the
-// database, and returns the work object. Only used for CreateTask actions.
+// newWork creates a new Focus from a Situation and an action.Action, persists it to the
+// database, and returns the work object. Only used for StartFocusedWork actions.
 func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, bool) {
 	plan := dec.WorkPlan
 	event := situation.Matter.Event
@@ -1005,6 +1046,8 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		SessionID:   targetSessionID,
 		Description: workDescription,
 		Status:      model.WorkStatusRunning,
+		FocusPhase:  model.FocusPhaseExecuting,
+		Checkpoint:  "Focus created and awaiting execution.",
 	}
 	if err := tx.Create(workRecord).Error; err != nil {
 		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
@@ -1017,8 +1060,9 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		sessionID:     targetSessionID,
 		plan:          plan,
 		maxIterations: 90,
+		focusContext:  buildSessionFocusContext(r.agentPersonID, targetSessionID, r.activeWorks, plan.Guidance),
 		comprehension: comprehension,
-		guidanceCh:    make(chan task.GuidanceDirective, 8),
+		guidanceCh:    make(chan focusedwork.GuidanceDirective, 8),
 		done:          make(chan struct{}),
 		triggerAction: &eventqueue.TriggerAction{
 			Background: dec.Background,
@@ -1041,19 +1085,19 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 }
 
 // buildMetadata constructs system-generated Metadata from the triggering event.
-// This is used by the task loop to understand its origin (session, self-reminder, etc.)
+// This is used by the FocusedLoop to understand its origin (session, self-reminder, etc.)
 // and to power tools like search_chat_histories with the correct session context.
 // Returns nil when event is nil (heartbeat-triggered work has no event metadata).
-func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
+func buildMetadata(event *eventqueue.AgentEvent) *focusedwork.Metadata {
 	if event == nil {
 		return nil
 	}
 	switch event.Type {
 	case eventqueue.EventTypeNewPrivateChatMessage:
 		if payload, ok := event.Payload.(*eventqueue.NewMessagePayload); ok {
-			return &task.Metadata{
-				SourceType: task.SourceTypeSession,
-				SessionMeta: &task.SessionMeta{
+			return &focusedwork.Metadata{
+				SourceType: focusedwork.SourceTypeSession,
+				SessionMeta: &focusedwork.SessionMeta{
 					SessionID:  event.SessionID,
 					Trigger:    fmt.Sprintf("%s sent a chat message: %q", payload.SpeakerName, payload.MessageContent),
 					SenderName: payload.SpeakerName,
@@ -1061,17 +1105,17 @@ func buildMetadata(event *eventqueue.AgentEvent) *task.Metadata {
 			}
 		}
 	case eventqueue.EventTypeScheduled:
-		return &task.Metadata{
-			SourceType: task.SourceTypeScheduled,
+		return &focusedwork.Metadata{
+			SourceType: focusedwork.SourceTypeScheduled,
 		}
 	case eventqueue.EventTypeWorkCompleted:
 		trigger := "a previous work completed"
 		if event.TriggerAction != nil {
 			trigger = event.TriggerAction.Background
 		}
-		return &task.Metadata{
-			SourceType: task.SourceTypeWorkCompleted,
-			SessionMeta: &task.SessionMeta{
+		return &focusedwork.Metadata{
+			SourceType: focusedwork.SourceTypeWorkCompleted,
+			SessionMeta: &focusedwork.SessionMeta{
 				SessionID: event.SessionID,
 				Trigger:   trigger,
 			},
