@@ -1316,6 +1316,13 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 	}
 	runtime.agentPersonID = ac.PersonID
 
+	// Ensure the agent has the stable AOS skeleton before it can inspect or
+	// enter owned space. This is idempotent and also repairs agents created by
+	// older versions that only had session-specific directories.
+	if err := workspace.InitAgentOwnedSpace(ac.PersonID); err != nil {
+		return nil, fmt.Errorf("createAgentRuntime: initialize AOS for person %d: %w", ac.PersonID, err)
+	}
+
 	// Recover any abandoned works from previous run
 	recoverActiveWorks(agentConfigID)
 

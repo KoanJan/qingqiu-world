@@ -11,6 +11,7 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -205,11 +206,24 @@ func fromOpenAIResponse(resp *openai.ChatCompletionResponse) ToolResponse {
 
 // --- Logging helpers ---
 
-// logMessages logs input messages at debug level for traceability.
+// logMessages records full LLM inputs for DEBUG troubleshooting. The
+// fingerprint and byte count are auxiliary correlation fields; they must not
+// replace the raw content because prompt defects are only diagnosable from the
+// actual text sent to the model.
 func logMessages(messages []Message) {
 	for i, m := range messages {
-		applogger.Debug("llm input", "index", i, "role", m.Role, "content", m.Content, "tool_calls", len(m.ToolCalls), "tool_call_id", m.ToolCallID)
+		applogger.Debug("llm input", "index", i, "role", m.Role, "content_bytes", len(m.Content), "content_fingerprint", contentFingerprint(m.Content), "content", m.Content, "tool_calls", len(m.ToolCalls), "tool_call_id", m.ToolCallID)
+		for j, tc := range m.ToolCalls {
+			applogger.Debug("llm input tool_call", "message_index", i, "tool_call_index", j, "id", tc.ID, "name", tc.Function.Name, "arguments_bytes", len(tc.Function.Arguments), "arguments_fingerprint", contentFingerprint(tc.Function.Arguments), "arguments", tc.Function.Arguments)
+		}
 	}
+}
+
+// contentFingerprint identifies one payload across repeated log lines. It is
+// retained for correlation, not as a substitute for DEBUG raw content.
+func contentFingerprint(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("sha256:v1:%x", sum[:])
 }
 
 // --- Request builders ---
@@ -252,7 +266,7 @@ func (cm *ChatModel) Chat(ctx context.Context, messages []Message) (string, erro
 	}
 
 	content := resp.Choices[0].Message.Content
-	applogger.Debug("llm output", "model", cm.modelID, "content", content)
+	applogger.Debug("llm output", "model", cm.modelID, "content_bytes", len(content), "content_fingerprint", contentFingerprint(content), "content", content)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
@@ -320,9 +334,9 @@ func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, tool
 
 	result := fromOpenAIResponse(&resp)
 
-	applogger.Debug("llm output", "model", cm.modelID, "content", result.Content, "tool_calls", len(result.ToolCalls))
+	applogger.Debug("llm output", "model", cm.modelID, "content_bytes", len(result.Content), "content_fingerprint", contentFingerprint(result.Content), "content", result.Content, "tool_calls", len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		applogger.Debug("llm output tool_call", "index", i, "id", tc.ID, "name", tc.Function.Name, "arguments", tc.Function.Arguments)
+		applogger.Debug("llm output tool_call", "index", i, "id", tc.ID, "name", tc.Function.Name, "arguments_bytes", len(tc.Function.Arguments), "arguments_fingerprint", contentFingerprint(tc.Function.Arguments), "arguments", tc.Function.Arguments)
 	}
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
@@ -420,7 +434,7 @@ func (cm *ChatModel) tryJSONSchema(ctx context.Context, messages []Message, sche
 	}
 
 	content := resp.Choices[0].Message.Content
-	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "content", content)
+	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "content_bytes", len(content), "content_fingerprint", contentFingerprint(content), "content", content)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
@@ -464,7 +478,7 @@ func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message
 	}
 
 	args := resp.Choices[0].Message.ToolCalls[0].Function.Arguments
-	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "function_call_arguments", args)
+	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "function_call_arguments_bytes", len(args), "function_call_arguments_fingerprint", contentFingerprint(args), "function_call_arguments", args)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
@@ -548,7 +562,7 @@ func (cm *ChatModel) ConsumeStream(stream *stream, handler streamHandler) (strin
 	}
 
 	latencyMs := float64(time.Since(start).Milliseconds())
-	applogger.Debug("llm output", "model", cm.modelID, "stream", true, "content", fullContent)
+	applogger.Debug("llm output", "model", cm.modelID, "stream", true, "content_bytes", len(fullContent), "content_fingerprint", contentFingerprint(fullContent), "content", fullContent)
 
 	if hasUsage {
 		logTokenUsage(latencyMs, streamUsage, cm.modelID)

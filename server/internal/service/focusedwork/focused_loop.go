@@ -209,7 +209,7 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 
 		case "tool_calls":
 			if content != "" {
-				applogger.Info("FocusedLoop thoughts", "iteration", iteration, "thoughts", content[:min(500, len(content))])
+				applogger.Info("FocusedLoop thoughts", "iteration", iteration, "thoughts", truncateRunes(content, 500))
 			}
 
 			// Discard reasoning content from tool_calls to establish an information
@@ -710,11 +710,16 @@ func (tl *FocusedLoop) executeToolCall(tc llm.ToolCall) llm.Message {
 	// abnormally large, discard the content entirely and notify. Do not attempt
 	// semantic truncation here — the tool is responsible for that before marshalling.
 	if len(result) > hardOutputLimit {
-		applogger.Error("Tool output exceeds hard limit, discarded",
-			"tool", toolName, "bytes", len(result))
-		result = fmt.Sprintf(
-			"[OUTPUT TOO LARGE: %d bytes. This tool did not truncate its own output. "+
-				"Use a more targeted command or smaller scope.]", len(result))
+		if preservesContinuationMetadata(toolName) {
+			applogger.Warn("Tool output exceeds generic hard limit but is preserved",
+				"tool", toolName, "bytes", len(result))
+		} else {
+			applogger.Error("Tool output exceeds hard limit, discarded",
+				"tool", toolName, "bytes", len(result))
+			result = fmt.Sprintf(
+				"[OUTPUT TOO LARGE: %d bytes. This tool did not truncate its own output. "+
+					"Use a more targeted command or smaller scope.]", len(result))
+		}
 	}
 
 	// Cycle detection: check for cyclical patterns after each tool call.
@@ -737,6 +742,28 @@ func (tl *FocusedLoop) executeToolCall(tc llm.ToolCall) llm.Message {
 		ToolCallID: toolCallID,
 		Content:    result,
 	}
+}
+
+// preservesContinuationMetadata identifies tools whose oversized output still
+// carries non-reconstructible continuation handles. KB tools self-truncate only
+// evidence bodies; their metadata must remain intact so the agent can call
+// read_kb_evidence by returned chunk IDs.
+func preservesContinuationMetadata(toolName string) bool {
+	return toolName == tools.ToolNameScanKB.String() ||
+		toolName == tools.ToolNameReadKBEvidence.String()
+}
+
+// truncateRunes returns a UTF-8 safe prefix for logs. Byte slicing can corrupt
+// multibyte text and produce replacement characters, making debug logs useless.
+func truncateRunes(value string, limit int) string {
+	if limit <= 0 {
+		return ""
+	}
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit])
 }
 
 // weakWriteInteraction writes an interaction record to the database.

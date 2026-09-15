@@ -38,10 +38,13 @@ TOOLS AVAILABLE:
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
 - send_jinshu: Send selected Agent Owned Space files to another person as a jinshu (锦书).
 - copy_from_jinshu: Copy files from a jinshu you received into a selected Agent Owned Space directory.
-- scan_kb: Semantic search over your authorized knowledge bases.
+- scan_kb: Non-exhaustive semantic search over your authorized knowledge bases.
+- read_kb_evidence: Read full evidence content by chunk ID returned by scan_kb.
 - list_kb_documents: List the documents of one of your authorized knowledge bases.
 
 GUIDELINES:
+- scan_kb evidence is a subset, not a complete document or knowledge-base traversal. Describe findings as based on retrieved evidence; never claim all contents or complete coverage without explicit coverage evidence.
+- list_kb_documents is document inventory only. Its chunk counts do not mean their content was read.
 - You have a limited number of steps. When you're done with what you wanted to do, simply stop — you can continue next time.
 - If you receive new thoughts mid-session, they represent your own evolving intentions. Integrate them naturally.
 - This space is YOURS — you ARE yourself here. Speak and think in first person ("I", "me"). Never address yourself in second person ("you") or third person as if helping someone else. You are not an assistant helping a user; you are the owner of this space.`
@@ -106,6 +109,7 @@ func NewLoop(
 	l.registerTool(privspacetools.NewSendJinshuTool(personID, rootDir, workDir))
 	l.registerTool(privspacetools.NewCopyFromJinshuTool(personID, rootDir, workDir))
 	l.registerTool(privspacetools.NewScanKBTool(personID))
+	l.registerTool(privspacetools.NewReadKBEvidenceTool(personID))
 	l.registerTool(privspacetools.NewListKBDocumentsTool(personID))
 
 	return l

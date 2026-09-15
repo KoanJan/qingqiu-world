@@ -101,32 +101,18 @@ func ComprehendMessage(
 				}
 			}
 
-			// Step 3: Knowledge base retrieval. The preprocessing LLM decides
-			// whether to search and which KBs to target; the selected IDs are
-			// re-validated against the authorized set before searching
-			// (defense in depth — the prompt already restricts the choices).
+			// Step 3: Knowledge-base intent capture. Comprehend no longer runs
+			// KB retrieval directly; complex KB use belongs to Focus, where the
+			// agent can call scan_kb/read_kb_evidence iteratively.
 			if len(sessionInfo.AuthorizedKBs) > 0 && preprocessingResult.KnowledgeBaseQuery != "" {
 				selectedKBIDs := filterAuthorizedKBIDs(preprocessingResult.KnowledgeBaseIDs, sessionInfo.AuthorizedKBs)
 				if len(selectedKBIDs) > 0 {
-					result.KBRetrieval = &types.KBRetrieval{Query: preprocessingResult.KnowledgeBaseQuery}
-					kbResults, err := kb.SearchMultiKB(ctx, selectedKBIDs, result.KBRetrieval.Query, kb.DefaultSearchTopK)
-					if err != nil {
-						applogger.Error("chat.ComprehendMessage: KB retrieval failed",
-							"session_id", sessionInfo.SessionID,
-							"error", err,
-						)
-					} else {
-						for _, kr := range kbResults {
-							result.KBRetrieval.Segments = append(result.KBRetrieval.Segments, types.Segment{
-								Content: kr.Content,
-								Source:  types.SourceKnowledgeBase,
-							})
-						}
-						applogger.Info("chat.ComprehendMessage: KB retrieved segments",
-							"session_id", sessionInfo.SessionID,
-							"count", len(kbResults),
-						)
-					}
+					result.KBRetrieval = &types.KBRetrieval{Query: preprocessingResult.KnowledgeBaseQuery, KnowledgeBaseIDs: selectedKBIDs}
+					applogger.Info("chat.ComprehendMessage: KB investigation suggested",
+						"session_id", sessionInfo.SessionID,
+						"kb_ids", selectedKBIDs,
+						"query_fingerprint", kb.QueryFingerprint(result.KBRetrieval.Query),
+					)
 				}
 			}
 		})

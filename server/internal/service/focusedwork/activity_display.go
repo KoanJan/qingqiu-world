@@ -30,6 +30,7 @@ var activityTargetKeys = map[string][]string{
 	tools.ToolNameCopyFromJinshu.String():      {"target_relative_dir", "jinshu_id"},
 	tools.ToolNameScanKB.String():              {"query"},
 	tools.ToolNameListKBDocuments.String():     {"kb_id"},
+	tools.ToolNameReadKBEvidence.String():      {"chunk_ids"},
 }
 
 // interactionDataResponse is the parsed form of Data JSON for type=2 interactions.
@@ -122,7 +123,9 @@ func parseResponseInteraction(interaction *model.Interaction, personID int64) []
 func buildToolCallEvent(timeStr string, interactionID int64, toolCallIndex int, personID int64, tc *rawToolCall) schema.ActivityEvent {
 	keys := activityTargetKeys[tc.Function.Name]
 	target := ""
-	if len(keys) > 0 {
+	if tc.Function.Name == tools.ToolNameReadKBEvidence.String() {
+		target = extractReadKBEvidenceTarget(interactionID, tc.Function.Arguments)
+	} else if len(keys) > 0 {
 		target = extractTarget(interactionID, tc.Function.Name, tc.Function.Arguments, keys)
 	}
 
@@ -159,6 +162,27 @@ func extractTarget(interactionID int64, toolName, argumentsJSON string, keys []s
 	}
 
 	return ""
+}
+
+// extractReadKBEvidenceTarget returns a display-safe evidence count instead of
+// exposing internal chunk IDs in the user-facing Activity timeline.
+func extractReadKBEvidenceTarget(interactionID int64, argumentsJSON string) string {
+	if argumentsJSON == "" {
+		return ""
+	}
+
+	var args struct {
+		ChunkIDs []int64 `json:"chunk_ids"`
+	}
+	if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
+		applogger.Error("activity: failed to parse read_kb_evidence arguments",
+			"interaction_id", interactionID, "error", err)
+		return ""
+	}
+	if len(args.ChunkIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", len(args.ChunkIDs))
 }
 
 // extractGuidance extracts the guidance text from a type=3 interaction's Data JSON.

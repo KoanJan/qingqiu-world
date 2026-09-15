@@ -140,6 +140,10 @@ func (h *Handler) ListDocuments(c *gin.Context) {
 // UploadDocument handles uploading a document to a knowledge base.
 func (h *Handler) UploadDocument(c *gin.Context) {
 	kbID := getPathID(c)
+	if _, err := dops.Get[model.KnowledgeBase](kbID); err != nil {
+		response.NotFound(c, "Knowledge base not found")
+		return
+	}
 
 	file, header, err := c.Request.FormFile("file")
 	if err != nil {
@@ -162,15 +166,30 @@ func (h *Handler) UploadDocument(c *gin.Context) {
 		return
 	}
 
-	filePath := filepath.Join(docDir, header.Filename)
-	dst, err := os.Create(filePath)
+	// The client filename is presentation metadata only. CreateTemp generates
+	// an opaque server-side path, preventing traversal and same-name overwrite.
+	dst, err := os.CreateTemp(docDir, "upload-*"+ext)
 	if err != nil {
+		applogger.Error("failed to create KB upload file", "kb_id", kbID, "error", err)
 		response.InternalError(c, err.Error())
 		return
 	}
-	defer dst.Close()
+	filePath := dst.Name()
 
 	if _, err := dst.ReadFrom(file); err != nil {
+		_ = dst.Close()
+		if removeErr := os.Remove(filePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			applogger.Error("failed to remove incomplete KB upload", "kb_id", kbID, "path", filePath, "error", removeErr)
+		}
+		applogger.Error("failed to write KB upload", "kb_id", kbID, "error", err)
+		response.InternalError(c, err.Error())
+		return
+	}
+	if err := dst.Close(); err != nil {
+		if removeErr := os.Remove(filePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			applogger.Error("failed to remove unclosed KB upload", "kb_id", kbID, "path", filePath, "error", removeErr)
+		}
+		applogger.Error("failed to close KB upload", "kb_id", kbID, "error", err)
 		response.InternalError(c, err.Error())
 		return
 	}
@@ -178,15 +197,33 @@ func (h *Handler) UploadDocument(c *gin.Context) {
 	doc := model.Document{
 		KnowledgeBaseID: kbID,
 		Title:           header.Filename,
+		SourceKind:      model.DocumentSourceKindLocalUpload,
+		SourceURI:       "upload://local",
+		Source:          "local_upload",
 		FilePath:        filePath,
+		FileSize:        header.Size,
+		FileType:        ext,
 		Status:          model.DocumentStatusPending,
 	}
 	if err := dops.Create(&doc); err != nil {
+		if removeErr := os.Remove(filePath); removeErr != nil && !errors.Is(removeErr, os.ErrNotExist) {
+			applogger.Error("failed to remove untracked KB upload", "kb_id", kbID, "path", filePath, "error", removeErr)
+		}
+		applogger.Error("failed to create KB document", "kb_id", kbID, "error", err)
 		response.InternalError(c, err.Error())
 		return
 	}
-
-	kb.SubmitDocument(doc.ID)
+	if err := kb.SubmitDocument(doc.ID); err != nil {
+		applogger.Error("failed to queue KB document", "kb_id", kbID, "doc_id", doc.ID, "error", err)
+		if updateErr := dops.Update(&doc, map[string]interface{}{
+			"status":        model.DocumentStatusFailed,
+			"error_message": err.Error(),
+		}); updateErr != nil {
+			applogger.Error("failed to mark unqueued KB document as failed", "kb_id", kbID, "doc_id", doc.ID, "error", updateErr)
+		}
+		response.InternalError(c, "Document uploaded but could not be queued for processing")
+		return
+	}
 
 	response.Success(c, doc)
 }
@@ -212,7 +249,11 @@ func (h *Handler) DeleteDocument(c *gin.Context) {
 	}
 
 	if doc.FilePath != "" {
-		os.Remove(doc.FilePath)
+		if err := os.Remove(doc.FilePath); err != nil && !errors.Is(err, os.ErrNotExist) {
+			applogger.Error("failed to remove document source file", "doc_id", docID, "path", doc.FilePath, "error", err)
+			response.InternalError(c, "Failed to delete document source file")
+			return
+		}
 	}
 
 	var chunkCount int64
@@ -229,6 +270,9 @@ func (h *Handler) DeleteDocument(c *gin.Context) {
 			applogger.Error("failed to update KB deleted_count after document delete", "kb_id", doc.KnowledgeBaseID, "error", err)
 		}
 	}
+	if err := kb.MarkRelationsStaleForDocument(docID, "document deleted"); err != nil {
+		applogger.Error("failed to mark document relations stale before document delete", "doc_id", docID, "error", err)
+	}
 
 	if err := dops.Delete[model.Document](doc.ID); err != nil {
 		applogger.Error("failed to delete document", "doc_id", docID, "error", err)
@@ -237,39 +281,6 @@ func (h *Handler) DeleteDocument(c *gin.Context) {
 	}
 
 	response.Success(c, nil)
-}
-
-// SearchKB handles searching within a knowledge base.
-func (h *Handler) SearchKB(c *gin.Context) {
-	kbID := getPathID(c)
-	var req schema.SearchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	results, err := kb.SearchKB(c.Request.Context(), kbID, req.Query, req.TopK)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, results)
-}
-
-// SearchMultiKB handles searching across multiple knowledge bases.
-func (h *Handler) SearchMultiKB(c *gin.Context) {
-	var req schema.MultiKBSearchRequest
-	if err := c.ShouldBindJSON(&req); err != nil {
-		response.BadRequest(c, err.Error())
-		return
-	}
-
-	results, err := kb.SearchMultiKB(c.Request.Context(), req.KBIDs, req.Query, req.TopK)
-	if err != nil {
-		response.InternalError(c, err.Error())
-		return
-	}
-	response.Success(c, results)
 }
 
 // ListKBAccess handles listing the agents granted access to a knowledge base.

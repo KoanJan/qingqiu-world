@@ -32,6 +32,8 @@ import (
 	"qingqiu-world-server/internal/service/focusedwork/tools"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/workspace"
+
+	"gorm.io/gorm"
 )
 
 // FocusedWorkResult represents the outcome of focused-work execution.
@@ -97,7 +99,11 @@ func RunFocusedWork(params RunFocusedWorkParams) *FocusedWorkResult {
 	// Load search config for web search tool
 	var searchConfig model.SearchConfig
 	if err := database.DB.Where("is_active = ?", true).First(&searchConfig).Error; err != nil {
-		applogger.Error("failed to load active search config, proceeding without search", "error", err)
+		if err == gorm.ErrRecordNotFound {
+			applogger.Warn("no active search config, web search disabled for task")
+		} else {
+			applogger.Error("failed to load active search config, proceeding without search", "error", err)
+		}
 	}
 
 	return ExecuteFocusedWork(FocusedWorkParams{
@@ -164,7 +170,7 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 	writeNotesTool := tools.NewWriteNotesTool(params.PersonID, params.SessionID, notesMaxChars)
 	notesContent := writeNotesTool.ReadNotes()
 
-	toolList := buildToolList(params.SessionID, params.PersonID, params.SearchConfig, notesMaxChars)
+	toolList := buildToolList(params.SessionID, params.PersonID, params.WorkID, params.SearchConfig, notesMaxChars)
 
 	// Build tool descriptions string (moved to last user message for cache optimization).
 	toolDescLines := []string{"Available tools:"}
@@ -313,6 +319,12 @@ func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSe
 
 	parts = append(parts,
 		"",
+		"KNOWLEDGE-BASE EVIDENCE RULES:",
+		"- scan_kb is semantic retrieval, not exhaustive traversal. Treat its evidence as a subset and state findings as based on retrieved evidence.",
+		"- When calling scan_kb, provide a short reason that states the knowledge gap for that query; this reason is query-intent trace, not KB evidence.",
+		"- list_kb_documents is an inventory only; its chunk count does not mean those chunks were read.",
+		"- Never claim complete coverage, all contents, or unsupported facts unless a tool explicitly establishes that coverage.",
+		"",
 		"CRITICAL: Before calling any tool, you MUST first explain your reasoning",
 		"in the content field. Describe what you plan to do and why.",
 		"Only after explaining your thought process, make the tool call.",
@@ -331,7 +343,7 @@ func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSe
 		"COMPLETION OUTPUT:",
 		"Remember: the recipient cannot see your output/ directory. If they need any of your output files, you must use send_jinshu to send them before summarizing.",
 		"- Deliver whole directories (e.g., paths: [\"my-project\"]) rather than individual files.",
-		"- Verify what you produced with `ls output/` or `find output/ -type f` first.",
+		"- Verify what you produced with `ls -la` or `find . -type f` first; your working directory is already output/.",
 		"",
 		"- Accomplishments: what was achieved, with specific details",
 		"- Verification: how correctness was confirmed (test results, checks, etc.)",
@@ -411,7 +423,7 @@ func focusPhaseLabel(phase model.FocusPhase) string {
 
 // buildKBSection renders the authorized knowledge base inventory for the FocusedWork
 // system prompt. KB contents are reachable only through scan_kb /
-// list_kb_documents (retrieval, never raw file reads). Returns an empty string
+// read_kb_evidence / list_kb_documents (retrieval, never raw file reads). Returns an empty string
 // when the agent has no authorized KBs so the section is omitted entirely.
 func buildKBSection(personID int64) string {
 	kbs, err := dops.ListAuthorizedKBs(personID)
@@ -425,7 +437,7 @@ func buildKBSection(personID int64) string {
 
 	var b strings.Builder
 	b.WriteString("[Knowledge Bases]\n")
-	b.WriteString("Authorized knowledge bases (use scan_kb to search them, list_kb_documents to list their documents):\n")
+	b.WriteString("Authorized knowledge bases (use list_kb_documents for inventory, scan_kb for non-exhaustive semantic retrieval, and read_kb_evidence for returned chunk IDs):\n")
 	for _, k := range kbs {
 		if k.Description != "" {
 			b.WriteString(fmt.Sprintf("- KB #%d %q: %s\n", k.ID, k.Name, k.Description))
@@ -438,13 +450,14 @@ func buildKBSection(personID int64) string {
 
 // buildToolList creates the list of available tools for the FocusedLoop.
 // Always includes read_text_file, write_text_file, edit_text_file, bash,
-// write_notes, scan_my_experience, recall_my_experience, scan_kb and
-// list_kb_documents; adds web_search if search config is available.
+// write_notes, scan_my_experience, recall_my_experience, scan_kb,
+// read_kb_evidence and list_kb_documents; adds web_search if search config is
+// available.
 //
 // Note: wake_me_when was promoted to a top-level Action (ActionCreateAlarm)
 // in 0.1.3 — setting an alarm is a world action, not a workspace operation.
 // It is no longer registered as a FocusedLoop tool.
-func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
+func buildToolList(sessionID, personID, workID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
 	toolList := []tools.Tool{
 		tools.NewReadTextFileTool(personID, sessionID),
 		tools.NewWriteTextFileTool(personID, sessionID),
@@ -458,7 +471,8 @@ func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, 
 		tools.NewScanJinshuTool(personID),
 		tools.NewReadJinshuTool(personID),
 		tools.NewCopyFromJinshuTool(personID, sessionID),
-		tools.NewScanKBTool(personID),
+		tools.NewScanKBTool(personID, workID, sessionID),
+		tools.NewReadKBEvidenceTool(personID),
 		tools.NewListKBDocumentsTool(personID),
 	}
 

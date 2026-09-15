@@ -271,6 +271,8 @@
     "accessGrantFailed": "Failed to grant access",
     "accessRevokeSuccess": "Access revoked",
     "accessRevokeFailed": "Failed to revoke access",
+    "accessSaveSuccess": "Access settings saved",
+    "accessSaveFailed": "Failed to save access settings",
     "accessDone": "Done",
     "accessEmpty": "No agents available to grant",
     "hybridRetrieval": "Hybrid Retrieval",
@@ -317,7 +319,11 @@
       "read_jinshu": "Read Jinshu",
       "copy_from_jinshu": "Extract Jinshu files",
       "scan_kb": "Search knowledge base",
+      "read_kb_evidence": "Read KB evidence",
       "list_kb_documents": "List KB documents"
+    },
+    "toolTarget": {
+      "read_kb_evidence": "{{count}} evidence chunks"
     }
   },
   "publicExperience": {

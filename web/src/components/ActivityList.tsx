@@ -30,6 +30,7 @@ const toolIcon: Record<string, React.ReactNode> = {
   read_jinshu: '📖',
   copy_from_jinshu: '📋',
   scan_kb: '📚',
+  read_kb_evidence: '📖',
   list_kb_documents: '📑',
 };
 
@@ -195,7 +196,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
           if (event.type === 'tool_call') {
             const icon = toolIcon[event.tool || ''] || '🔧';
             const action = t(`activity.tool.${event.tool}`);
-            const targetText = event.target || '';
+            const targetText = formatToolTarget(event, t);
             const needsTruncate = targetText.length > CONTENT_TRUNCATE_LENGTH;
             const expanded = expandedEventIds.has(event.id);
 
@@ -281,6 +282,30 @@ function getDisplayText(event: ActivityEvent): string {
     default:
       return event.content || '';
   }
+}
+
+/**
+ * Formats tool targets for humans. Some tools carry internal identifiers in
+ * arguments; the Activity timeline should show intent-level summaries instead.
+ */
+function formatToolTarget(event: ActivityEvent, t: (key: string, options?: Record<string, unknown>) => string): string {
+  if (event.tool === 'read_kb_evidence') {
+    const count = countNumericIDs(event.target || '');
+    return count > 0 ? t('activity.toolTarget.read_kb_evidence', { count }) : '';
+  }
+  return event.target || '';
+}
+
+/**
+ * Counts numeric identifiers from both new compact targets ("12") and legacy
+ * Go-formatted slices ("[4 19 20]") so old Activity rows render cleanly too.
+ */
+function countNumericIDs(raw: string): number {
+  const text = raw.trim();
+  if (!text) return 0;
+  if (/^\d+$/.test(text)) return Number(text);
+  const matches = text.match(/\d+/g);
+  return matches ? matches.length : 0;
 }
 
 export default ActivityList;

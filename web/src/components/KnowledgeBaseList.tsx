@@ -64,6 +64,7 @@ const KnowledgeBaseList: React.FC<KnowledgeBaseListProps> = ({ onSelectKB, showC
       setKBs([response.data, ...kbs]);
       setModalVisible(false);
       form.resetFields();
+      onCreateClose?.();
       message.success(t('kb.createSuccess'));
     } catch (error) {
       logger.error('Failed to create knowledge base:', error);

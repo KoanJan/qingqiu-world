@@ -25,13 +25,26 @@ type KnowledgeBase struct {
 	// KeywordRatio is the weight (alpha) of the BM25 keyword score in hybrid
 	// retrieval: score = (1-ratio)*vector + ratio*keyword. 0 = vector only,
 	// 1 = keyword only.
-	KeywordRatio  float64 `gorm:"not null;default:0.3" json:"keyword_ratio"`
-	DocumentCount int     `gorm:"not null;default:0" json:"document_count"`
-	VectorCount   int     `gorm:"not null;default:0" json:"vector_count"`
-	DeletedCount  int     `gorm:"not null;default:0" json:"deleted_count"`
-	CreatedAt     time.Time              `gorm:"not null;autoCreateTime" json:"created_at"`
-	UpdatedAt     time.Time              `gorm:"not null;autoUpdateTime" json:"updated_at"`
+	KeywordRatio           float64   `gorm:"not null;default:0.3" json:"keyword_ratio"`
+	DocumentCount          int       `gorm:"not null;default:0" json:"document_count"`
+	VectorCount            int       `gorm:"not null;default:0" json:"vector_count"`
+	DeletedCount           int       `gorm:"not null;default:0" json:"deleted_count"`
+	EmbeddingFingerprint   string    `gorm:"type:varchar(128);not null;default:''" json:"embedding_fingerprint"`
+	EmbeddingDimension     int       `gorm:"not null;default:0" json:"embedding_dimension"`
+	EmbeddingRebuildStatus int       `gorm:"not null;default:0" json:"embedding_rebuild_status"`
+	EmbeddingRebuildError  string    `gorm:"type:text;not null;default:''" json:"embedding_rebuild_error"`
+	CreatedAt              time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+	UpdatedAt              time.Time `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }
+
+const (
+	// KnowledgeBaseEmbeddingRebuildReady means active vectors match the recorded fingerprint.
+	KnowledgeBaseEmbeddingRebuildReady = 0
+	// KnowledgeBaseEmbeddingRebuildRunning means a replacement vector store is building.
+	KnowledgeBaseEmbeddingRebuildRunning = 1
+	// KnowledgeBaseEmbeddingRebuildFailed preserves the old serving vectors and explains failure.
+	KnowledgeBaseEmbeddingRebuildFailed = 2
+)
 
 // TableName returns the database table name for KnowledgeBase.
 func (KnowledgeBase) TableName() string { return "knowledge_bases" }

@@ -23,20 +23,104 @@ func newVectorStore(dbPath string) (*vectorStore, error) {
 		return nil, fmt.Errorf("failed to open vector store: %w", err)
 	}
 
-	_, err = db.Exec(`
+	if err := ensureVectorTableSchema(db); err != nil {
+		db.Close()
+		return nil, err
+	}
+
+	return &vectorStore{db: db}, nil
+}
+
+// ensureVectorTableSchema creates or repairs the per-KB vector table. Older
+// vector stores allowed nullable created_at; this keeps existing embeddings
+// while making the schema conform to the project's non-null field rule.
+func ensureVectorTableSchema(db *sql.DB) error {
+	if _, err := db.Exec(`
 		CREATE TABLE IF NOT EXISTS vectors (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,
 			chunk_id INTEGER NOT NULL UNIQUE,
 			embedding BLOB NOT NULL,
-			created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
 		)
-	`)
-	if err != nil {
-		db.Close()
-		return nil, fmt.Errorf("failed to create vectors table: %w", err)
+	`); err != nil {
+		return fmt.Errorf("failed to create vectors table: %w", err)
 	}
 
-	return &vectorStore{db: db}, nil
+	ok, err := vectorCreatedAtIsNotNull(db)
+	if err != nil {
+		return err
+	}
+	if ok {
+		return nil
+	}
+	return rebuildVectorTableWithNonNullCreatedAt(db)
+}
+
+// vectorCreatedAtIsNotNull inspects SQLite table metadata instead of assuming
+// CREATE TABLE IF NOT EXISTS upgraded an existing vectors table.
+func vectorCreatedAtIsNotNull(db *sql.DB) (bool, error) {
+	rows, err := db.Query(`PRAGMA table_info(vectors)`)
+	if err != nil {
+		return false, fmt.Errorf("inspect vectors table schema: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var cid int
+		var name, columnType string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &pk); err != nil {
+			return false, fmt.Errorf("scan vectors schema column: %w", err)
+		}
+		if name == "created_at" {
+			return notNull == 1, nil
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return false, fmt.Errorf("iterate vectors schema: %w", err)
+	}
+	return false, nil
+}
+
+// rebuildVectorTableWithNonNullCreatedAt performs a bounded in-place SQLite
+// migration for the small per-KB vector table schema. It preserves IDs,
+// chunk IDs and embeddings, and fills missing timestamps deterministically.
+func rebuildVectorTableWithNonNullCreatedAt(db *sql.DB) error {
+	tx, err := db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin vector table schema repair: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+
+	statements := []string{
+		`ALTER TABLE vectors RENAME TO vectors_legacy_nullable_created_at`,
+		`CREATE TABLE vectors (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			chunk_id INTEGER NOT NULL UNIQUE,
+			embedding BLOB NOT NULL,
+			created_at TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
+		)`,
+		`INSERT INTO vectors (id, chunk_id, embedding, created_at)
+			SELECT id, chunk_id, embedding, COALESCE(created_at, CURRENT_TIMESTAMP)
+			FROM vectors_legacy_nullable_created_at`,
+		`DROP TABLE vectors_legacy_nullable_created_at`,
+	}
+	for _, statement := range statements {
+		if _, err := tx.Exec(statement); err != nil {
+			return fmt.Errorf("repair vectors table schema: %w", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return fmt.Errorf("commit vector table schema repair: %w", err)
+	}
+	committed = true
+	return nil
 }
 
 // Insert adds a vector embedding for a chunk.

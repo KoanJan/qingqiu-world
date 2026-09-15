@@ -81,10 +81,15 @@ func main() {
 	// Start all agent runtimes and recover orphaned scheduled events.
 	// recoverScheduledEvents() is called inside Start() after all runtimes
 	// have subscribed to the event queue.
-	runtime.Start(notificationPublisher)
-
-	kb.Init(kb.DefaultEmbeddingDim, 0)
+	// KB retrieval must be ready before runtimes can consume an incoming event.
+	// Startup verifies only legacy revisions whose provenance is still unknown;
+	// verified and repair-required revisions are never reparsed here.
+	kb.Init(kb.DefaultEmbeddingDim, config.Get().KBFlatThreshold)
 	kb.RecoverProcessingDocuments()
+	kb.BackfillContentNodeLocators()
+	relationCtx, relationCancel := context.WithCancel(context.Background())
+	go kb.StartRelationMaintenance(relationCtx)
+	runtime.Start(notificationPublisher)
 
 	r := api.SetupRouter(hub)
 
@@ -117,6 +122,7 @@ func main() {
 	// Stop all agent runtimes and wait for graceful completion.
 	applogger.Info("Stopping agent runtimes...")
 	runtime.Shutdown(10 * time.Second)
+	relationCancel()
 
 	// Shut down the memory system (vectorization + daily cron)
 	memCancel()
@@ -131,6 +137,9 @@ func main() {
 	if err := srv.Shutdown(shutdownCtx); err != nil {
 		applogger.Warn("HTTP server shutdown", "error", err)
 	}
+
+	// Stop KB workers and close vector/BM25 indexes before process exit.
+	kb.Shutdown()
 
 	applogger.Info("Server stopped gracefully")
 }

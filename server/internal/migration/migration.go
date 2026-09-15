@@ -74,6 +74,11 @@ var migrations = []migration{
 		description: "Copy legacy workspace and private-space data into Agent Owned Space",
 		fn:          migrate_0_1_13,
 	},
+	{
+		version:     "0.1.14",
+		description: "Add canonical document revisions and content-node mappings for knowledge bases",
+		fn:          migrate_0_1_14,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

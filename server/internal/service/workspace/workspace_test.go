@@ -63,6 +63,46 @@ func TestAOSPathsAndLocators(t *testing.T) {
 	}
 }
 
+// TestInitAgentOwnedSpaceCreatesStableSkeleton verifies that a newly started
+// agent can inspect its root, private root, and work root even before any
+// session-specific Focus has been created.
+func TestInitAgentOwnedSpaceCreatesStableSkeleton(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("DATA_ROOT", root)
+	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
+	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
+	config.Init()
+	applogger.Init()
+
+	const personID int64 = 29
+	if err := InitAgentOwnedSpace(personID); err != nil {
+		t.Fatalf("initialize agent AOS: %v", err)
+	}
+
+	for _, dir := range []string{
+		GetAgentOwnedSpacePath(personID),
+		GetPrivateSpacePath(personID),
+		filepath.Join(GetAgentOwnedSpacePath(personID), "work"),
+		GetAgentMetaPath(personID),
+		GetPrivateMetaDir(personID),
+		filepath.Join(GetAgentMetaPath(personID), "work"),
+	} {
+		info, err := os.Stat(dir)
+		if err != nil {
+			t.Fatalf("expected initialized directory %s: %v", dir, err)
+		}
+		if !info.IsDir() {
+			t.Fatalf("expected initialized path to be a directory: %s", dir)
+		}
+	}
+
+	for _, scope := range []string{"root", "private", "work"} {
+		if _, err := InspectOwnedSpace(personID, scope, "", 10); err != nil {
+			t.Fatalf("inspect initialized scope %q: %v", scope, err)
+		}
+	}
+}
+
 // TestRemoveWorkspaceIsSessionScoped verifies that one session's paired
 // AOS/AOSMeta cleanup cannot delete another session's resources.
 func TestRemoveWorkspaceIsSessionScoped(t *testing.T) {

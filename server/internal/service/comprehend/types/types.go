@@ -86,10 +86,13 @@ type HistorySearch struct {
 	Segments []Segment
 }
 
-// KBRetrieval describes a completed vector retrieval from authorized knowledge bases.
+// KBRetrieval describes a KB investigation suggested during comprehension.
+// Segments is populated only by legacy/direct retrieval paths; Focus-owned KB
+// work uses Query and KnowledgeBaseIDs to decide whether to start a Focus.
 type KBRetrieval struct {
-	Query    string
-	Segments []Segment
+	Query            string
+	KnowledgeBaseIDs []int64
+	Segments         []Segment
 }
 
 // ConversationMessage is a domain-level message used during comprehension.

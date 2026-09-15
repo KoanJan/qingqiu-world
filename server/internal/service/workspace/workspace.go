@@ -269,6 +269,30 @@ func InitWorkspace(personID, sessionID int64) string {
 	return ws
 }
 
+// InitAgentOwnedSpace creates the stable per-agent AOS skeleton.
+//
+// The private branch is initialized through InitPrivateSpace instead of a
+// raw MkdirAll so private resources and private metadata stay in lockstep.
+// The work branches are roots for future session workspaces; individual
+// session directories are still created lazily by InitWorkspace.
+func InitAgentOwnedSpace(personID int64) error {
+	if personID <= 0 {
+		return fmt.Errorf("initialize AOS: invalid person ID %d", personID)
+	}
+	if _, _, _, err := InitPrivateSpace(personID); err != nil {
+		return err
+	}
+	for _, dir := range []string{
+		filepath.Join(GetAgentOwnedSpacePath(personID), "work"),
+		filepath.Join(GetAgentMetaPath(personID), "work"),
+	} {
+		if err := os.MkdirAll(dir, 0755); err != nil {
+			return fmt.Errorf("initialize AOS directory %s: %w", dir, err)
+		}
+	}
+	return nil
+}
+
 // InitPrivateSpace creates the AOS/AOSMeta pair used by the private loop.
 func InitPrivateSpace(personID int64) (rootDir, workDir, metaDir string, err error) {
 	rootDir = GetAgentOwnedSpacePath(personID)

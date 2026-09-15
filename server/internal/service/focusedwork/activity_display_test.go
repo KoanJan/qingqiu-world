@@ -27,6 +27,7 @@ func TestBuildActivityEventsPreservesStableIDsAndWorkOwnership(t *testing.T) {
 		Content: "I will inspect the knowledge base.",
 		ToolCalls: []rawToolCall{
 			{Function: rawFunction{Name: tools.ToolNameScanKB.String(), Arguments: `{"query":"migration design"}`}},
+			{Function: rawFunction{Name: tools.ToolNameReadKBEvidence.String(), Arguments: `{"chunk_ids":[4,19,20]}`}},
 			{Function: rawFunction{Name: tools.ToolNameListKBDocuments.String(), Arguments: `{"kb_id":42}`}},
 		},
 	})
@@ -52,19 +53,19 @@ func TestBuildActivityEventsPreservesStableIDsAndWorkOwnership(t *testing.T) {
 		},
 	}, map[int64]int64{7: 11, 8: 12})
 
-	if len(events) != 4 {
-		t.Fatalf("expected four activity events, got %d", len(events))
+	if len(events) != 5 {
+		t.Fatalf("expected five activity events, got %d", len(events))
 	}
-	wantIDs := []string{"101:thinking", "101:tool:0", "101:tool:1", "102:guidance"}
+	wantIDs := []string{"101:thinking", "101:tool:0", "101:tool:1", "101:tool:2", "102:guidance"}
 	for index, wantID := range wantIDs {
 		if events[index].ID != wantID {
 			t.Errorf("event %d ID = %q, want %q", index, events[index].ID, wantID)
 		}
 	}
-	if events[1].Target != "migration design" || events[2].Target != "42" {
-		t.Errorf("KB targets = %q, %q; want query and KB ID", events[1].Target, events[2].Target)
+	if events[1].Target != "migration design" || events[2].Target != "3" || events[3].Target != "42" {
+		t.Errorf("KB targets = %q, %q, %q; want query, evidence count, and KB ID", events[1].Target, events[2].Target, events[3].Target)
 	}
-	if events[0].PersonID != 11 || events[3].PersonID != 12 {
-		t.Errorf("event ownership = %d, %d; want 11, 12", events[0].PersonID, events[3].PersonID)
+	if events[0].PersonID != 11 || events[4].PersonID != 12 {
+		t.Errorf("event ownership = %d, %d; want 11, 12", events[0].PersonID, events[4].PersonID)
 	}
 }

@@ -53,7 +53,7 @@ func (w *WriteTextFileTool) Schema() llm.FunctionDefinition {
 }
 
 func (w *WriteTextFileTool) Execute(args map[string]interface{}) (string, error) {
-	return w.core.Execute(args)
+	return w.core.Execute(normalizedTaskFileArgs(args))
 }
 
 func (w *WriteTextFileTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {

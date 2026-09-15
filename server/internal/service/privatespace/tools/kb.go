@@ -38,6 +38,37 @@ func (t *ScanKBTool) Execute(args map[string]interface{}) (string, error) {
 	return t.core.Execute(args)
 }
 
+// ReadKBEvidenceTool progressively reads authorized evidence by chunk ID after
+// scan_kb returned its immutable provenance metadata.
+type ReadKBEvidenceTool struct {
+	core *servicetools.ReadKBEvidenceTool
+}
+
+// NewReadKBEvidenceTool creates an evidence reader for the person.
+func NewReadKBEvidenceTool(personID int64) *ReadKBEvidenceTool {
+	return &ReadKBEvidenceTool{core: servicetools.NewReadKBEvidenceTool(servicetools.AuthorizedKBsFor(personID))}
+}
+
+// Name returns the tool name.
+func (t *ReadKBEvidenceTool) Name() string { return "read_kb_evidence" }
+
+// Description returns a brief description of the tool.
+func (t *ReadKBEvidenceTool) Description() string { return servicetools.ReadKBEvidenceDescription }
+
+// Schema returns the function definition for direct evidence disclosure.
+func (t *ReadKBEvidenceTool) Schema() llm.FunctionDefinition {
+	return llm.FunctionDefinition{
+		Name:        t.Name(),
+		Description: servicetools.ReadKBEvidenceSchemaDescription,
+		Parameters:  servicetools.ReadKBEvidenceParameters(),
+	}
+}
+
+// Execute reads full evidence bodies with active-revision authorization checks.
+func (t *ReadKBEvidenceTool) Execute(args map[string]interface{}) (string, error) {
+	return t.core.Execute(args)
+}
+
 // ListKBDocumentsTool lists the documents of one of the person's authorized
 // knowledge bases. It is the discovery step that feeds scan_kb's document
 // filter. Thin wrapper over the person-free core in service/tools.

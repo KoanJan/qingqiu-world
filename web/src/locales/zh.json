@@ -271,6 +271,8 @@
     "accessGrantFailed": "授权失败",
     "accessRevokeSuccess": "已撤销授权",
     "accessRevokeFailed": "撤销授权失败",
+    "accessSaveSuccess": "授权设置已保存",
+    "accessSaveFailed": "授权设置保存失败",
     "accessDone": "完成",
     "accessEmpty": "暂无可授权的 Agent",
     "hybridRetrieval": "混合检索",
@@ -317,7 +319,11 @@
       "read_jinshu": "阅读锦书",
       "copy_from_jinshu": "提取锦书文件",
       "scan_kb": "检索知识库",
+      "read_kb_evidence": "读取知识库证据",
       "list_kb_documents": "查看知识库文档"
+    },
+    "toolTarget": {
+      "read_kb_evidence": "{{count}} 条证据片段"
     }
   },
   "publicExperience": {

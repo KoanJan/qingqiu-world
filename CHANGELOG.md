@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.14] - 2026-09-23
+
+### Added
+- **Workload-driven Semantic RAG**: agents can now use knowledge bases through focused multi-step investigation instead of one-shot recall, with structured evidence, follow-up evidence reading, and evidence-grounded semantic recall improving complex KB-backed answers over time.
+
+### Changed
+- **Knowledge-Base Tool Guidance**: agents receive clearer guidance that KB search is non-exhaustive and should be followed by additional searches or full evidence reads when needed.
+
+### Fixed
+- **Agent Owned Space Initialization**: agent-owned `private` and `work` spaces are initialized more reliably.
+- **KB Management UI Polish**: fixed KB creation modal state, access-save messages, localized KB activity labels, and evidence-read activity targets so the UI no longer exposes i18n keys or internal IDs.
+
 ## [0.1.13] - 2026-09-15
 
 ### Changed

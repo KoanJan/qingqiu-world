@@ -16,6 +16,7 @@ import (
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/focusedwork"
+	"qingqiu-world-server/internal/service/kb"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/tools"
 	"qingqiu-world-server/internal/service/workspace"
@@ -113,6 +114,9 @@ func (w *work) Run(ctx context.Context) {
 		}
 
 		persistWorkHandoff(w, workRow.Status, output, workErr)
+		if err := kb.EnqueueFocusRelationAnalysisJob(w.ID); err != nil {
+			applogger.Error("work: failed to enqueue focus relation analysis", "work_id", w.ID, "error", err)
+		}
 
 		// Episodic gist for the memory event. The works row only carries
 		// description and status, so this text is the retrievable content.

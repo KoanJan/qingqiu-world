@@ -90,3 +90,66 @@ func TestSplit_MinChunkSizeMerge(t *testing.T) {
 		t.Error("last chunk should not be empty after potential merge")
 	}
 }
+
+// TestSplit_HeadingStartsNewUnit verifies that structural headings are not
+// merged into a preceding section even when both fit the token budget.
+func TestSplit_HeadingStartsNewUnit(t *testing.T) {
+	s := newTextSplitter(100, 0, 1)
+	text := "Introduction content.\n\n## Second Section\n\nSecond section content."
+	chunks := s.Split(text)
+	if len(chunks) != 2 {
+		t.Fatalf("expected two structural chunks, got %d", len(chunks))
+	}
+	if strings.Contains(chunks[0].Content, "Second Section") {
+		t.Errorf("heading leaked into preceding unit: %q", chunks[0].Content)
+	}
+	if !strings.Contains(chunks[1].Content, "Second Section") {
+		t.Errorf("heading missing from new structural unit: %q", chunks[1].Content)
+	}
+}
+
+func TestSplit_AlignsOffsetsToCanonicalText(t *testing.T) {
+	s := newTextSplitter(8, 0, 1)
+	text := "First paragraph has enough words.\n\nSecond paragraph has enough words."
+	chunks := s.Split(text)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if chunk.StartOffset < 0 || chunk.EndOffset > len(text) || chunk.StartOffset >= chunk.EndOffset {
+			t.Fatalf("invalid chunk range: %#v", chunk)
+		}
+		if got := text[chunk.StartOffset:chunk.EndOffset]; got != chunk.Content {
+			t.Fatalf("offset content mismatch: got %q, want %q", got, chunk.Content)
+		}
+	}
+}
+
+func TestSplit_LargeParagraphPreservesOriginalWhitespaceForProvenance(t *testing.T) {
+	s := newTextSplitter(7, 0, 1)
+	text := "one\ttwo\nthree  four five\tsix seven eight nine ten"
+	chunks := s.Split(text)
+	if len(chunks) < 2 {
+		t.Fatalf("expected multiple chunks, got %d", len(chunks))
+	}
+	for _, chunk := range chunks {
+		if got := text[chunk.StartOffset:chunk.EndOffset]; got != chunk.Content {
+			t.Fatalf("chunk did not preserve source whitespace: got %q, want %q", got, chunk.Content)
+		}
+	}
+}
+
+func TestSplit_PreservesListTableAndCodeBoundaries(t *testing.T) {
+	s := newTextSplitter(100, 0, 1)
+	text := "Intro paragraph.\n- first item\n- second item\n| name | value |\n| --- | --- |\n| one | two |\n```go\nfmt.Println(\"x\")\n\nfmt.Println(\"y\")\n```\nOutro paragraph."
+	paragraphs := s.splitParagraphs(text)
+	if len(paragraphs) != 5 {
+		t.Fatalf("unexpected structural block count: %d", len(paragraphs))
+	}
+	if !paragraphs[1].list || !paragraphs[2].table || !paragraphs[3].code {
+		t.Fatalf("structural profiles not preserved: %#v", paragraphs)
+	}
+	if !strings.Contains(paragraphs[3].content, "\n\n") {
+		t.Fatalf("code block whitespace was not preserved: %q", paragraphs[3].content)
+	}
+}

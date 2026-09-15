@@ -8,7 +8,9 @@ import (
 	"github.com/pkoukk/tiktoken-go"
 )
 
-// textSplitter splits text into chunks based on token count with overlap.
+// textSplitter builds deterministic retrieval units from structural boundaries
+// and profile-specific token budgets. Token count constrains a unit; it does
+// not override headings or code-fence boundaries.
 // Uses tiktoken for token counting (cl100k_base encoding, compatible with
 // OpenAI models). Token counts for non-OpenAI models may have minor deviations.
 type textSplitter struct {
@@ -42,8 +44,21 @@ type chunk struct {
 	EndOffset   int
 }
 
+// textParagraph preserves a lightweight structural profile from local text.
+type textParagraph struct {
+	content string
+	heading bool
+	code    bool
+	list    bool
+	table   bool
+}
+
 // Split splits text into chunks that respect token limits with overlap.
 func (s *textSplitter) Split(text string) []chunk {
+	// Chunk offsets belong to the canonical rendition, so normalize line endings
+	// before both structural parsing and exact offset alignment.
+	text = strings.ReplaceAll(text, "\r\n", "\n")
+	text = strings.ReplaceAll(text, "\r", "\n")
 	if text == "" {
 		return nil
 	}
@@ -77,17 +92,23 @@ func (s *textSplitter) Split(text string) []chunk {
 	}
 
 	for _, para := range paragraphs {
-		paraTokens := len(s.tp.Encode(para, nil, nil))
-
-		if currentTokens+paraTokens > s.chunkSize && len(currentParts) > 0 {
+		paraTokens := len(s.tp.Encode(para.content, nil, nil))
+		targetSize := s.targetSize(para)
+		// A heading starts a new structural unit so its following content keeps
+		// the correct section context in search_text and citations.
+		if para.heading && len(currentParts) > 0 {
 			flush()
 		}
 
-		if paraTokens > s.chunkSize {
+		if currentTokens+paraTokens > targetSize && len(currentParts) > 0 {
+			flush()
+		}
+
+		if paraTokens > targetSize {
 			if len(currentParts) > 0 {
 				flush()
 			}
-			subchunks := s.splitLargeParagraph(para, chunkIndex, startOffset)
+			subchunks := s.splitLargeParagraph(para.content, chunkIndex, startOffset, targetSize)
 			for _, sc := range subchunks {
 				sc.chunkIndex = chunkIndex
 				chunks = append(chunks, sc)
@@ -100,69 +121,210 @@ func (s *textSplitter) Split(text string) []chunk {
 			continue
 		}
 
-		currentParts = append(currentParts, para)
+		currentParts = append(currentParts, para.content)
 		currentTokens += paraTokens
 	}
 
 	flush()
 
 	chunks = s.mergeSmallTailchunks(chunks)
+	return s.alignChunkOffsets(text, chunks)
+}
+
+// alignChunkOffsets reconciles reconstructed chunk text with the canonical
+// rendition. The splitter may rebuild paragraph separators or overlap text;
+// locating each exact unit prevents those implementation details from leaking
+// into evidence provenance. A failed match retains the best available offset
+// and is logged for diagnosis instead of silently fabricating a location.
+func (s *textSplitter) alignChunkOffsets(text string, chunks []chunk) []chunk {
+	searchText := normalizeLocatorSearchText(text)
+	searchStart := 0
+	for index := range chunks {
+		content := chunks[index].Content
+		if content == "" {
+			applogger.Warn("KB splitter produced empty chunk while aligning offsets", "chunk_index", chunks[index].chunkIndex)
+			continue
+		}
+		start, end, found := searchText.find(content, searchStart)
+		if !found {
+			applogger.Warn("KB splitter could not align chunk to canonical text", "chunk_index", chunks[index].chunkIndex, "content_bytes", len(content), "fallback_start_offset", chunks[index].StartOffset, "fallback_end_offset", chunks[index].EndOffset)
+			continue
+		}
+		chunks[index].StartOffset = start
+		chunks[index].EndOffset = end
+		// Do not advance to EndOffset: overlapping retrieval units may begin in
+		// the previous unit's suffix.
+		searchStart = start
+	}
 	return chunks
 }
 
-func (s *textSplitter) splitParagraphs(text string) []string {
+func (s *textSplitter) splitParagraphs(text string) []textParagraph {
 	lines := strings.Split(text, "\n")
-	var paragraphs []string
+	var paragraphs []textParagraph
 	var current []string
+	inCodeFence := false
+	currentKind := 0
+
+	flush := func() {
+		if len(current) == 0 {
+			return
+		}
+		content := strings.Join(current, "\n")
+		paragraphs = append(paragraphs, textParagraph{
+			content: content,
+			heading: isMarkdownHeading(content),
+			code:    inCodeFence || strings.HasPrefix(strings.TrimSpace(content), "```") || strings.HasPrefix(strings.TrimSpace(content), "    "),
+			list:    isListBlock(content),
+			table:   isTableBlock(content),
+		})
+		current = nil
+		currentKind = 0
+	}
 
 	for _, line := range lines {
-		if strings.TrimSpace(line) == "" {
-			if len(current) > 0 {
-				paragraphs = append(paragraphs, strings.Join(current, "\n"))
-				current = nil
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "```") {
+			if len(current) > 0 && !inCodeFence {
+				flush()
+			}
+			current = append(current, line)
+			inCodeFence = !inCodeFence
+			if !inCodeFence {
+				flush()
 			}
 			continue
 		}
+		if inCodeFence {
+			current = append(current, line)
+			continue
+		}
+		if strings.TrimSpace(line) == "" {
+			flush()
+			continue
+		}
+		kind := paragraphKind(line)
+		if len(current) > 0 && kind != currentKind {
+			flush()
+		}
+		currentKind = kind
 		current = append(current, line)
 	}
-	if len(current) > 0 {
-		paragraphs = append(paragraphs, strings.Join(current, "\n"))
-	}
+	flush()
 	return paragraphs
 }
 
-func (s *textSplitter) splitLargeParagraph(para string, chunkIndex, startOffset int) []chunk {
+func (s *textSplitter) targetSize(paragraph textParagraph) int {
+	if paragraph.heading {
+		target := s.chunkSize / 2
+		if target < s.minchunkSize {
+			return s.minchunkSize
+		}
+		return target
+	}
+	if paragraph.code {
+		return s.chunkSize * 2
+	}
+	if paragraph.table {
+		return s.chunkSize * 2
+	}
+	if paragraph.list {
+		return s.chunkSize / 2
+	}
+	return s.chunkSize
+}
+
+func isMarkdownHeading(content string) bool {
+	trimmed := strings.TrimSpace(content)
+	return strings.HasPrefix(trimmed, "#") && len(trimmed) > 1
+}
+
+// paragraphKind groups structural Markdown blocks without normalizing their
+// source text. It intentionally uses a small deterministic recognizer rather
+// than an LLM or parser dependency because local uploads are only TXT/MD/PDF.
+func paragraphKind(line string) int {
+	trimmed := strings.TrimSpace(line)
+	switch {
+	case isMarkdownHeading(trimmed):
+		return 1
+	case isListLine(trimmed):
+		return 2
+	case strings.HasPrefix(trimmed, "|"):
+		return 3
+	default:
+		return 4
+	}
+}
+
+func isListLine(line string) bool {
+	if strings.HasPrefix(line, "- ") || strings.HasPrefix(line, "* ") || strings.HasPrefix(line, "+ ") {
+		return true
+	}
+	for index, r := range line {
+		if r == '.' || r == ')' {
+			return index > 0 && index+1 < len(line) && line[index+1] == ' '
+		}
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return false
+}
+
+func isListBlock(content string) bool {
+	lines := strings.Split(content, "\n")
+	return len(lines) > 0 && isListLine(strings.TrimSpace(lines[0]))
+}
+
+func isTableBlock(content string) bool {
+	lines := strings.Split(content, "\n")
+	return len(lines) > 0 && strings.HasPrefix(strings.TrimSpace(lines[0]), "|")
+}
+
+func (s *textSplitter) splitLargeParagraph(para string, chunkIndex, startOffset, targetSize int) []chunk {
 	words := strings.Fields(para)
 	var chunks []chunk
-	var currentWords []string
 	currentTokens := 0
-	offset := startOffset
+	currentStart := -1
+	currentEnd := -1
+	searchOffset := 0
 
 	for _, word := range words {
+		wordOffset := strings.Index(para[searchOffset:], word)
+		if wordOffset < 0 {
+			applogger.Error("KB splitter could not locate token inside large paragraph", "chunk_index", chunkIndex, "token_bytes", len(word))
+			return nil
+		}
+		wordStart := searchOffset + wordOffset
+		wordEnd := wordStart + len(word)
 		wordTokens := len(s.tp.Encode(word, nil, nil))
-		if currentTokens+wordTokens > s.chunkSize && len(currentWords) > 0 {
-			content := strings.Join(currentWords, " ")
+		if currentTokens+wordTokens > targetSize && currentStart >= 0 {
+			content := para[currentStart:currentEnd]
 			chunks = append(chunks, chunk{
 				Content:     content,
 				chunkIndex:  chunkIndex,
-				StartOffset: offset,
-				EndOffset:   offset + len(content),
+				StartOffset: startOffset + currentStart,
+				EndOffset:   startOffset + currentEnd,
 			})
-			offset += len(content)
-			currentWords = nil
 			currentTokens = 0
+			chunkIndex++
+			currentStart = -1
 		}
-		currentWords = append(currentWords, word)
+		if currentStart < 0 {
+			currentStart = wordStart
+		}
+		currentEnd = wordEnd
 		currentTokens += wordTokens
+		searchOffset = wordEnd
 	}
 
-	if len(currentWords) > 0 {
-		content := strings.Join(currentWords, " ")
+	if currentStart >= 0 {
+		content := para[currentStart:currentEnd]
 		chunks = append(chunks, chunk{
 			Content:     content,
 			chunkIndex:  chunkIndex,
-			StartOffset: offset,
-			EndOffset:   offset + len(content),
+			StartOffset: startOffset + currentStart,
+			EndOffset:   startOffset + currentEnd,
 		})
 	}
 

@@ -1,6 +1,7 @@
 package kb
 
 import (
+	"fmt"
 	"math"
 	"sort"
 	"strings"
@@ -79,6 +80,13 @@ func (idx *bm25Index) AddDocuments(docs []bm25ChunkDoc) {
 	}
 }
 
+// DocumentCount returns the number of indexed retrieval units.
+func (idx *bm25Index) DocumentCount() int {
+	idx.mu.RLock()
+	defer idx.mu.RUnlock()
+	return len(idx.docLens)
+}
+
 // Search scores indexed chunks against the query with BM25 and returns the
 // top-K candidates in descending score order.
 func (idx *bm25Index) Search(query string, topK int) []searchCandidate {
@@ -130,7 +138,12 @@ func (idx *bm25Index) Search(query string, topK int) []searchCandidate {
 	for chunkID, score := range scores {
 		results = append(results, searchCandidate{ChunkID: uint64(chunkID), Score: score})
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].ChunkID < results[j].ChunkID
+		}
+		return results[i].Score > results[j].Score
+	})
 	if len(results) > topK {
 		results = results[:topK]
 	}
@@ -209,8 +222,10 @@ func getOrCreateBM25Index(kbID int64) (*bm25Index, error) {
 	}
 
 	var chunks []model.DocumentChunk
-	if err := database.DB.Select("id, content").
-		Where("knowledge_base_id = ? AND deleted = 0", kbID).
+	if err := database.DB.Table("document_chunks AS chunks").
+		Select("chunks.id, chunks.content").
+		Joins("JOIN documents AS documents ON documents.id = chunks.document_id").
+		Where("chunks.knowledge_base_id = ? AND chunks.deleted = 0 AND documents.status = ? AND chunks.revision_id = documents.active_revision_id", kbID, model.DocumentStatusReady).
 		Find(&chunks).Error; err != nil {
 		return nil, err
 	}
@@ -230,17 +245,18 @@ func getOrCreateBM25Index(kbID int64) (*bm25Index, error) {
 // index. It builds the index when absent: either the build reads the chunks
 // from the database (they are already stored), or it ran before the insert
 // and the explicit add below covers them, so chunks cannot be lost.
-func updateBM25ForDocument(kbID, docID int64) {
+func updateBM25ForDocument(kbID, docID int64) error {
 	idx, err := getOrCreateBM25Index(kbID)
 	if err != nil {
-		applogger.Error("failed to get BM25 index for document update", "kb_id", kbID, "doc_id", docID, "error", err)
-		return
+		return err
 	}
 
 	var chunks []model.DocumentChunk
-	if err := database.DB.Select("id, content").Where("document_id = ?", docID).Find(&chunks).Error; err != nil {
-		applogger.Error("failed to load chunks for BM25 update", "kb_id", kbID, "doc_id", docID, "error", err)
-		return
+	if err := database.DB.Select("id, content").Where("document_id = ? AND deleted = 0", docID).Find(&chunks).Error; err != nil {
+		return err
+	}
+	if len(chunks) == 0 {
+		return fmt.Errorf("document %d has no chunks for BM25", docID)
 	}
 
 	docs := make([]bm25ChunkDoc, 0, len(chunks))
@@ -248,6 +264,8 @@ func updateBM25ForDocument(kbID, docID int64) {
 		docs = append(docs, bm25ChunkDoc{ChunkID: c.ID, Content: c.Content})
 	}
 	idx.AddDocuments(docs)
+	applogger.Debug("BM25 index updated for document", "kb_id", kbID, "doc_id", docID, "chunks", len(docs), "indexed_docs", idx.DocumentCount())
+	return nil
 }
 
 // releaseBM25Index drops the in-memory BM25 index of a knowledge base.

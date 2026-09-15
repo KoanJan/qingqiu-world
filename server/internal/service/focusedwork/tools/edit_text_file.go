@@ -59,7 +59,7 @@ func (e *EditTextFileTool) Schema() llm.FunctionDefinition {
 }
 
 func (e *EditTextFileTool) Execute(args map[string]interface{}) (string, error) {
-	return e.core.Execute(args)
+	return e.core.Execute(normalizedTaskFileArgs(args))
 }
 
 func (e *EditTextFileTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {

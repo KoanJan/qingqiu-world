@@ -1253,6 +1253,13 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 	if chatComprehension.NeedsClarification {
 		parts = append(parts, "Needs clarification: true (query is vague)")
 	}
+	if chatComprehension.KBRetrieval != nil && chatComprehension.KBRetrieval.Query != "" {
+		parts = append(parts, fmt.Sprintf(
+			"Knowledge-base investigation suggested: query=%q, kb_ids=%v. If answering this needs evidence rather than context already present, start a FocusedWork and use scan_kb/read_kb_evidence.",
+			truncateWorkDescription(chatComprehension.KBRetrieval.Query),
+			chatComprehension.KBRetrieval.KnowledgeBaseIDs,
+		))
+	}
 
 	if len(parts) == 0 {
 		return ""

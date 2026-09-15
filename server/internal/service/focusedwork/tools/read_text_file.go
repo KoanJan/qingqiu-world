@@ -58,7 +58,7 @@ func (r *ReadTextFileTool) Schema() llm.FunctionDefinition {
 }
 
 func (r *ReadTextFileTool) Execute(args map[string]interface{}) (string, error) {
-	return r.core.Execute(args)
+	return r.core.Execute(normalizedTaskFileArgs(args))
 }
 
 func (r *ReadTextFileTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {
