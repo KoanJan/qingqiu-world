@@ -322,6 +322,7 @@ func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSe
 		"KNOWLEDGE-BASE EVIDENCE RULES:",
 		"- scan_kb is semantic retrieval, not exhaustive traversal. Treat its evidence as a subset and state findings as based on retrieved evidence.",
 		"- When calling scan_kb, provide a short reason that states the knowledge gap for that query; this reason is query-intent trace, not KB evidence.",
+		"- relation_paths returned by scan_kb are provenance hints explaining how evidence was expanded, not facts or conclusions. Never cite a relation path as a fact in your answer; first read the supporting evidence via read_kb_evidence, and preserve any applicability_note limits when you use it.",
 		"- list_kb_documents is an inventory only; its chunk count does not mean those chunks were read.",
 		"- Never claim complete coverage, all contents, or unsupported facts unless a tool explicitly establishes that coverage.",
 		"",

@@ -5,12 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
-
-	"gorm.io/gorm"
 )
 
 const (
@@ -29,8 +26,8 @@ func EnqueueFocusRelationAnalysisJob(workID int64) error {
 	if workID <= 0 {
 		return fmt.Errorf("work_id is required")
 	}
-	var traceCount int64
-	if err := database.DB.Model(&model.KBUsageTrace{}).Where("work_id = ?", workID).Count(&traceCount).Error; err != nil {
+	traceCount, err := dops.CountKBUsageTracesByWorkID(workID)
+	if err != nil {
 		applogger.Error("relation job: failed to count workload KB traces", "work_id", workID, "error", err)
 		return err
 	}
@@ -46,12 +43,12 @@ func EnqueueFocusRelationAnalysisJob(workID int64) error {
 		IdempotencyKey: key,
 		PayloadJSON:    "{}",
 	}
-	result := database.DB.Where("idempotency_key = ?", key).Attrs(job).FirstOrCreate(&job)
-	if result.Error != nil {
-		applogger.Error("relation job: failed to enqueue workload analysis job", "work_id", workID, "error", result.Error)
-		return result.Error
+	created, err := dops.EnsureKBRelationJob(&job)
+	if err != nil {
+		applogger.Error("relation job: failed to enqueue workload analysis job", "work_id", workID, "error", err)
+		return err
 	}
-	applogger.Info("relation job: workload analysis job available", "work_id", workID, "job_id", job.ID, "trace_count", traceCount, "created", result.RowsAffected == 1, "state", job.State)
+	applogger.Info("relation job: workload analysis job available", "work_id", workID, "job_id", job.ID, "trace_count", traceCount, "created", created, "state", job.State)
 	if job.State == model.KBRelationJobStatePending {
 		wakeRelationMaintenance("workload_analysis_enqueued", "work_id", workID, "job_id", job.ID)
 	}
@@ -72,12 +69,12 @@ func EnqueueRelationRevalidationJob(relationID int64) error {
 		IdempotencyKey: key,
 		PayloadJSON:    "{}",
 	}
-	result := database.DB.Where("idempotency_key = ?", key).Attrs(job).FirstOrCreate(&job)
-	if result.Error != nil {
-		applogger.Error("relation job: failed to enqueue revalidation job", "relation_id", relationID, "error", result.Error)
-		return result.Error
+	created, err := dops.EnsureKBRelationJob(&job)
+	if err != nil {
+		applogger.Error("relation job: failed to enqueue revalidation job", "relation_id", relationID, "error", err)
+		return err
 	}
-	applogger.Info("relation job: revalidation job available", "relation_id", relationID, "job_id", job.ID, "created", result.RowsAffected == 1, "state", job.State)
+	applogger.Info("relation job: revalidation job available", "relation_id", relationID, "job_id", job.ID, "created", created, "state", job.State)
 	if job.State == model.KBRelationJobStatePending {
 		wakeRelationMaintenance("revalidation_enqueued", "relation_id", relationID, "job_id", job.ID)
 	}
@@ -127,9 +124,8 @@ func processPendingRelationJobs(ctx context.Context, limit int, trigger string) 
 	if limit <= 0 {
 		limit = relationJobBatchLimit
 	}
-	var jobs []model.KBRelationJob
-	if err := database.DB.Where("state = ?", model.KBRelationJobStatePending).
-		Order("id ASC").Limit(limit).Find(&jobs).Error; err != nil {
+	jobs, err := dops.ListPendingKBRelationJobs(limit)
+	if err != nil {
 		applogger.Error("relation job: failed to load pending jobs", "trigger", trigger, "error", err)
 		return
 	}
@@ -142,12 +138,17 @@ func processPendingRelationJobs(ctx context.Context, limit int, trigger string) 
 			applogger.Info("relation job: processing stopped by context", "trigger", trigger, "job_id", job.ID)
 			return
 		}
-		if err := claimRelationJob(job.ID); err != nil {
+		claimed, err := dops.ClaimPendingKBRelationJob(job.ID)
+		if err != nil {
 			applogger.Warn("relation job: failed to claim job", "trigger", trigger, "job_id", job.ID, "error", err)
 			continue
 		}
+		if !claimed {
+			applogger.Warn("relation job: job is no longer pending", "trigger", trigger, "job_id", job.ID)
+			continue
+		}
 		applogger.Debug("relation job: claimed job", "trigger", trigger, "job_id", job.ID, "job_type", job.JobType, "source_work_id", job.SourceWorkID, "relation_id", job.RelationID)
-		err := processRelationJob(ctx, job)
+		err = processRelationJob(ctx, job)
 		if err != nil {
 			recordRelationJobFailure(job, err)
 			continue
@@ -155,24 +156,6 @@ func processPendingRelationJobs(ctx context.Context, limit int, trigger string) 
 		completeRelationJob(job.ID)
 		applogger.Debug("relation job: completed job", "trigger", trigger, "job_id", job.ID, "job_type", job.JobType)
 	}
-}
-
-// claimRelationJob atomically moves one pending job into running state and
-// increments its attempt counter.
-func claimRelationJob(jobID int64) error {
-	result := database.DB.Model(&model.KBRelationJob{}).
-		Where("id = ? AND state = ?", jobID, model.KBRelationJobStatePending).
-		Updates(map[string]interface{}{
-			"state":    model.KBRelationJobStateRunning,
-			"attempts": gorm.Expr("attempts + ?", 1),
-		})
-	if result.Error != nil {
-		return result.Error
-	}
-	if result.RowsAffected != 1 {
-		return fmt.Errorf("job is no longer pending")
-	}
-	return nil
 }
 
 // processRelationJob dispatches one claimed job to the deterministic
@@ -199,12 +182,7 @@ func recordRelationJobFailure(job model.KBRelationJob, err error) {
 	if job.Attempts+1 >= relationJobMaxAttempts {
 		nextState = model.KBRelationJobStateFailed
 	}
-	if updateErr := database.DB.Model(&model.KBRelationJob{}).
-		Where("id = ?", job.ID).
-		Updates(map[string]interface{}{
-			"state":      nextState,
-			"last_error": err.Error(),
-		}).Error; updateErr != nil {
+	if updateErr := dops.UpdateKBRelationJobFailure(job.ID, nextState, err.Error()); updateErr != nil {
 		applogger.Error("relation job: failed to record failure", "job_id", job.ID, "error", updateErr)
 	}
 	applogger.Warn("relation job: processing failed", "job_id", job.ID, "job_type", job.JobType, "next_state", nextState, "error", err)
@@ -213,12 +191,7 @@ func recordRelationJobFailure(job model.KBRelationJob, err error) {
 // completeRelationJob marks a successfully processed job completed and clears
 // any previous transient error text.
 func completeRelationJob(jobID int64) {
-	if err := database.DB.Model(&model.KBRelationJob{}).
-		Where("id = ?", jobID).
-		Updates(map[string]interface{}{
-			"state":      model.KBRelationJobStateCompleted,
-			"last_error": "",
-		}).Error; err != nil {
+	if err := dops.CompleteKBRelationJob(jobID); err != nil {
 		applogger.Error("relation job: failed to mark completed", "job_id", jobID, "error", err)
 	}
 }

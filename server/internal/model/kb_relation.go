@@ -8,7 +8,7 @@ type KBEntityState int
 const (
 	// KBEntityStateActive means the entity can participate in relation lookup.
 	KBEntityStateActive KBEntityState = 1
-	// KBEntityStateStale means the entity may need alias/scope revalidation.
+	// KBEntityStateStale means the entity may need label/scope revalidation.
 	KBEntityStateStale KBEntityState = 2
 	// KBEntityStateArchived means the entity is retained for audit only.
 	KBEntityStateArchived KBEntityState = 3
@@ -66,7 +66,6 @@ type KBEntity struct {
 	ScopeKBIDsJSON  string        `gorm:"type:text;not null;default:'[]'" json:"scope_kb_ids_json"`
 	NormalizedLabel string        `gorm:"type:varchar(500);not null;uniqueIndex:idx_kb_entities_scope_label,priority:2" json:"normalized_label"`
 	DisplayLabel    string        `gorm:"type:varchar(500);not null;default:''" json:"display_label"`
-	AliasesJSON     string        `gorm:"type:text;not null;default:'[]'" json:"aliases_json"`
 	State           KBEntityState `gorm:"not null;default:1;index" json:"state"`
 	CreatedAt       time.Time     `gorm:"not null;autoCreateTime" json:"created_at"`
 	UpdatedAt       time.Time     `gorm:"not null;autoUpdateTime" json:"updated_at"`
@@ -77,22 +76,25 @@ func (KBEntity) TableName() string { return "kb_entities" }
 
 // KBRelation is a derived semantic shortcut supported by KB evidence.
 type KBRelation struct {
-	ID              int64           `gorm:"primaryKey;autoIncrement" json:"id"`
-	ScopeHash       string          `gorm:"type:varchar(128);not null;index" json:"scope_hash"`
-	ScopeKBIDsJSON  string          `gorm:"type:text;not null;default:'[]'" json:"scope_kb_ids_json"`
-	SubjectEntityID int64           `gorm:"not null;index" json:"subject_entity_id"`
-	Predicate       string          `gorm:"type:varchar(255);not null;default:''" json:"predicate"`
-	ObjectEntityID  int64           `gorm:"not null;index" json:"object_entity_id"`
-	State           KBRelationState `gorm:"not null;default:1;index" json:"state"`
-	IdempotencyKey  string          `gorm:"type:varchar(128);not null;uniqueIndex" json:"idempotency_key"`
-	EvidenceHash    string          `gorm:"type:varchar(128);not null;default:''" json:"evidence_hash"`
-	PolicyVersion   string          `gorm:"type:varchar(64);not null;default:''" json:"policy_version"`
-	UseCount        int             `gorm:"not null;default:0" json:"use_count"`
-	UtilityScore    int             `gorm:"not null;default:0" json:"utility_score"`
-	StaleReason     string          `gorm:"type:text;not null;default:''" json:"stale_reason"`
-	LastUsedAtUnix  int64           `gorm:"not null;default:0" json:"last_used_at_unix"`
-	CreatedAt       time.Time       `gorm:"not null;autoCreateTime" json:"created_at"`
-	UpdatedAt       time.Time       `gorm:"not null;autoUpdateTime" json:"updated_at"`
+	ID              int64  `gorm:"primaryKey;autoIncrement" json:"id"`
+	ScopeHash       string `gorm:"type:varchar(128);not null;index" json:"scope_hash"`
+	ScopeKBIDsJSON  string `gorm:"type:text;not null;default:'[]'" json:"scope_kb_ids_json"`
+	SubjectEntityID int64  `gorm:"not null;index" json:"subject_entity_id"`
+	Predicate       string `gorm:"type:varchar(255);not null;default:''" json:"predicate"`
+	ObjectEntityID  int64  `gorm:"not null;index" json:"object_entity_id"`
+	// ApplicabilityNote is a natural-language boundary for the proposition,
+	// such as time range, version, project scope, or source assumption. It is
+	// not a structured filter, confidence score, or proof.
+	ApplicabilityNote string          `gorm:"type:text;not null;default:''" json:"applicability_note"`
+	State             KBRelationState `gorm:"not null;default:1;index" json:"state"`
+	IdempotencyKey    string          `gorm:"type:varchar(128);not null;uniqueIndex" json:"idempotency_key"`
+	EvidenceHash      string          `gorm:"type:varchar(128);not null;default:''" json:"evidence_hash"`
+	PolicyVersion     string          `gorm:"type:varchar(64);not null;default:''" json:"policy_version"`
+	UseCount          int             `gorm:"not null;default:0" json:"use_count"`
+	StaleReason       string          `gorm:"type:text;not null;default:''" json:"stale_reason"`
+	LastUsedAtUnix    int64           `gorm:"not null;default:0" json:"last_used_at_unix"`
+	CreatedAt         time.Time       `gorm:"not null;autoCreateTime" json:"created_at"`
+	UpdatedAt         time.Time       `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName returns the database table name for KBRelation.

@@ -264,6 +264,9 @@
 //     relation namespace. If omitted, admission derives it from evidence KB IDs.
 //   - SubjectLabel/ObjectLabel/Predicate are the candidate labels before
 //     normalization. They are used to create/reuse entity and relation rows.
+//   - ApplicabilityNote preserves natural-language proposition boundaries such
+//     as time range, version, project scope, jurisdiction, or source assumption.
+//     It is not parsed into a condition schema and is not treated as proof.
 //   - Evidence is the list of grounded proof handles. At least one handle is
 //     required.
 //   - PolicyVersion is part of relation idempotency. Changing the admission
@@ -286,14 +289,16 @@
 //     scope is a different lightweight entity.
 //   - KBEntity.NormalizedLabel is the deduplication key inside the scope.
 //   - KBEntity.DisplayLabel preserves a readable label from the candidate.
-//   - KBEntity.AliasesJSON is reserved for future alias maintenance; current
-//     admission creates entities with an empty alias list.
 //   - KBEntity.State controls whether the entity can participate in traversal.
 //   - KBRelation.ScopeHash and ScopeKBIDsJSON repeat the scope on the edge so
 //     relation expansion can enforce authorization without loading both
 //     entities first.
 //   - KBRelation.SubjectEntityID, Predicate and ObjectEntityID form the semantic
 //     edge. Predicate is normalized open vocabulary, not a fixed enum.
+//   - KBRelation.ApplicabilityNote carries natural-language limits for the
+//     relation proposition. Repeated admissions for the same scoped
+//     subject-predicate-object relation preserve distinct notes instead of
+//     overwriting them, because these limits are intentionally not structured.
 //   - KBRelation.State controls traversal. Only grounded/active relation states
 //     are intended for semantic expansion; stale/rejected/archived rows are
 //     audit or maintenance records.
@@ -302,8 +307,8 @@
 //   - KBRelation.EvidenceHash summarizes the sorted proof fingerprints. It
 //     changes when the supporting evidence set changes.
 //   - KBRelation.PolicyVersion records which admission rules produced the row.
-//   - KBRelation.UseCount, UtilityScore and LastUsedAtUnix are maintenance
-//     signals for future pruning/ranking, not proof.
+//   - KBRelation.UseCount and LastUsedAtUnix are objective maintenance
+//     telemetry, not proof.
 //   - KBRelation.StaleReason explains why a relation was removed from retrieval
 //     paths.
 //   - KBRelationEvidence.RelationID attaches one proof row to its relation.
@@ -323,7 +328,7 @@
 // Relation expansion starts from retrieved chunk IDs, finds grounded/active
 // relations supported by those chunks, checks that the relation scope is within
 // the caller's authorized KB set, and maps relation evidence rows back into
-// active chunk evidence. Relation paths are provenance hints, not conclusions.
+// active chunk evidence. Relation paths are provenance metadata, not conclusions.
 // The workload runtime remains responsible for deciding whether another scan
 // or a final answer is appropriate.
 //

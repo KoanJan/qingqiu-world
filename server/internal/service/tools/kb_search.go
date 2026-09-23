@@ -85,7 +85,7 @@ const (
 		"Never claim complete coverage, all contents, or facts outside returned evidence. For an inventory, use list_kb_documents; describe findings as based on retrieved evidence. " +
 		"Provide a short reason describing the knowledge gap this query is meant to resolve; it is stored as query-intent trace, not as evidence or hidden reasoning. " +
 		"top_k limits base retrieval candidates, not final related evidence metadata. Returns complete related document/chunk metadata and evidence content for the workload runtime to reason over. " +
-		"Semantic relation paths may expand retrieval to additional evidence chunks; relation paths are provenance hints, not evidence or conclusions. " +
+		"Semantic relation paths may expand retrieval to additional evidence chunks; relation paths are provenance hints, not evidence or conclusions, and may include natural-language applicability notes that limit the relation proposition. " +
 		"Only evidence content can be token-truncated; use read_kb_evidence with returned chunk IDs to read any full evidence body. " +
 		"Optionally restrict the search to one knowledge base (kb_id) and/or one document " +
 		"within it (document). Use list_kb_documents to discover available KBs and documents first."
@@ -416,7 +416,7 @@ func (s *ScanKBTool) recordUsageTrace(query, reason string, authorizedKBIDs []in
 		QueryFingerprint:      kb.QueryFingerprint(query),
 		ReasonFingerprint:     kb.QueryFingerprint(reason),
 	}
-	if err := database.DB.Create(&trace).Error; err != nil {
+	if err := dops.CreateKBUsageTrace(&trace); err != nil {
 		applogger.Error("scan_kb: failed to persist KB usage trace", "work_id", s.traceContext.WorkID, "session_id", s.traceContext.SessionID, "query_fingerprint", kb.QueryFingerprint(query), "error", err)
 		return
 	}

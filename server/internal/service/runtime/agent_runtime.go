@@ -1026,7 +1026,10 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 	}
 
 	tx := database.DB.Begin()
-	defer tx.Rollback()
+	if tx.Error != nil {
+		applogger.Error("Failed to begin work transaction", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", tx.Error)
+		return nil, false
+	}
 
 	// The work's Description should reflect what the agent intends to DO
 	// (its guidance), not merely what triggered it. Using the triggering
@@ -1050,10 +1053,20 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		Checkpoint:  "Focus created and awaiting execution.",
 	}
 	if err := tx.Create(workRecord).Error; err != nil {
+		tx.Rollback()
 		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 		return nil, false
 	}
 
+	if err := tx.Commit().Error; err != nil {
+		applogger.Error("Failed to commit work transaction", "agent_config_id", r.agentConfigID, "error", err)
+		return nil, false
+	}
+
+	// Build the runtime context only after the create transaction has been
+	// committed. buildSessionFocusContext performs regular DB reads; running it
+	// while the transaction still owns the single SQLite connection would
+	// self-block until GORM's default context timeout.
 	w := &work{
 		ID:            workRecord.ID,
 		agent:         r,
@@ -1068,11 +1081,6 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 			Background: dec.Background,
 			Reason:     dec.Reason,
 		},
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		applogger.Error("Failed to commit work transaction", "agent_config_id", r.agentConfigID, "error", err)
-		return nil, false
 	}
 
 	applogger.Info("Work created",

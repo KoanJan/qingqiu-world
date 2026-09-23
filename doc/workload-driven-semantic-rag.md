@@ -113,6 +113,29 @@ This layer is derived. It is not allowed to outrank or replace canonical evidenc
 
 ---
 
+## Minimal Closed-Loop Concepts
+
+The design keeps only the concepts needed for the smallest useful loop.
+
+| Concept | Definition | Boundary | Purpose |
+|---|---|---|---|
+| Canonical evidence | Source-backed KB content that can be read again through current document metadata. | Not a model summary, relation label, user query, search reason, or agent answer. | Provides the only factual ground for answers and relations. |
+| Evidence handle | A stable reference to canonical evidence. | Not proof by itself; it must be revalidated when read. | Lets the workload carry evidence through multiple steps without copying full text. |
+| Workload usage trace | A record of what the workload searched, why it searched, and which evidence was returned. | Not evidence and not agent chain-of-thought. | Shows which evidence connections emerged from real use. |
+| Relation candidate | A proposed subject-predicate-object connection, optionally with an applicability note and cited evidence. | Untrusted until grounded; not durable knowledge. | Lets the analyzer suggest useful shortcuts without giving it authority. |
+| Grounding | Programmatic verification that cited active evidence supports the candidate. | Does not infer from world knowledge or workload intent. | Turns an untrusted proposal into an evidence-checked input. |
+| Admission | The conservative decision to materialize a grounded relation. | Must reject unsupported, stale, inaccessible, or too-vague relations. | Keeps the reusable semantic layer sparse and safe. |
+| Materialized relation | A persisted evidence-grounded shortcut between two scoped labels. | Not an independent fact and not a replacement for evidence. | Improves future evidence reachability. |
+| Applicability note | Natural-language description of the relation's supported limits. | Not a structured filter, confidence score, or proof. | Prevents over-extending a relation beyond the evidence. |
+| Relation expansion | Retrieval-time traversal from anchor evidence through admitted relations to related evidence. | Not reasoning, not answer generation, and not task planning. | Widens the evidence set available to the workload. |
+| Relation path metadata | Provenance metadata explaining how relation expansion found evidence. | Not evidence and not a separate hint layer. | Makes expanded evidence auditable without adding another semantic object. |
+| Relation selection | Bounded, deterministic choice of which traversable relations to follow. | Not a truth score or semantic usefulness score. | Prevents dense relations from overwhelming retrieval. |
+| Lifecycle correctness | Rules that keep stale, unauthorized, deleted, rejected, or archived relations out of traversal. | Not a complex memory-decay or scoring system. | Ensures derived shortcuts cannot bypass canonical evidence governance. |
+
+Everything outside this table should be treated as an implementation detail, an evaluation aid, or future research—not as a core RAG concept.
+
+---
+
 ## Evidence First
 
 The most important rule is:
@@ -216,6 +239,8 @@ Its purpose is to reach evidence that may not be directly similar to the query b
 
 Relation expansion is also not reasoning. It does not decide that the task is solved. It only widens the evidence set available to the workload.
 
+Relation path metadata must stay subordinate to evidence. If a path no longer explains any returned expanded evidence, or if it would expose stale or unauthorized provenance, it should disappear with that evidence. The system should not keep a separate semantic hint layer after the evidence path has been invalidated.
+
 ---
 
 ## Relation as Shortcut, Not Truth
@@ -238,6 +263,32 @@ This is now an independent fact that can replace the source evidence.
 The relation exists to improve reachability. If it cannot point back to evidence, it should not participate in retrieval.
 
 This is the main difference between this design and a traditional knowledge graph. The graph-like structure is not the knowledge base's truth layer. It is a retrieval accelerator.
+
+## Relation Applicability
+
+A relation is a proposition-like shortcut, and propositions often have limits.
+
+For example, evidence may support:
+
+```text
+Company A cooperated with Company B from 2010 to 2013.
+```
+
+That does not support the stronger claim:
+
+```text
+Company A cooperates with Company B in general.
+```
+
+The system should not try to fully structure every limitation as fixed fields. Time windows, business scope, project scope, software version, jurisdiction, document context, and implicit source assumptions do not fit one stable schema. Over-structuring them would recreate the ontology problem and create false precision.
+
+Instead, a relation may carry a natural-language applicability note:
+
+```text
+This relation is supported only for the 2010-2013 cooperation period; the evidence does not support cooperation after 2013.
+```
+
+The note is not a computable filter and not a confidence score. It is a usage warning for the workload and the agent. Relation expansion may use the shortcut to find evidence, but final answers still need to read the evidence and preserve the limitation.
 
 ---
 
@@ -305,6 +356,8 @@ The entity layer exists only to make relations reusable. If an entity does not h
 
 Entities are also scoped. The same label in different knowledge scopes should not automatically become the same entity. This prevents accidental merging across unrelated or unauthorized knowledge spaces.
 
+Lightweight label normalization is enough for this design. If a document uses several names for a concept, the reusable fact should still come from evidence-grounded relations and natural-language notes, not from a global merge table.
+
 ---
 
 ## Predicate Boundary
@@ -315,15 +368,9 @@ It should be short, open-vocabulary, and evidence-supported.
 
 The system should not require a fixed predicate ontology too early. Open vocabulary is important because local knowledge bases may contain project-specific relationships that no general schema anticipates.
 
-At the same time, predicates should be normalized enough to avoid trivial duplication:
+At the same time, predicate normalization should stay minimal: trim space, normalize case, and preserve the raw predicate. The system should not build synonym tables or semantic merge rules before there is a concrete need.
 
-```text
-depends on
-requires
-relies on
-```
-
-These may need to converge when they express the same useful relation. But this normalization must remain lightweight. Over-normalization would recreate the ontology problem the system is trying to avoid.
+The same rule applies to labels, relation granularity, traversal selection, and relation paths. The system can structure what it must enforce, such as scope, evidence validity, and traversal limits. It should avoid turning high-freedom semantic judgments into standalone subsystems.
 
 ---
 

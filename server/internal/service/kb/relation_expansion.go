@@ -33,6 +33,25 @@ type RelationExpansionOptions struct {
 	EvidenceBudget int
 }
 
+// relationExpansionStats aggregates the deterministic selection-policy and
+// output-contract counters emitted at Info level, so the necessary metric
+// points stay observable in production even when debug logging is disabled.
+// Unauthorized/stale leakage counts are tripwires: they are expected to stay
+// zero, and any non-zero value indicates a policy regression that was blocked
+// by the final output audit (which also drops or scrubs the relation paths
+// referencing the blocked evidence).
+type relationExpansionStats struct {
+	RelationsConsidered            int
+	RelationsSkippedUnauthorized   int
+	RelationsSkippedInactiveEntity int
+	RelationsSkippedNoEvidence     int
+	EvidenceSkippedStaleOrInvalid  int
+	UnauthorizedLeakageBlocked     int
+	StaleLeakageBlocked            int
+	RelationPathsDroppedByAudit    int
+	EvidenceDroppedByPathAudit     int
+}
+
 // RelationPath is retrieval provenance for relation-expanded evidence. It is
 // not a conclusion and must not be treated as evidence by itself.
 type RelationPath struct {
@@ -43,6 +62,7 @@ type RelationPath struct {
 	Predicate           string  `json:"predicate"`
 	ObjectEntityID      int64   `json:"object_entity_id"`
 	ObjectLabel         string  `json:"object_label"`
+	ApplicabilityNote   string  `json:"applicability_note"`
 	SourceChunkIDs      []int64 `json:"source_chunk_ids"`
 	EvidenceChunkIDs    []int64 `json:"evidence_chunk_ids"`
 	RelationEvidenceIDs []int64 `json:"relation_evidence_ids"`
@@ -83,7 +103,13 @@ func expandRelationsFromEvidence(ctx context.Context, seeds []Evidence, authoriz
 	added := make([]Evidence, 0, options.EvidenceBudget)
 	paths := make([]RelationPath, 0)
 	visitedRelations := make(map[int64]struct{}, options.Depth*options.Fanout)
-	usedRelations := make([]int64, 0)
+	stats := relationExpansionStats{}
+	// addedChunksByRelation records which evidence chunks each relation
+	// contributed; chunkIDByRowID correlates evidence rows with chunks. Both
+	// feed the final output audit so relation paths can be dropped or
+	// scrubbed when the evidence they reference is blocked.
+	addedChunksByRelation := make(map[int64][]int64)
+	chunkIDByRowID := make(map[int64]int64)
 
 	for depth := 1; depth <= options.Depth && len(frontier) > 0 && len(added) < options.EvidenceBudget; depth++ {
 		relationIDs, err := relationIDsForFrontier(ctx, frontier, authorizedIDs, options.Fanout)
@@ -118,19 +144,23 @@ func expandRelationsFromEvidence(ctx context.Context, seeds []Evidence, authoriz
 				continue
 			}
 			visitedRelations[relation.ID] = struct{}{}
+			stats.RelationsConsidered++
 			if !relationScopeAuthorized(relation.ScopeKBIDsJSON, authorized) {
+				stats.RelationsSkippedUnauthorized++
 				applogger.Warn("KB relation expansion skipped unauthorized relation scope", "relation_id", relation.ID)
 				continue
 			}
 			subjectLabel, subjectOK := entityLabels[relation.SubjectEntityID]
 			objectLabel, objectOK := entityLabels[relation.ObjectEntityID]
 			if !subjectOK || !objectOK {
+				stats.RelationsSkippedInactiveEntity++
 				applogger.Warn("KB relation expansion skipped relation with inactive/missing entity", "relation_id", relation.ID, "subject_entity_id", relation.SubjectEntityID, "object_entity_id", relation.ObjectEntityID)
 				continue
 			}
 
 			rows := evidenceByRelation[relation.ID]
 			if len(rows) == 0 {
+				stats.RelationsSkippedNoEvidence++
 				applogger.Warn("KB relation expansion skipped relation without authorized evidence", "relation_id", relation.ID)
 				continue
 			}
@@ -142,6 +172,7 @@ func expandRelationsFromEvidence(ctx context.Context, seeds []Evidence, authoriz
 				Predicate:           relation.Predicate,
 				ObjectEntityID:      relation.ObjectEntityID,
 				ObjectLabel:         objectLabel,
+				ApplicabilityNote:   relation.ApplicabilityNote,
 				SourceChunkIDs:      relationSourceChunks(rows, frontierSet),
 				EvidenceChunkIDs:    make([]int64, 0, len(rows)),
 				RelationEvidenceIDs: make([]int64, 0, len(rows)),
@@ -155,16 +186,19 @@ func expandRelationsFromEvidence(ctx context.Context, seeds []Evidence, authoriz
 				}
 				path.RelationEvidenceIDs = append(path.RelationEvidenceIDs, row.ID)
 				path.EvidenceChunkIDs = append(path.EvidenceChunkIDs, row.ChunkID)
+				chunkIDByRowID[row.ID] = row.ChunkID
 				if _, seen := seenChunks[row.ChunkID]; seen {
 					continue
 				}
 				item, err := evidenceFromRelationEvidence(ctx, row)
 				if err != nil {
+					stats.EvidenceSkippedStaleOrInvalid++
 					applogger.Warn("KB relation expansion skipped invalid relation evidence", "relation_id", row.RelationID, "relation_evidence_id", row.ID, "chunk_id", row.ChunkID, "error", err)
 					continue
 				}
 				seenChunks[row.ChunkID] = struct{}{}
 				added = append(added, item)
+				addedChunksByRelation[relation.ID] = append(addedChunksByRelation[relation.ID], item.RetrievalUnitID)
 				addedForPath = true
 				nextFrontier = append(nextFrontier, row.ChunkID)
 				if len(added) >= options.EvidenceBudget {
@@ -175,25 +209,223 @@ func expandRelationsFromEvidence(ctx context.Context, seeds []Evidence, authoriz
 			path.RelationEvidenceIDs = normalizedInt64Set(path.RelationEvidenceIDs)
 			if addedForPath && len(path.SourceChunkIDs) > 0 && len(path.EvidenceChunkIDs) > 0 {
 				paths = append(paths, path)
-				usedRelations = append(usedRelations, relation.ID)
 			}
 		}
 		frontier = normalizedInt64Set(nextFrontier)
 	}
 
-	if len(usedRelations) > 0 {
-		markRelationsUsed(ctx, normalizedInt64Set(usedRelations))
-	}
 	sortRelationPaths(paths)
-	applogger.Debug("KB relation expansion completed",
+	audit := auditRelationExpandedEvidence(ctx, added, authorized)
+	added = audit.Verified
+	stats.UnauthorizedLeakageBlocked = audit.UnauthorizedBlocked
+	stats.StaleLeakageBlocked = audit.StaleBlocked
+	// The output contract covers relation paths too: a blocked leak must not
+	// resurface as path metadata (relation existence, entity labels,
+	// predicates, source/evidence chunk IDs).
+	paths, stats.RelationPathsDroppedByAudit = scrubRelationPathsAfterAudit(paths, addedChunksByRelation, chunkIDByRowID, audit.BlockedChunks)
+	// Relation-expanded evidence must remain explainable by the surviving
+	// relation-path provenance. If a path was dropped because its source or
+	// contributed evidence failed audit, downstream evidence discovered only
+	// through that path is removed too.
+	added, stats.EvidenceDroppedByPathAudit = filterEvidenceBySurvivingRelationPaths(added, paths)
+	// Usage telemetry counts only relations whose evidence actually survived
+	// the audit and whose path stayed in the output.
+	survivingRelationIDs := make([]int64, 0, len(paths))
+	for _, path := range paths {
+		survivingRelationIDs = append(survivingRelationIDs, path.RelationID)
+	}
+	markRelationsUsed(ctx, survivingRelationIDs)
+	// Info level keeps the necessary metric points observable in production
+	// even when debug logging is disabled. The two leakage counters are
+	// tripwires: non-zero values mean a policy regression was blocked by the
+	// final audit and must be investigated.
+	applogger.Info("KB relation expansion completed",
 		"seed_count", len(seeds),
 		"added_evidence_count", len(added),
 		"relation_path_count", len(paths),
 		"depth", options.Depth,
 		"fanout", options.Fanout,
 		"evidence_budget", options.EvidenceBudget,
+		"relations_considered", stats.RelationsConsidered,
+		"relations_skipped_unauthorized", stats.RelationsSkippedUnauthorized,
+		"relations_skipped_inactive_entity", stats.RelationsSkippedInactiveEntity,
+		"relations_skipped_no_authorized_evidence", stats.RelationsSkippedNoEvidence,
+		"evidence_skipped_stale_or_invalid", stats.EvidenceSkippedStaleOrInvalid,
+		"unauthorized_leakage_count", stats.UnauthorizedLeakageBlocked,
+		"stale_leakage_count", stats.StaleLeakageBlocked,
+		"relation_paths_dropped_by_audit", stats.RelationPathsDroppedByAudit,
+		"evidence_dropped_by_path_audit", stats.EvidenceDroppedByPathAudit,
 	)
 	return added, paths, nil
+}
+
+// relationEvidenceAudit is the outcome of the final output-contract audit.
+// BlockedChunks carries the chunk IDs removed from the output so relation
+// paths referencing them can be dropped or scrubbed as well.
+type relationEvidenceAudit struct {
+	Verified            []Evidence
+	BlockedChunks       map[int64]struct{}
+	UnauthorizedBlocked int
+	StaleBlocked        int
+}
+
+// auditRelationExpandedEvidence is the final output-contract audit. Every
+// relation-expanded item must belong to a caller-authorized KB (checked
+// in-memory, so this guarantee has no failure mode) and point at its
+// document's active revision (re-checked in one batch query; each item was
+// already grounding-validated at construction, so a query failure only drops
+// the extra tripwire, never the guarantee). Detected leaks are dropped,
+// counted and logged at Error level so they can never reach scan_kb output.
+func auditRelationExpandedEvidence(ctx context.Context, added []Evidence, authorized map[int64]struct{}) relationEvidenceAudit {
+	audit := relationEvidenceAudit{Verified: added, BlockedChunks: map[int64]struct{}{}}
+	if len(added) == 0 {
+		return audit
+	}
+
+	audited := make([]Evidence, 0, len(added))
+	for _, item := range added {
+		if _, ok := authorized[item.KnowledgeBaseID]; !ok {
+			audit.UnauthorizedBlocked++
+			audit.BlockedChunks[item.RetrievalUnitID] = struct{}{}
+			applogger.Error("KB relation expansion final audit blocked unauthorized evidence", "chunk_id", item.RetrievalUnitID, "kb_id", item.KnowledgeBaseID, "document_id", item.DocumentID)
+			continue
+		}
+		audited = append(audited, item)
+	}
+
+	documentIDs := make([]int64, 0, len(audited))
+	seenDocuments := make(map[int64]struct{}, len(audited))
+	for _, item := range audited {
+		if _, exists := seenDocuments[item.DocumentID]; exists {
+			continue
+		}
+		seenDocuments[item.DocumentID] = struct{}{}
+		documentIDs = append(documentIDs, item.DocumentID)
+	}
+	var documents []model.Document
+	if err := database.DB.WithContext(ctx).Select("id, status, active_revision_id").
+		Where("id IN ?", documentIDs).Find(&documents).Error; err != nil {
+		applogger.Error("KB relation expansion final audit could not re-verify active revisions; keeping construction-time grounding validation", "document_count", len(documentIDs), "error", err)
+		audit.Verified = audited
+		return audit
+	}
+	documentByID := make(map[int64]model.Document, len(documents))
+	for _, document := range documents {
+		documentByID[document.ID] = document
+	}
+
+	verified := make([]Evidence, 0, len(audited))
+	for _, item := range audited {
+		document, exists := documentByID[item.DocumentID]
+		if !exists || document.Status != model.DocumentStatusReady || document.ActiveRevisionID != item.RevisionID {
+			audit.StaleBlocked++
+			audit.BlockedChunks[item.RetrievalUnitID] = struct{}{}
+			applogger.Error("KB relation expansion final audit blocked non-active-revision evidence", "chunk_id", item.RetrievalUnitID, "document_id", item.DocumentID, "revision_id", item.RevisionID)
+			continue
+		}
+		verified = append(verified, item)
+	}
+	audit.Verified = verified
+	return audit
+}
+
+// scrubRelationPathsAfterAudit enforces the output contract on relation-path
+// provenance after the final evidence audit:
+//
+//   - a path is dropped when none of the evidence chunks its relation
+//     contributed survived the audit (a dangling path would leak the blocked
+//     relation's existence, entity labels and predicates);
+//   - a path is dropped when all of its source chunks were blocked (its
+//     provenance anchor is gone);
+//   - surviving paths have blocked chunk IDs and evidence-row IDs removed
+//     from their metadata lists.
+//
+// The function only allocates when something was actually blocked; in normal
+// operation it is a no-op returning the input unchanged.
+func scrubRelationPathsAfterAudit(paths []RelationPath, addedChunksByRelation map[int64][]int64, chunkIDByRowID map[int64]int64, blockedChunks map[int64]struct{}) ([]RelationPath, int) {
+	if len(paths) == 0 || len(blockedChunks) == 0 {
+		return paths, 0
+	}
+	kept := make([]RelationPath, 0, len(paths))
+	dropped := 0
+	for _, path := range paths {
+		contributedSurviving := false
+		for _, chunkID := range addedChunksByRelation[path.RelationID] {
+			if _, blocked := blockedChunks[chunkID]; !blocked {
+				contributedSurviving = true
+				break
+			}
+		}
+		sourceChunkIDs := make([]int64, 0, len(path.SourceChunkIDs))
+		for _, chunkID := range path.SourceChunkIDs {
+			if _, blocked := blockedChunks[chunkID]; blocked {
+				continue
+			}
+			sourceChunkIDs = append(sourceChunkIDs, chunkID)
+		}
+		if !contributedSurviving || len(sourceChunkIDs) == 0 {
+			dropped++
+			applogger.Error("KB relation expansion final audit dropped relation path", "relation_id", path.RelationID, "depth", path.Depth, "had_surviving_evidence", contributedSurviving)
+			continue
+		}
+		evidenceChunkIDs := make([]int64, 0, len(path.EvidenceChunkIDs))
+		for _, chunkID := range path.EvidenceChunkIDs {
+			if _, blocked := blockedChunks[chunkID]; blocked {
+				continue
+			}
+			evidenceChunkIDs = append(evidenceChunkIDs, chunkID)
+		}
+		relationEvidenceIDs := make([]int64, 0, len(path.RelationEvidenceIDs))
+		for _, rowID := range path.RelationEvidenceIDs {
+			if chunkID, known := chunkIDByRowID[rowID]; known {
+				if _, blocked := blockedChunks[chunkID]; blocked {
+					continue
+				}
+			}
+			relationEvidenceIDs = append(relationEvidenceIDs, rowID)
+		}
+		path.SourceChunkIDs = sourceChunkIDs
+		path.EvidenceChunkIDs = evidenceChunkIDs
+		path.RelationEvidenceIDs = relationEvidenceIDs
+		kept = append(kept, path)
+	}
+	return kept, dropped
+}
+
+// filterEvidenceBySurvivingRelationPaths keeps relation-expanded evidence
+// aligned with its surviving provenance. Relation paths are not evidence, but
+// every relation-expanded evidence item must still be explainable by at least
+// one surviving path; otherwise the item came through a path that was later
+// blocked or scrubbed by the final audit.
+func filterEvidenceBySurvivingRelationPaths(added []Evidence, paths []RelationPath) ([]Evidence, int) {
+	if len(added) == 0 {
+		return added, 0
+	}
+	allowedChunks := make(map[int64]struct{})
+	for _, path := range paths {
+		for _, chunkID := range path.EvidenceChunkIDs {
+			if chunkID > 0 {
+				allowedChunks[chunkID] = struct{}{}
+			}
+		}
+	}
+	if len(allowedChunks) == 0 {
+		for _, item := range added {
+			applogger.Error("KB relation expansion final audit dropped evidence without surviving relation path", "chunk_id", item.RetrievalUnitID, "document_id", item.DocumentID, "revision_id", item.RevisionID)
+		}
+		return []Evidence{}, len(added)
+	}
+	kept := make([]Evidence, 0, len(added))
+	dropped := 0
+	for _, item := range added {
+		if _, ok := allowedChunks[item.RetrievalUnitID]; !ok {
+			dropped++
+			applogger.Error("KB relation expansion final audit dropped evidence not covered by surviving relation paths", "chunk_id", item.RetrievalUnitID, "document_id", item.DocumentID, "revision_id", item.RevisionID)
+			continue
+		}
+		kept = append(kept, item)
+	}
+	return kept, dropped
 }
 
 // normalizeRelationExpansionOptions applies safe defaults while preserving

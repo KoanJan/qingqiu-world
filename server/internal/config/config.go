@@ -30,7 +30,7 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.14"
+const AppVersion = "0.1.15"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings

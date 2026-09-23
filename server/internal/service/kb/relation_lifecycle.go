@@ -36,12 +36,13 @@ type RelationGroundingInput struct {
 // GroundedRelationInput is the admission-ready payload for a relation whose
 // evidence handles must already come from canonical KB retrieval.
 type GroundedRelationInput struct {
-	ScopeKBIDs    []int64
-	SubjectLabel  string
-	Predicate     string
-	ObjectLabel   string
-	Evidence      []RelationGroundingInput
-	PolicyVersion string
+	ScopeKBIDs        []int64
+	SubjectLabel      string
+	Predicate         string
+	ObjectLabel       string
+	ApplicabilityNote string
+	Evidence          []RelationGroundingInput
+	PolicyVersion     string
 }
 
 // RelationScopeJSON returns a stable JSON array for a KB scope.
@@ -163,6 +164,7 @@ func UpsertGroundedRelation(input GroundedRelationInput) (*model.KBRelation, err
 	subjectLabel := NormalizeEntityLabel(input.SubjectLabel)
 	predicate := NormalizeRelationPredicate(input.Predicate)
 	objectLabel := NormalizeEntityLabel(input.ObjectLabel)
+	applicabilityNote := sanitizeApplicabilityNote(input.ApplicabilityNote)
 	if subjectLabel == "" || predicate == "" || objectLabel == "" {
 		return nil, fmt.Errorf("relation subject, predicate and object are required")
 	}
@@ -219,30 +221,39 @@ func UpsertGroundedRelation(input GroundedRelationInput) (*model.KBRelation, err
 		}
 		key := RelationIdempotencyKey(scopeHash, subject.ID, predicate, object.ID, policyVersion)
 		create := model.KBRelation{
-			ScopeHash:       scopeHash,
-			ScopeKBIDsJSON:  scopeJSON,
-			SubjectEntityID: subject.ID,
-			Predicate:       predicate,
-			ObjectEntityID:  object.ID,
-			State:           model.KBRelationStateGrounded,
-			IdempotencyKey:  key,
-			EvidenceHash:    evidenceHash,
-			PolicyVersion:   policyVersion,
+			ScopeHash:         scopeHash,
+			ScopeKBIDsJSON:    scopeJSON,
+			SubjectEntityID:   subject.ID,
+			Predicate:         predicate,
+			ObjectEntityID:    object.ID,
+			ApplicabilityNote: applicabilityNote,
+			State:             model.KBRelationStateGrounded,
+			IdempotencyKey:    key,
+			EvidenceHash:      evidenceHash,
+			PolicyVersion:     policyVersion,
 		}
 		if err := tx.Where("idempotency_key = ?", key).Attrs(create).FirstOrCreate(&relation).Error; err != nil {
 			return fmt.Errorf("upsert relation: %w", err)
 		}
+		relationUpdates := map[string]interface{}{}
+		if relation.EvidenceHash != evidenceHash {
+			relationUpdates["evidence_hash"] = evidenceHash
+		}
+		mergedApplicabilityNote := mergeApplicabilityNotes(relation.ApplicabilityNote, applicabilityNote)
+		if mergedApplicabilityNote != relation.ApplicabilityNote {
+			relationUpdates["applicability_note"] = mergedApplicabilityNote
+		}
 		if relation.State == model.KBRelationStateStale || relation.State == model.KBRelationStateRejected {
-			if err := tx.Model(&model.KBRelation{}).Where("id = ?", relation.ID).Updates(map[string]interface{}{
-				"state":         model.KBRelationStateGrounded,
-				"evidence_hash": evidenceHash,
-				"stale_reason":  "",
-			}).Error; err != nil {
-				return fmt.Errorf("reactivate grounded relation row: %w", err)
+			relationUpdates["state"] = model.KBRelationStateGrounded
+			relationUpdates["stale_reason"] = ""
+		}
+		if len(relationUpdates) > 0 {
+			if err := tx.Model(&model.KBRelation{}).Where("id = ?", relation.ID).Updates(relationUpdates).Error; err != nil {
+				return fmt.Errorf("update grounded relation row: %w", err)
 			}
-			relation.State = model.KBRelationStateGrounded
-			relation.EvidenceHash = evidenceHash
-			relation.StaleReason = ""
+			if err := tx.First(&relation, relation.ID).Error; err != nil {
+				return fmt.Errorf("reload grounded relation row: %w", err)
+			}
 		}
 		for index, evidence := range validated {
 			row := model.KBRelationEvidence{
@@ -280,7 +291,6 @@ func ensureKBEntity(tx *gorm.DB, scopeHash, scopeJSON, normalizedLabel, displayL
 		ScopeKBIDsJSON:  scopeJSON,
 		NormalizedLabel: normalizedLabel,
 		DisplayLabel:    displayLabel,
-		AliasesJSON:     "[]",
 		State:           model.KBEntityStateActive,
 	}
 	if err := tx.Where("scope_hash = ? AND normalized_label = ?", scopeHash, normalizedLabel).
@@ -296,6 +306,32 @@ func nonEmptyString(value, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+// sanitizeApplicabilityNote preserves the free-form boundary text while keeping
+// surrounding whitespace out of durable relation metadata. The note is
+// advisory provenance, not a computable condition and not evidence.
+func sanitizeApplicabilityNote(value string) string {
+	return strings.TrimSpace(value)
+}
+
+// mergeApplicabilityNotes preserves previously admitted boundaries when the
+// same scoped subject-predicate-object relation is grounded again. This stays
+// intentionally natural-language: highly variable applicability constraints are
+// not forced into a brittle schema.
+func mergeApplicabilityNotes(existing, incoming string) string {
+	existing = sanitizeApplicabilityNote(existing)
+	incoming = sanitizeApplicabilityNote(incoming)
+	if existing == "" {
+		return incoming
+	}
+	if incoming == "" || existing == incoming || strings.Contains(existing, incoming) {
+		return existing
+	}
+	if strings.Contains(incoming, existing) {
+		return incoming
+	}
+	return existing + "\nAdditional applicability: " + incoming
 }
 
 // MarkRelationsStaleForDocument marks every relation supported by a document

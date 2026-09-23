@@ -1,6 +1,6 @@
 # Workload-driven Semantic RAG — Engineering Implementation
 
-This document describes the 0.1.14 Workload-driven Semantic RAG architecture. The baseline is the main-branch naive RAG implementation: knowledge bases can be managed, local documents can be uploaded, and a query can retrieve matching chunks once. 0.1.14 extends that baseline into an evidence-governed RAG runtime whose semantic layer is built from real workload traces instead of global offline ontology construction.
+This document describes the 0.1.15 Workload-driven Semantic RAG architecture. The baseline is the main-branch naive RAG implementation: knowledge bases can be managed, local documents can be uploaded, and a query can retrieve matching chunks once. The current architecture extends that baseline into an evidence-governed RAG runtime whose semantic layer is built from real workload traces instead of global offline ontology construction.
 
 The core rule is:
 
@@ -127,7 +127,7 @@ Search and evidence reading are internal tools used by workload/private-space lo
 
 ## Document Ingestion and Canonical Evidence
 
-0.1.14 adds a canonical evidence layer above raw chunks:
+The RAG runtime adds a canonical evidence layer above raw chunks:
 
 ```mermaid
 graph TD
@@ -155,7 +155,7 @@ graph TD
 
 ### Source kinds
 
-Only local upload is implemented. Remote URL/web/external data-source ingestion is intentionally out of scope for 0.1.14.
+Only local upload is implemented. Remote URL/web/external data-source ingestion is intentionally out of scope for the current implementation.
 
 ### Active revision rule
 
@@ -198,6 +198,10 @@ Context Expansion adds nearby or structurally related evidence around anchors. I
 
 Relation Expansion uses traversable KB relations as semantic shortcuts. Current traversal uses `grounded` and `active` relations, starts from retrieved anchors, traverses shallow relation paths, and maps relation evidence back to authorized active chunks. It must not expose unauthorized KBs or stale evidence.
 
+Each relation may carry an `applicability_note`, a natural-language boundary for the relation proposition. It is used to preserve limits such as time range, software version, project scope, jurisdiction, or source assumption. It is not a structured condition schema, not a confidence score, and not evidence; final answers still need to read the canonical evidence.
+
+Final output audit applies to both evidence and relation path metadata. If an evidence item is blocked as unauthorized or non-active, any relation path that would reveal that blocked item is dropped or scrubbed. Relation-expanded evidence that is no longer covered by surviving relation paths is also removed, so expanded evidence and provenance stay aligned.
+
 Relation traversal is not task planning. If more investigation is needed, the workload runtime calls `scan_kb` again.
 
 ### Structured response contract
@@ -232,6 +236,8 @@ Only evidence body text may be truncated. Metadata must not be truncated:
 - locator JSON
 - expansion kind
 - relation path metadata
+  - relation ID, subject, predicate, object, source/evidence chunk IDs
+  - natural-language applicability note when one exists
 
 When evidence body text is truncated, `truncation_notice` must tell the agent to use `read_kb_evidence` with returned chunk IDs for full content.
 
@@ -502,7 +508,7 @@ The workload runtime still decides whether the expanded evidence is useful, whet
 
 ### Relation analysis
 
-The analyzer can use the system LLM to propose candidates from workload traces and retrieved evidence. The LLM only proposes. It does not assign truth, admission, or ranking scores.
+The analyzer can use the system LLM to propose candidates from workload traces and retrieved evidence. The analyzer only proposes; deterministic grounding and admission decide whether a candidate becomes reusable structure.
 
 Admission is deterministic:
 
@@ -517,12 +523,12 @@ Admission is deterministic:
 |---|---|
 | `candidate` | Proposed but not grounded. |
 | `grounded` | Has valid supporting evidence. |
-| `active` | Traversable relation state reserved for stricter future activation policy. |
+| `active` | Traversable relation state reserved for stricter future traversal-priority policy. |
 | `stale` | Evidence changed or was deleted. |
 | `rejected` | Failed grounding/admission. |
 | `archived` | Retained for audit only. |
 
-Current semantic expansion traverses both `grounded` and `active` relations. The fuller activation/decay/utility policy is intentionally left as a later lifecycle refinement.
+Current semantic expansion traverses both `grounded` and `active` relations. Fuller traversal-priority and maintenance-priority policies are intentionally left as later lifecycle refinements.
 
 ## Relation Maintenance Worker
 
@@ -621,7 +627,7 @@ Use fingerprints or short summaries for query/reason/body content. Production ca
 ## Known Boundaries
 
 - Remote source kinds are not implemented.
-- Relation activation/decay/utility policy is intentionally basic.
+- Relation traversal-priority and maintenance-priority policy is intentionally basic.
 - Relation candidate quality depends on the system LLM, but truth/admission stays deterministic.
 - Running-job crash recovery should be strengthened with a lease/recovery policy.
 - KB relation traversal is shallow by design; the workload runtime should issue another `scan_kb` when the task needs another investigative step.

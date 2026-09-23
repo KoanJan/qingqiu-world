@@ -79,6 +79,11 @@ var migrations = []migration{
 		description: "Add canonical document revisions and content-node mappings for knowledge bases",
 		fn:          migrate_0_1_14,
 	},
+	{
+		version:     "0.1.15",
+		description: "Add natural-language applicability notes to knowledge-base relations",
+		fn:          migrate_0_1_15,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database
