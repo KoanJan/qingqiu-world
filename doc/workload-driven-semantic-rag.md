@@ -198,6 +198,8 @@ This is especially important when tool output must be shortened. Body text may b
 
 A handle does not prove anything by itself. It must be checked again when used, because access, document state, and evidence validity can change.
 
+The handle identifies a retrieval unit, so its locator is chunk-specific. A document's structural node separately records its self/subtree position and deliberately has no chunk index: a single final leaf can be linearly split into several retrieval units. The chunk-to-node mapping supports structural navigation and grounding, but it is not a substitute for the chunk's own exact locator.
+
 ---
 
 ## Query and Reason

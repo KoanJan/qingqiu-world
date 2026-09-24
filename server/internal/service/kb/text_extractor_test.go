@@ -75,6 +75,21 @@ func TestExtractedDocumentLocatorJSON_PreservesPDFPageRange(t *testing.T) {
 	}
 }
 
+func TestContentNodeLocatorJSONOmitsChunkIndex(t *testing.T) {
+	document := extractedDocument{Text: "heading\nbody\n", FileType: "txt"}
+	node := &contentTreeNode{SelfRange: sourceRange{Start: 0, End: 8}, SubtreeRange: sourceRange{Start: 0, End: len(document.Text)}}
+	var raw map[string]any
+	if err := json.Unmarshal([]byte(document.nodeLocatorJSON(node)), &raw); err != nil {
+		t.Fatalf("decode node locator: %v", err)
+	}
+	if _, exists := raw["chunk_index"]; exists {
+		t.Fatalf("content node locator must not claim a chunk index: %#v", raw)
+	}
+	if raw["self_end"] != float64(8) || raw["subtree_end"] != float64(len(document.Text)) {
+		t.Fatalf("node ranges not preserved: %#v", raw)
+	}
+}
+
 func TestLocalNodeMetadataJSON_PersistsCurrentRenderingVersion(t *testing.T) {
 	var metadata struct {
 		SourceKind       int    `json:"source_kind"`

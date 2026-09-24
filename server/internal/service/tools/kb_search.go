@@ -632,36 +632,17 @@ func loadAuthorizedEvidence(chunkIDs []int64, authorized map[int64]struct{}) ([]
 	return evidence, unavailable, nil
 }
 
-// evidenceLocators resolves at most one canonical node locator per chunk. A
-// chunk may map to multiple nodes; the lowest mapping ordinal is stable and is
-// enough to navigate back to the containing document region.
+// evidenceLocators resolves exact retrieval-unit locators. ContentNode locators
+// intentionally omit chunk indexes because one structural leaf may map to many
+// chunks, so evidence must be resolved from the retrieval unit itself.
 func evidenceLocators(chunkIDs []int64) (map[int64]string, error) {
-	var mappings []model.DocumentChunkNode
-	if err := database.DB.Where("chunk_id IN ?", chunkIDs).Order("chunk_id ASC, ordinal ASC").Find(&mappings).Error; err != nil {
-		return nil, err
-	}
-	nodeIDs := make([]int64, 0, len(mappings))
-	for _, mapping := range mappings {
-		nodeIDs = append(nodeIDs, mapping.NodeID)
-	}
-	var nodes []model.ContentNode
-	if len(nodeIDs) > 0 {
-		if err := database.DB.Where("id IN ?", nodeIDs).Find(&nodes).Error; err != nil {
+	locators := make(map[int64]string, len(chunkIDs))
+	for _, chunkID := range chunkIDs {
+		locator, err := kb.ResolveChunkLocator(chunkID)
+		if err != nil {
 			return nil, err
 		}
-	}
-	nodeByID := make(map[int64]model.ContentNode, len(nodes))
-	for _, node := range nodes {
-		nodeByID[node.ID] = node
-	}
-	locators := make(map[int64]string, len(mappings))
-	for _, mapping := range mappings {
-		if _, exists := locators[mapping.ChunkID]; exists {
-			continue
-		}
-		if node, exists := nodeByID[mapping.NodeID]; exists {
-			locators[mapping.ChunkID] = node.LocatorJSON
-		}
+		locators[chunkID] = locator
 	}
 	return locators, nil
 }

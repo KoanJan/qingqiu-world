@@ -13,9 +13,23 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
+// ResolveChunkLocator returns one exact retrieval-unit locator. New revisions
+// resolve it from DocumentChunk metadata; legacy revisions fall back to source
+// reconstruction only when their direct context is unavailable.
+func ResolveChunkLocator(chunkID int64) (string, error) {
+	return locatorForChunk(chunkID)
+}
+
 // locatorForChunk resolves the canonical locator mapped to a retrieval unit.
 // It keeps anchor and context-expanded evidence on the same metadata path.
 func locatorForChunk(chunkID int64) (string, error) {
+	var chunk model.DocumentChunk
+	if err := database.DB.First(&chunk, chunkID).Error; err != nil {
+		return "", fmt.Errorf("load chunk %d: %w", chunkID, err)
+	}
+	if locator, ok := chunkLocatorFromStructureContext(chunk); ok {
+		return locator, nil
+	}
 	var mapping model.DocumentChunkNode
 	if err := database.DB.Where("chunk_id = ?", chunkID).Order("ordinal ASC").First(&mapping).Error; err != nil {
 		return fallbackChunkLocator(chunkID, sourceRenderingVersionCurrent, fmt.Errorf("load chunk-node mapping: %w", err))
@@ -24,14 +38,56 @@ func locatorForChunk(chunkID int64) (string, error) {
 	if err := database.DB.First(&node, mapping.NodeID).Error; err != nil {
 		return fallbackChunkLocator(chunkID, sourceRenderingVersionCurrent, fmt.Errorf("load content node: %w", err))
 	}
-	if hasCompleteLocator(node.LocatorJSON) {
-		return node.LocatorJSON, nil
+	if locator, ok := chunkLocatorFromMatchingNode(chunk, node); ok {
+		return locator, nil
 	}
 	renderingVersion, known := sourceRenderingVersionFromMetadata(node.MetadataJSON)
 	if !known {
 		renderingVersion = sourceRenderingVersionLegacy
 	}
 	return fallbackChunkLocator(chunkID, renderingVersion, fmt.Errorf("content node %d has incomplete locator", node.ID))
+}
+
+// chunkLocatorFromMatchingNode supports revisions generated before context-v2.
+// It is valid only when the node's self range exactly equals the chunk range;
+// an oversized leaf that produced multiple chunks must keep using the legacy
+// source fallback until it is rebuilt with direct chunk context.
+func chunkLocatorFromMatchingNode(chunk model.DocumentChunk, node model.ContentNode) (string, bool) {
+	var locator contentNodeLocator
+	if err := json.Unmarshal([]byte(node.LocatorJSON), &locator); err != nil {
+		applogger.Warn("KB content node has invalid locator JSON", "node_id", node.ID, "error", err)
+		return "", false
+	}
+	if locator.FileType == "" || locator.CharStart != chunk.StartOffset || locator.CharEnd != chunk.EndOffset || locator.LineStart <= 0 || locator.LineEnd <= 0 {
+		return "", false
+	}
+	encoded, err := json.Marshal(evidenceLocator{SourceKind: locator.SourceKind, FileType: locator.FileType, ChunkIndex: chunk.ChunkIndex, CharStart: chunk.StartOffset, CharEnd: chunk.EndOffset, LineStart: locator.LineStart, LineEnd: locator.LineEnd, PageStart: locator.PageStart, PageEnd: locator.PageEnd, SelfStart: chunk.StartOffset, SelfEnd: chunk.EndOffset, SubtreeStart: chunk.StartOffset, SubtreeEnd: chunk.EndOffset})
+	if err != nil {
+		applogger.Error("KB compatibility chunk locator serialization failed", "chunk_id", chunk.ID, "node_id", node.ID, "error", err)
+		return "", false
+	}
+	return string(encoded), true
+}
+
+// chunkLocatorFromStructureContext builds an exact chunk locator without
+// consulting ContentNode. A node has no chunk_index because it can map to
+// multiple generated chunks.
+func chunkLocatorFromStructureContext(chunk model.DocumentChunk) (string, bool) {
+	var context structureContext
+	if err := json.Unmarshal([]byte(chunk.StructureContextJSON), &context); err != nil {
+		applogger.Warn("KB chunk has invalid structure context JSON", "chunk_id", chunk.ID, "error", err)
+		return "", false
+	}
+	if context.FileType == "" || context.RevisionID != chunk.RevisionID || context.ChunkStart != chunk.StartOffset || context.ChunkEnd != chunk.EndOffset || context.LineStart <= 0 || context.LineEnd <= 0 {
+		applogger.Warn("KB chunk has incomplete structure context", "chunk_id", chunk.ID, "revision_id", chunk.RevisionID)
+		return "", false
+	}
+	encoded, err := json.Marshal(evidenceLocator{SourceKind: context.SourceKind, FileType: context.FileType, ChunkIndex: chunk.ChunkIndex, CharStart: chunk.StartOffset, CharEnd: chunk.EndOffset, LineStart: context.LineStart, LineEnd: context.LineEnd, PageStart: context.PageStart, PageEnd: context.PageEnd, SelfStart: chunk.StartOffset, SelfEnd: chunk.EndOffset, SubtreeStart: chunk.StartOffset, SubtreeEnd: chunk.EndOffset})
+	if err != nil {
+		applogger.Error("KB chunk locator serialization failed", "chunk_id", chunk.ID, "error", err)
+		return "", false
+	}
+	return string(encoded), true
 }
 
 // fallbackChunkLocator reconstructs complete provenance from the local source
@@ -66,7 +122,7 @@ func hasCompleteLocator(locator string) bool {
 	}
 	var decoded evidenceLocator
 	if err := json.Unmarshal([]byte(locator), &decoded); err != nil {
-		applogger.Warn("KB content node has invalid locator JSON", "locator", locator, "error", err)
+		applogger.Warn("KB evidence locator has invalid JSON", "locator", locator, "error", err)
 		return false
 	}
 	return decoded.FileType != "" && decoded.ChunkIndex >= 0 && decoded.LineStart > 0 && decoded.LineEnd > 0

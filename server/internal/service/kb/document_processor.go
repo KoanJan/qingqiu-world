@@ -11,15 +11,13 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/kb/format"
 	"qingqiu-world-server/internal/service/llm"
 
 	"gorm.io/gorm"
 )
 
 const (
-	defaultchunkSize           = 500
-	defaultchunkOverlap        = 50
-	defaultMinchunkSize        = 100
 	embedBatchSize             = 10
 	canonicalParserVersion     = "local-text-v1"
 	canonicalNormalizerVersion = "normalizer-v2"
@@ -32,12 +30,12 @@ const (
 type documentProcessor struct {
 	splitter   *textSplitter
 	embService *llm.EmbeddingService
+	profile    retrievalTokenProfile
 }
 
 // newDocumentProcessor creates a documentProcessor with the given embedding service.
 func newDocumentProcessor(embService *llm.EmbeddingService) *documentProcessor {
 	return &documentProcessor{
-		splitter:   newTextSplitter(defaultchunkSize, defaultchunkOverlap, defaultMinchunkSize),
 		embService: embService,
 	}
 }
@@ -48,6 +46,19 @@ func newDocumentProcessor(embService *llm.EmbeddingService) *documentProcessor {
 // both serving indexes have accepted the new retrieval units.
 func (dp *documentProcessor) Process(ctx context.Context, kbID int64, doc *model.Document) (*model.DocumentRevision, error) {
 	dp.updateStatus(doc.ID, model.DocumentStatusProcessing, "")
+	profile, err := newRetrievalTokenProfile(config.Get())
+	if err != nil {
+		applogger.Error("invalid KB retrieval token profile", "document_id", doc.ID, "error", err)
+		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Invalid retrieval token profile: %v", err))
+		return nil, err
+	}
+	dp.profile = profile
+	dp.splitter = newTextSplitter(profile.MaxTokens, profile.OverlapTokens, profile.MinTokens)
+	if err := dp.splitter.Err(); err != nil {
+		applogger.Error("KB tokenizer initialization failed", "document_id", doc.ID, "error", err)
+		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Tokenizer initialization failed: %v", err))
+		return nil, err
+	}
 
 	rendered, err := ExtractDocument(doc.FilePath)
 	if err != nil {
@@ -57,17 +68,49 @@ func (dp *documentProcessor) Process(ctx context.Context, kbID int64, doc *model
 	}
 	text := rendered.Text
 
-	revision, err := dp.createProcessingRevision(doc, text)
+	adapter, err := format.Select(rendered.FileType)
 	if err != nil {
+		applogger.Error("KB format adapter selection failed", "document_id", doc.ID, "file_type", rendered.FileType, "error", err)
+		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Parser selection failed: %v", err))
+		return nil, err
+	}
+	revision, err := dp.createProcessingRevision(doc, text, adapter.ID(), profile)
+	if err != nil {
+		applogger.Error("KB revision creation failed", "document_id", doc.ID, "error", err)
 		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Revision creation failed: %v", err))
 		return nil, err
 	}
-
-	chunks := dp.splitter.Split(text)
-	if len(chunks) == 0 {
+	pages := make([]format.Page, len(rendered.pages))
+	for index, page := range rendered.pages {
+		pages[index] = format.Page{Number: page.Number, Start: page.Start, End: page.End}
+	}
+	parsed, err := adapter.Parse(format.Document{Text: rendered.Text, FileType: rendered.FileType, Pages: pages})
+	if err != nil {
+		applogger.Error("KB structure parsing failed", "document_id", doc.ID, "adapter", adapter.ID(), "error", err)
+		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Structure parsing failed: %v", err))
+		dp.updateRevisionStatus(revision.ID, model.DocumentRevisionStatusFailed, fmt.Sprintf("Structure parsing failed: %v", err))
+		return nil, err
+	}
+	tree, err := buildContentTree(doc.Title, text, parsedBlocksFromFormat(parsed), profile, func(value string) int { return len(dp.splitter.tp.Encode(value, nil, nil)) })
+	if err != nil {
+		applogger.Error("KB content tree construction failed", "document_id", doc.ID, "error", err)
+		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Content tree construction failed: %v", err))
+		dp.updateRevisionStatus(revision.ID, model.DocumentRevisionStatusFailed, fmt.Sprintf("Content tree construction failed: %v", err))
+		return nil, err
+	}
+	generated, err := generateChunks(tree, doc.Title, dp.splitter, profile)
+	if err != nil || len(generated) == 0 {
+		if err == nil {
+			err = fmt.Errorf("no retrieval leaves generated")
+		}
+		applogger.Error("KB chunk generation failed", "document_id", doc.ID, "error", err)
 		dp.updateStatus(doc.ID, model.DocumentStatusFailed, "No text content extracted")
 		dp.updateRevisionStatus(revision.ID, model.DocumentRevisionStatusFailed, "No text content extracted")
-		return nil, fmt.Errorf("no text content extracted from document %d", doc.ID)
+		return nil, err
+	}
+	chunks := make([]chunk, len(generated))
+	for i, unit := range generated {
+		chunks[i] = chunk{Content: unit.content, chunkIndex: i, StartOffset: unit.start, EndOffset: unit.end}
 	}
 	if err := validateChunkProvenance(text, chunks); err != nil {
 		message := fmt.Sprintf("Source provenance validation failed: %v", err)
@@ -78,16 +121,30 @@ func (dp *documentProcessor) Process(ctx context.Context, kbID int64, doc *model
 		return nil, err
 	}
 
-	chunkModels, err := dp.storechunks(kbID, doc.ID, revision.ID, doc.Title, chunks)
+	var chunkModels []model.DocumentChunk
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := dp.storeContentTree(tx, doc.ID, revision.ID, rendered, tree); err != nil {
+			return err
+		}
+		models, err := dp.storeGeneratedChunks(tx, kbID, doc.ID, revision.ID, doc.Title, rendered, generated)
+		if err != nil {
+			return err
+		}
+		for index, unit := range generated {
+			if unit.leaf.leafPersistedID == 0 {
+				return fmt.Errorf("generated chunk %d has no persisted leaf", index)
+			}
+			if err := tx.Create(&model.DocumentChunkNode{ChunkID: models[index].ID, NodeID: unit.leaf.leafPersistedID, Ordinal: 0}).Error; err != nil {
+				return fmt.Errorf("create chunk-node mapping: %w", err)
+			}
+		}
+		chunkModels = models
+		return nil
+	})
 	if err != nil {
+		applogger.Error("KB tree/chunk/mapping transaction failed", "document_id", doc.ID, "revision_id", revision.ID, "error", err)
 		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Chunk storage failed: %v", err))
 		dp.updateRevisionStatus(revision.ID, model.DocumentRevisionStatusFailed, fmt.Sprintf("Chunk storage failed: %v", err))
-		return nil, err
-	}
-	if err := dp.storeContentNodes(doc.ID, revision.ID, doc.Title, rendered, chunkModels); err != nil {
-		dp.cleanupRevisionArtifacts(doc.ID, revision.ID)
-		dp.updateStatus(doc.ID, model.DocumentStatusFailed, fmt.Sprintf("Content node storage failed: %v", err))
-		dp.updateRevisionStatus(revision.ID, model.DocumentRevisionStatusFailed, fmt.Sprintf("Content node storage failed: %v", err))
 		return nil, err
 	}
 	if err := dp.updateRevisionProvenance(revision.ID, model.DocumentRevisionProvenanceVerified, ""); err != nil {
@@ -173,44 +230,54 @@ func validateChunkProvenance(text string, chunks []chunk) error {
 	return nil
 }
 
-// storechunks persists a complete retrieval-unit batch. A database write
-// failure must stop processing so no zero-ID chunks reach vector storage.
-func (dp *documentProcessor) storechunks(kbID, docID, revisionID int64, title string, chunks []chunk) ([]model.DocumentChunk, error) {
-	models := make([]model.DocumentChunk, len(chunks))
-	for i, c := range chunks {
-		searchText := fmt.Sprintf("Document: %s\n\n%s", title, c.Content)
-		models[i] = model.DocumentChunk{
-			KnowledgeBaseID:  kbID,
-			DocumentID:       docID,
-			RevisionID:       revisionID,
-			ChunkIndex:       c.chunkIndex,
-			Content:          c.Content,
-			SearchText:       searchText,
-			DisplayText:      c.Content,
-			TokenCount:       len(tokenize(searchText)),
-			InputFingerprint: canonicalFingerprint("unit-v1", fmt.Sprintf("%d", revisionID), fmt.Sprintf("%d", c.chunkIndex), searchText),
-			StartOffset:      c.StartOffset,
-			EndOffset:        c.EndOffset,
+func (dp *documentProcessor) storeContentTree(tx *gorm.DB, docID, revisionID int64, rendered extractedDocument, root *contentTreeNode) error {
+	var persist func(*contentTreeNode, int64, int) error
+	persist = func(node *contentTreeNode, parentID int64, ordinal int) error {
+		persisted := model.ContentNode{DocumentID: docID, RevisionID: revisionID, ParentID: parentID, Ordinal: ordinal, NodeType: node.NodeType, Text: node.Text, ContentHash: canonicalFingerprint("node-v2", node.Text), LocatorJSON: rendered.nodeLocatorJSON(node), MetadataJSON: localNodeMetadataJSON(rendered.FileType, "structure")}
+		if err := tx.Create(&persisted).Error; err != nil {
+			return err
 		}
+		node.leafPersistedID = persisted.ID
+		for index, child := range node.Children {
+			if err := persist(child, persisted.ID, index+1); err != nil {
+				return err
+			}
+		}
+		return nil
 	}
-	if err := database.DB.Create(&models).Error; err != nil {
-		applogger.Error("failed to create document chunks", "doc_id", docID, "count", len(models), "error", err)
-		return nil, fmt.Errorf("create document chunks: %w", err)
+	if err := persist(root, 0, 0); err != nil {
+		return fmt.Errorf("persist content tree: %w", err)
+	}
+	return nil
+}
+
+func (dp *documentProcessor) storeGeneratedChunks(tx *gorm.DB, kbID, docID, revisionID int64, title string, rendered extractedDocument, units []generatedChunk) ([]model.DocumentChunk, error) {
+	models := make([]model.DocumentChunk, len(units))
+	for index, unit := range units {
+		contextJSON, err := serializeStructureContext(title, revisionID, unit, rendered)
+		if err != nil {
+			return nil, fmt.Errorf("serialize chunk %d structure context: %w", index, err)
+		}
+		models[index] = model.DocumentChunk{KnowledgeBaseID: kbID, DocumentID: docID, RevisionID: revisionID, ChunkIndex: index, Content: unit.content, DisplayText: unit.content, SearchText: unit.searchText, StructureContextJSON: contextJSON, TokenCount: len(dp.splitter.tp.Encode(unit.searchText, nil, nil)), InputFingerprint: canonicalFingerprint("unit-v2", fmt.Sprintf("%d", revisionID), fmt.Sprintf("%d", index), unit.searchText), StartOffset: unit.start, EndOffset: unit.end}
+	}
+	if err := tx.Create(&models).Error; err != nil {
+		return nil, fmt.Errorf("create generated chunks: %w", err)
 	}
 	return models, nil
 }
 
 // createProcessingRevision creates the immutable canonical record before any
 // derived retrieval artifacts are written.
-func (dp *documentProcessor) createProcessingRevision(doc *model.Document, text string) (*model.DocumentRevision, error) {
+func (dp *documentProcessor) createProcessingRevision(doc *model.Document, text, adapterID string, profile retrievalTokenProfile) (*model.DocumentRevision, error) {
 	contentHash := canonicalFingerprint("content-v1", text)
-	parserID := fmt.Sprintf("local-%s", doc.FileType)
-	fingerprint := canonicalFingerprint(contentHash, parserID, canonicalParserVersion, canonicalNormalizerVersion)
+	parserID := fmt.Sprintf("local-%s", strings.TrimPrefix(doc.FileType, "."))
+	parserVersion := fmt.Sprintf("%s|%s|tree-v1|generator-v1|context-v2|cl100k-base|%d:%d:%d:%d", canonicalParserVersion, adapterID, profile.MinTokens, profile.MaxTokens, profile.OverlapTokens, profile.EmbeddingMaxLen)
+	fingerprint := canonicalFingerprint(contentHash, parserID, parserVersion, canonicalNormalizerVersion)
 	revision := &model.DocumentRevision{
 		DocumentID:           doc.ID,
 		ContentHash:          contentHash,
 		ParserID:             parserID,
-		ParserVersion:        canonicalParserVersion,
+		ParserVersion:        parserVersion,
 		NormalizerVersion:    canonicalNormalizerVersion,
 		CanonicalFingerprint: fingerprint,
 		BlobPath:             doc.FilePath,
@@ -220,93 +287,6 @@ func (dp *documentProcessor) createProcessingRevision(doc *model.Document, text 
 		return nil, fmt.Errorf("create document revision: %w", err)
 	}
 	return revision, nil
-}
-
-// storeContentNodes persists the canonical local-upload tree. Every node has a
-// source locator so retrieval provenance never degrades to an opaque {} value.
-func (dp *documentProcessor) storeContentNodes(docID, revisionID int64, title string, rendered extractedDocument, chunks []model.DocumentChunk) error {
-	root := model.ContentNode{
-		DocumentID:   docID,
-		RevisionID:   revisionID,
-		ParentID:     0,
-		Ordinal:      0,
-		NodeType:     model.ContentNodeTypeDocument,
-		Text:         title,
-		ContentHash:  canonicalFingerprint("node-v1", title),
-		LocatorJSON:  rendered.locatorJSON(-1, 0, len(rendered.Text)),
-		MetadataJSON: localNodeMetadataJSON(rendered.FileType, "document"),
-	}
-	if err := database.DB.Create(&root).Error; err != nil {
-		return fmt.Errorf("create root content node: %w", err)
-	}
-
-	parentID := root.ID
-	parentOrdinal := 0
-	for ordinal, chunk := range chunks {
-		nodeType := contentNodeTypeForChunk(chunk.DisplayText)
-		if nodeType == model.ContentNodeTypeHeading {
-			// A heading is a structural parent, not a second retrieval unit. The
-			// mapped chunk below remains the only evidence body and chunk ID.
-			heading := model.ContentNode{
-				DocumentID:   docID,
-				RevisionID:   revisionID,
-				ParentID:     root.ID,
-				Ordinal:      ordinal + 1,
-				NodeType:     model.ContentNodeTypeHeading,
-				Text:         chunk.DisplayText,
-				ContentHash:  canonicalFingerprint("node-v1", "heading", chunk.DisplayText),
-				LocatorJSON:  rendered.locatorJSON(chunk.ChunkIndex, chunk.StartOffset, chunk.EndOffset),
-				MetadataJSON: localNodeMetadataJSON(rendered.FileType, "heading"),
-			}
-			if err := database.DB.Create(&heading).Error; err != nil {
-				return fmt.Errorf("create heading content node: %w", err)
-			}
-			parentID = heading.ID
-			parentOrdinal = 0
-		}
-		parentOrdinal++
-		node := model.ContentNode{
-			DocumentID:   docID,
-			RevisionID:   revisionID,
-			ParentID:     parentID,
-			Ordinal:      parentOrdinal,
-			NodeType:     nodeType,
-			Text:         chunk.DisplayText,
-			ContentHash:  canonicalFingerprint("node-v1", chunk.DisplayText),
-			LocatorJSON:  rendered.locatorJSON(chunk.ChunkIndex, chunk.StartOffset, chunk.EndOffset),
-			MetadataJSON: localNodeMetadataJSON(rendered.FileType, "chunk"),
-		}
-		if err := database.DB.Create(&node).Error; err != nil {
-			return fmt.Errorf("create paragraph content node: %w", err)
-		}
-		mapping := model.DocumentChunkNode{ChunkID: chunk.ID, NodeID: node.ID, Ordinal: 0}
-		if err := database.DB.Create(&mapping).Error; err != nil {
-			return fmt.Errorf("create chunk-node mapping: %w", err)
-		}
-	}
-	return nil
-}
-
-// contentNodeTypeForChunk exposes the splitter's structural classification to
-// Context Expansion while preserving DocumentChunk as the sole retrieval unit.
-func contentNodeTypeForChunk(content string) int {
-	paragraph := textParagraph{content: content}
-	paragraph.heading = isMarkdownHeading(content)
-	paragraph.code = strings.HasPrefix(strings.TrimSpace(content), "```") || strings.HasPrefix(content, "    ")
-	paragraph.list = isListBlock(content)
-	paragraph.table = isTableBlock(content)
-	switch {
-	case paragraph.heading:
-		return model.ContentNodeTypeHeading
-	case paragraph.code:
-		return model.ContentNodeTypeCode
-	case paragraph.table:
-		return model.ContentNodeTypeTable
-	case paragraph.list:
-		return model.ContentNodeTypeList
-	default:
-		return model.ContentNodeTypeParagraph
-	}
 }
 
 func (dp *documentProcessor) generateEmbeddings(ctx context.Context, chunks []model.DocumentChunk) ([][]float32, error) {

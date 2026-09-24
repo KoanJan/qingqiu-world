@@ -18,6 +18,7 @@ type textSplitter struct {
 	chunkOverlap int
 	minchunkSize int
 	tp           *tiktoken.Tiktoken
+	initErr      error
 }
 
 // newTextSplitter creates a textSplitter with the given chunk size, overlap, and minchunkSize.
@@ -26,14 +27,24 @@ func newTextSplitter(chunkSize, chunkOverlap, minchunkSize int) *textSplitter {
 	tp, err := tiktoken.EncodingForModel("text-embedding-3-small")
 	if err != nil {
 		applogger.Error("failed to get tiktoken encoding for model, falling back to cl100k_base", "error", err)
-		tp, _ = tiktoken.GetEncoding("cl100k_base")
+		tp, err = tiktoken.GetEncoding("cl100k_base")
+		if err != nil {
+			applogger.Error("failed to initialize fallback tiktoken encoding", "error", err)
+		}
 	}
 	return &textSplitter{
 		chunkSize:    chunkSize,
 		chunkOverlap: chunkOverlap,
 		minchunkSize: minchunkSize,
 		tp:           tp,
+		initErr:      err,
 	}
+}
+
+// Err returns tokenizer initialization failure so callers can fail a revision
+// explicitly instead of dereferencing a nil tokenizer while processing text.
+func (s *textSplitter) Err() error {
+	return s.initErr
 }
 
 // chunk represents a text segment with position information.
@@ -55,6 +66,10 @@ type textParagraph struct {
 
 // Split splits text into chunks that respect token limits with overlap.
 func (s *textSplitter) Split(text string) []chunk {
+	if s.initErr != nil || s.tp == nil {
+		applogger.Error("text splitter cannot run without tokenizer", "error", s.initErr)
+		return nil
+	}
 	// Chunk offsets belong to the canonical rendition, so normalize line endings
 	// before both structural parsing and exact offset alignment.
 	text = strings.ReplaceAll(text, "\r\n", "\n")

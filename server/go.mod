@@ -12,6 +12,7 @@ require (
 	github.com/pkoukk/tiktoken-go v0.1.8
 	github.com/sashabaranov/go-openai v1.41.2
 	github.com/viterin/vek v0.4.2
+	github.com/yuin/goldmark v1.7.8
 	golang.org/x/exp v0.0.0-20240506185415-9bf2ced13842
 	gopkg.in/yaml.v3 v3.0.1
 	gorm.io/gorm v1.31.1

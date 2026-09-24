@@ -43,15 +43,37 @@ type extractedPage struct {
 // evidenceLocator is stable, complete local-upload provenance. Every field is
 // present so consumers never have to infer a missing part of the location.
 type evidenceLocator struct {
-	SourceKind int    `json:"source_kind"`
-	FileType   string `json:"file_type"`
-	ChunkIndex int    `json:"chunk_index"`
-	CharStart  int    `json:"char_start"`
-	CharEnd    int    `json:"char_end"`
-	LineStart  int    `json:"line_start"`
-	LineEnd    int    `json:"line_end"`
-	PageStart  int    `json:"page_start"`
-	PageEnd    int    `json:"page_end"`
+	SourceKind   int    `json:"source_kind"`
+	FileType     string `json:"file_type"`
+	ChunkIndex   int    `json:"chunk_index"`
+	CharStart    int    `json:"char_start"`
+	CharEnd      int    `json:"char_end"`
+	LineStart    int    `json:"line_start"`
+	LineEnd      int    `json:"line_end"`
+	PageStart    int    `json:"page_start"`
+	PageEnd      int    `json:"page_end"`
+	SelfStart    int    `json:"self_start"`
+	SelfEnd      int    `json:"self_end"`
+	SubtreeStart int    `json:"subtree_start"`
+	SubtreeEnd   int    `json:"subtree_end"`
+}
+
+// contentNodeLocator describes a structural node's source extent. Unlike a
+// retrieval-unit locator it deliberately has no chunk_index: one leaf can
+// produce several chunks, so no single chunk index belongs to the node.
+type contentNodeLocator struct {
+	SourceKind   int    `json:"source_kind"`
+	FileType     string `json:"file_type"`
+	CharStart    int    `json:"char_start"`
+	CharEnd      int    `json:"char_end"`
+	LineStart    int    `json:"line_start"`
+	LineEnd      int    `json:"line_end"`
+	PageStart    int    `json:"page_start"`
+	PageEnd      int    `json:"page_end"`
+	SelfStart    int    `json:"self_start"`
+	SelfEnd      int    `json:"self_end"`
+	SubtreeStart int    `json:"subtree_start"`
+	SubtreeEnd   int    `json:"subtree_end"`
 }
 
 // Extract reads a file into its canonical text rendition. New processing code
@@ -240,19 +262,54 @@ func (d extractedDocument) locatorJSON(chunkIndex, start, end int) string {
 	}
 	pageStart, pageEnd := d.pageRange(start, end)
 	locator := evidenceLocator{
-		SourceKind: 0,
-		FileType:   d.FileType,
-		ChunkIndex: chunkIndex,
-		CharStart:  start,
-		CharEnd:    end,
-		LineStart:  lineAtOffset(d.Text, start),
-		LineEnd:    lineAtOffset(d.Text, end),
-		PageStart:  pageStart,
-		PageEnd:    pageEnd,
+		SourceKind:   0,
+		FileType:     d.FileType,
+		ChunkIndex:   chunkIndex,
+		CharStart:    start,
+		CharEnd:      end,
+		LineStart:    lineAtOffset(d.Text, start),
+		LineEnd:      lineAtOffset(d.Text, end),
+		PageStart:    pageStart,
+		PageEnd:      pageEnd,
+		SelfStart:    start,
+		SelfEnd:      end,
+		SubtreeStart: start,
+		SubtreeEnd:   end,
 	}
 	encoded, err := json.Marshal(locator)
 	if err != nil {
 		applogger.Error("KB source locator serialization failed", "file_type", d.FileType, "chunk_index", chunkIndex, "error", err)
+		return "{}"
+	}
+	return string(encoded)
+}
+
+// nodeLocatorJSON records both a node's own text and its full descendant
+// extent. Chunk locators continue to use locatorJSON because one leaf may map
+// to several linear chunks.
+func (d extractedDocument) nodeLocatorJSON(node *contentTreeNode) string {
+	if node.SelfRange.Start < 0 || node.SelfRange.End < node.SelfRange.Start || node.SelfRange.End > len(d.Text) || node.SubtreeRange.Start < 0 || node.SubtreeRange.End < node.SubtreeRange.Start || node.SubtreeRange.End > len(d.Text) {
+		applogger.Error("KB content node locator received invalid range", "file_type", d.FileType, "self_start", node.SelfRange.Start, "self_end", node.SelfRange.End, "subtree_start", node.SubtreeRange.Start, "subtree_end", node.SubtreeRange.End, "text_bytes", len(d.Text))
+		return "{}"
+	}
+	pageStart, pageEnd := d.pageRange(node.SelfRange.Start, node.SelfRange.End)
+	locator := contentNodeLocator{
+		SourceKind:   0,
+		FileType:     d.FileType,
+		CharStart:    node.SelfRange.Start,
+		CharEnd:      node.SelfRange.End,
+		LineStart:    lineAtOffset(d.Text, node.SelfRange.Start),
+		LineEnd:      lineAtOffset(d.Text, node.SelfRange.End),
+		PageStart:    pageStart,
+		PageEnd:      pageEnd,
+		SelfStart:    node.SelfRange.Start,
+		SelfEnd:      node.SelfRange.End,
+		SubtreeStart: node.SubtreeRange.Start,
+		SubtreeEnd:   node.SubtreeRange.End,
+	}
+	encoded, err := json.Marshal(locator)
+	if err != nil {
+		applogger.Error("KB node locator serialization failed", "file_type", d.FileType, "error", err)
 		return "{}"
 	}
 	return string(encoded)

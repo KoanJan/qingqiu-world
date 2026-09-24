@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.16] - 2026-09-25
+
+### Changed
+- **Source-Faithful Document Structure**: knowledge-base indexing no longer infers a document's structure from arbitrary chunk boundaries — the heading/list/table/code tree is now parsed from the source file itself before any chunking, and search units are generated from it. As a result, re-indexing the same document is fully reproducible, and every search hit carries a precise structural position (heading path, page/line range) so citations trace back to the exact passage.
+
 ## [0.1.15] - 2026-09-23
 
 ### Changed

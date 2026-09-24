@@ -441,11 +441,9 @@ func (cm *ChatModel) tryJSONSchema(ctx context.Context, messages []Message, sche
 	return content, nil
 }
 
-// tryFunctionCallJSON emulates structured output by wrapping the schema as a single tool definition.
-// The LLM is expected to call the tool with the structured data as arguments.
-// ToolChoice is not forced to maintain compatibility with models that restrict it
-// (e.g., DeepSeek thinking mode), relying on the model's natural behavior to use the only available tool.
-// This is the fallback for models that do not support json_schema response format.
+// tryFunctionCallJSON emulates structured output by wrapping the schema as a
+// single required tool call. A structured-output fallback that permits free
+// text is not deterministic and can silently drop runtime decisions.
 func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message, schemaDef JSONSchemaDefinition) (string, error) {
 	logMessages(messages)
 
@@ -458,9 +456,13 @@ func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model:       cm.modelID,
-		Messages:    toOpenAIMessages(messages),
-		Tools:       toOpenAIToolDefs([]FunctionDefinition{toolDef}),
+		Model:    cm.modelID,
+		Messages: toOpenAIMessages(messages),
+		Tools:    toOpenAIToolDefs([]FunctionDefinition{toolDef}),
+		ToolChoice: openai.ToolChoice{
+			Type:     openai.ToolTypeFunction,
+			Function: openai.ToolFunction{Name: schemaDef.Name},
+		},
 		Temperature: 0,
 	}
 

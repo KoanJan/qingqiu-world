@@ -133,8 +133,9 @@ The RAG runtime adds a canonical evidence layer above raw chunks:
 graph TD
     Upload["Local upload<br/>SourceKindLocalUpload only"] --> Document["Document"]
     Document --> Revision["DocumentRevision<br/>immutable parse result"]
-    Revision --> Nodes["ContentNode tree<br/>revision-local structure"]
-    Nodes --> Chunks["DocumentChunk<br/>derived retrieval units"]
+    Revision --> Adapter["Format Adapter<br/>verified structural facts"]
+    Adapter --> Nodes["ContentNode Builder<br/>revision-local structure tree"]
+    Nodes --> Chunks["Chunk Generator<br/>DocumentChunk retrieval units"]
     Chunks --> Vector["Embedding vectors<br/>per-KB SQLite"]
     Chunks --> BM25["BM25 in-memory index"]
     Document --> Active["active_revision_id<br/>current visible revision"]
@@ -147,11 +148,18 @@ graph TD
 | `KnowledgeBase` | KB-level settings, counts, embedding/index status, hybrid retrieval ratio. |
 | `Document` | Uploaded local file and lifecycle status. `active_revision_id` points to the visible revision. |
 | `DocumentRevision` | Immutable parse/index version for one document processing attempt. |
-| `ContentNode` | Canonical structural node inside one revision; node IDs are revision-local evidence anchors. |
-| `DocumentChunk` | Retrieval unit derived from a revision/node; carries vector and BM25 searchable text. |
+| `ContentNode` | Canonical structural node inside one revision; stores source self/subtree coordinates and never owns a chunk index. |
+| `DocumentChunk` | Retrieval unit derived from a final leaf; owns `chunk_index`, exact display/source ranges, retrieval text, and complete structure context. |
+| `DocumentChunkNode` | Mapping from one retrieval unit to its final leaf; used for structure navigation and grounding, not as the source of a chunk locator. |
 | `KBRelationEvidence` | Relation support bound to KB/document/revision/content-node/chunk plus locator and quote. |
 
 `DocumentChunk` is optimized for retrieval. `ContentNode` and `DocumentRevision` are the canonical provenance layer. Relations and evidence must be grounded against active revisions, not loose text snippets.
+
+### Structural ingestion and locator ownership
+
+The ingestion order is deterministic: canonical rendition → format-specific structural facts → ContentNode tree → final leaves → DocumentChunk units. The Builder decides whether source structure becomes a parent/child tree or an `Aggregate`; the Generator only splits an oversized final leaf and never recombines neighboring leaves.
+
+Locator ownership follows the same boundary. A ContentNode locator describes only the node's self/subtree source extent. A DocumentChunk locator describes exactly one retrieval unit and is built from the chunk row plus its persisted `StructureContextJSON` (title/path, source kind/type, line/page ranges, leaf identity and ranges). `DocumentChunkNode` links the two layers, but cannot supply a chunk index because one leaf may correspond to multiple chunks. Legacy revisions without complete chunk context may use source reconstruction as a compatibility fallback.
 
 ### Source kinds
 
