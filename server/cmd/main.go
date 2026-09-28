@@ -25,6 +25,7 @@ import (
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/runtime"
+	"qingqiu-world-server/internal/service/speech"
 
 	applogger "qingqiu-world-server/internal/logger"
 
@@ -50,6 +51,9 @@ func main() {
 
 	database.Init()
 	migration.Run()
+	speech.Init()
+	speechCtx, speechCancel := context.WithCancel(context.Background())
+	speech.Start(speechCtx)
 	hub := realtime.NewHub()
 	notificationPublisher := notificationrouter.New(hub)
 
@@ -123,6 +127,7 @@ func main() {
 	applogger.Info("Stopping agent runtimes...")
 	runtime.Shutdown(10 * time.Second)
 	relationCancel()
+	speechCancel()
 
 	// Shut down the memory system (vectorization + daily cron)
 	memCancel()

@@ -899,8 +899,9 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 	if plan.Content != "" {
 		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusWorking)
 		r.messageCommitCh <- &commitRequest{
-			sessionID: targetSessionID,
-			content:   plan.Content,
+			sessionID:             targetSessionID,
+			content:               plan.Content,
+			expressionInstruction: plan.ExpressionInstruction,
 		}
 		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusIdle)
 		return
@@ -935,11 +936,12 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 	var readMessageRange [2]int64
 	if comprehension != nil && comprehension.Chat != nil {
 		chatCtx = &chat.ChatContext{
-			PersonState:        comprehension.Chat.PersonState,
-			HistorySegments:    historySegments(comprehension.Chat.HistorySearch),
-			KBSegments:         kbSegments(comprehension.Chat.KBRetrieval),
-			NeedsClarification: comprehension.Chat.NeedsClarification,
-			Clarification:      comprehension.Chat.Clarification,
+			PersonState:                        comprehension.Chat.PersonState,
+			HistorySegments:                    historySegments(comprehension.Chat.HistorySearch),
+			KBSegments:                         kbSegments(comprehension.Chat.KBRetrieval),
+			NeedsClarification:                 comprehension.Chat.NeedsClarification,
+			Clarification:                      comprehension.Chat.Clarification,
+			ClarificationExpressionInstruction: comprehension.Chat.ClarificationExpressionInstruction,
 		}
 		readMessageRange = comprehension.Chat.ReadMessageRange
 	}
@@ -991,8 +993,9 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 	}
 
 	r.messageCommitCh <- &commitRequest{
-		sessionID: targetSessionID,
-		content:   result.Content,
+		sessionID:             targetSessionID,
+		content:               result.Content,
+		expressionInstruction: result.ExpressionInstruction,
 	}
 }
 
@@ -1163,8 +1166,14 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation
 		action = model.ScheduledEventActionSendMessage
 	}
 	if action == model.ScheduledEventActionSendMessage {
-		if plan.ActionContent == "" {
+		if strings.TrimSpace(plan.ActionContent) == "" {
 			applogger.Error("action.CreateAlarm: 'send_message' action requires action_content, skipping",
+				"agent_config_id", r.agentConfigID,
+			)
+			return
+		}
+		if strings.TrimSpace(plan.ExpressionInstruction) == "" {
+			applogger.Error("action.CreateAlarm: 'send_message' action requires expression_instruction, skipping",
 				"agent_config_id", r.agentConfigID,
 			)
 			return
@@ -1182,13 +1191,14 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation
 	}
 
 	record := model.ScheduledEvent{
-		PersonID:      r.agentPersonID,
-		SessionID:     sessionID,
-		TriggerAt:     triggerAt,
-		Message:       plan.Message,
-		Action:        action,
-		ActionContent: plan.ActionContent,
-		Status:        model.ScheduledEventStatusPending,
+		PersonID:              r.agentPersonID,
+		SessionID:             sessionID,
+		TriggerAt:             triggerAt,
+		Message:               plan.Message,
+		Action:                action,
+		ActionContent:         plan.ActionContent,
+		ExpressionInstruction: plan.ExpressionInstruction,
+		Status:                model.ScheduledEventStatusPending,
 	}
 	if err := database.DB.Create(&record).Error; err != nil {
 		applogger.Error("action.CreateAlarm: failed to create scheduled event record",

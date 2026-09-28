@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.17] - 2026-09-29
+
+### Added
+- **Agent voices**: Each Agent can speak with its own voice, set up from a voice sample and a speech provider. Changing an Agent's voice only affects speech generated afterwards — audio already produced keeps the voice it was made with.
+- **Speech provider settings**: Speech providers can be added, edited, and removed from settings, starting with Fish Audio. A provider that an Agent's voice still depends on cannot be removed.
+- **Message playback**: Every Agent message has a play control. Audio is generated on first playback and reused afterwards, so replays are immediate and consistent; if generation fails, playing the message again retries it.
+- **Expressive speech**: Agents speak with emotion that matches what they say. Chat replies, clarifying questions, and scheduled reminders are all delivered in the intended tone.
+
+### Fixed
+- **Short-context clarification**: Clarifying questions are now returned for conversations of any length. Previously they were honored only once a conversation grew past the context window, so a shorter conversation would get a regular reply instead of the clarifying question.
+
 ## [0.1.16] - 2026-09-25
 
 ### Changed

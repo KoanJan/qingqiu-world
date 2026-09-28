@@ -34,8 +34,8 @@ Extract keywords suitable for searching relevant conversation history. Return an
 
 If the batch is too vague to act on even with the conversation history, set needs_clarification to true and explain why in clarification_reason.`
 
-// clarifyPrompt is the LLM prompt template for generating clarification questions.
-// It takes three parameters: history, query, and reason.
+// clarifyPrompt is the LLM prompt template for generating a clarification
+// question together with the LLM's own speech-expression decision.
 const clarifyPrompt = `The query is too vague and needs clarification.
 
 Conversation history:
@@ -46,21 +46,32 @@ Query: %s
 Reason for vagueness: %s
 
 Generate a clarification question. The question should be concise, specific, and provide possible options.
+Also decide how that clarification should be expressed in speech.
 
 IMPORTANT: The clarification question MUST be in the SAME LANGUAGE as the original query.
 - If the query is in Chinese, respond in Chinese.
 - If the query is in English, respond in English.
 
-Output only the clarification question, without any additional content.`
+Return the clarification and its speech expression instruction in the required structured format.`
+
+const clarificationFallback = "Your question is a bit vague. Could you please provide more details about your needs?"
 
 // QueryPreprocessingOutput contains retrieval and clarification instructions for a message batch.
 type QueryPreprocessingOutput struct {
-	KnowledgeBaseQuery    string   `json:"knowledge_base_query" jsonschema:"description=Self-contained query for knowledge-base vector search; empty when unnecessary,required"`
-	KnowledgeBaseIDs      []int64  `json:"knowledge_base_ids" jsonschema:"description=IDs of the authorized knowledge bases to search; empty when unnecessary,required"`
-	HistorySearchKeywords []string `json:"history_search_keywords" jsonschema:"description=Keywords for conversation history search; empty when unnecessary,required"`
-	NeedsClarification    bool     `json:"needs_clarification" jsonschema:"description=Whether the message batch needs clarification,required"`
-	ClarificationReason   string   `json:"clarification_reason" jsonschema:"description=Reason the message batch needs clarification"`
-	Clarification         string   `json:"clarification" jsonschema:"description=Clarification question when needed"`
+	KnowledgeBaseQuery                 string   `json:"knowledge_base_query" jsonschema:"description=Self-contained query for knowledge-base vector search; empty when unnecessary,required"`
+	KnowledgeBaseIDs                   []int64  `json:"knowledge_base_ids" jsonschema:"description=IDs of the authorized knowledge bases to search; empty when unnecessary,required"`
+	HistorySearchKeywords              []string `json:"history_search_keywords" jsonschema:"description=Keywords for conversation history search; empty when unnecessary,required"`
+	NeedsClarification                 bool     `json:"needs_clarification" jsonschema:"description=Whether the message batch needs clarification,required"`
+	ClarificationReason                string   `json:"clarification_reason" jsonschema:"description=Reason the message batch needs clarification"`
+	Clarification                      string   `json:"clarification" jsonschema:"description=Clarification question when needed"`
+	ClarificationExpressionInstruction string   `json:"-"`
+}
+
+// clarificationResponse is authored entirely by the clarification LLM. The
+// application transports both values without imposing a delivery style.
+type clarificationResponse struct {
+	Content               string `json:"content" jsonschema:"description=The concise clarification question,required"`
+	ExpressionInstruction string `json:"expression_instruction" jsonschema:"description=Non-empty natural-language instruction describing how to express the clarification in speech,required,minLength=1"`
 }
 
 // formatAuthorizedKBs renders the authorized KB inventory for the routing
@@ -166,7 +177,7 @@ func generateClarification(
 	reason string,
 	characterSettings string,
 	maxMessages int,
-) string {
+) (string, string) {
 	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
 
 	historyText := formatHistoryForPreprocessing(history, maxMessages)
@@ -176,16 +187,32 @@ func generateClarification(
 		prompt = fmt.Sprintf("[Your Character]\n%s\n\n%s", characterSettings, prompt)
 	}
 
-	result, err := chatModel.Chat(ctx, []llm.Message{
+	result, err := chatModel.ChatWithJSONSchema(ctx, []llm.Message{
 		{Role: "user", Content: prompt},
+	}, llm.JSONSchemaDefinition{
+		Name:        "ClarificationResponse",
+		Description: "A clarification question and the LLM's speech expression decision",
+		Strict:      true,
+		Schema:      llm.GenerateSchema[clarificationResponse](),
 	})
 	if err != nil {
 		applogger.Error("Clarification generation failed", "error", err)
-		return "Your question is a bit vague. Could you please provide more details about your needs?"
+		return clarificationFallback, ""
+	}
+	var output clarificationResponse
+	if err := json.Unmarshal([]byte(result), &output); err != nil {
+		applogger.Error("Clarification generation returned invalid structured response", "error", err)
+		return clarificationFallback, ""
+	}
+	output.Content = strings.TrimSpace(output.Content)
+	output.ExpressionInstruction = strings.TrimSpace(output.ExpressionInstruction)
+	if output.Content == "" || output.ExpressionInstruction == "" {
+		applogger.Error("Clarification generation returned empty content or expression instruction")
+		return clarificationFallback, ""
 	}
 
 	applogger.Info("Generated clarification for query", "query", query[:min(50, len(query))])
-	return result
+	return output.Content, output.ExpressionInstruction
 }
 
 // PreprocessQuery prepares retrieval requests and clarification output for a message batch.
@@ -207,7 +234,7 @@ func PreprocessQuery(
 		if output.ClarificationReason != "" {
 			reason = output.ClarificationReason
 		}
-		output.Clarification = generateClarification(ctx, llmConfig, query, history, reason, characterSettings, maxMessages)
+		output.Clarification, output.ClarificationExpressionInstruction = generateClarification(ctx, llmConfig, query, history, reason, characterSettings, maxMessages)
 	}
 
 	applogger.Info("query preprocessing complete",

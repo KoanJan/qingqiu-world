@@ -7,7 +7,7 @@ import (
 
 // CreateMessage creates a message in a session
 func CreateMessage(message *model.Message) error {
-	return database.DB.Select("SessionID", "PersonID", "Content").Create(message).Error
+	return database.DB.Select("SessionID", "PersonID", "Content", "ExpressionInstruction").Create(message).Error
 }
 
 // ListMessagesBySessionID list messages by session_id

@@ -68,6 +68,9 @@ type ChatComprehension struct {
 	// Clarification contains the generated clarification question
 	// when NeedsClarification is true.
 	Clarification string
+	// ClarificationExpressionInstruction is the clarification LLM's own
+	// decision about how its question should be expressed in speech.
+	ClarificationExpressionInstruction string
 
 	// PersonState holds the inferred state of the other party
 	// (emotion, purpose, situation).

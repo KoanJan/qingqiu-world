@@ -89,6 +89,7 @@ func ComprehendMessage(
 			)
 			result.NeedsClarification = preprocessingResult.NeedsClarification
 			result.Clarification = preprocessingResult.Clarification
+			result.ClarificationExpressionInstruction = preprocessingResult.ClarificationExpressionInstruction
 			if len(preprocessingResult.HistorySearchKeywords) > 0 {
 				result.HistorySearch = &types.HistorySearch{
 					Keywords: preprocessingResult.HistorySearchKeywords,

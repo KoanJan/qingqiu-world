@@ -35,7 +35,8 @@ const userFriendlyErrorMessage = "Sorry, something went wrong on the server. Ple
 // table directly. Instead, it returns all results through this struct, and the
 // caller (Work) commits them to a draft and then to messages atomically.
 type ChatResult struct {
-	Content string // The generated response content
+	Content               string // The generated response content
+	ExpressionInstruction string // Natural-language direction for speech delivery
 }
 
 // ExecuteChat handles the chat execution path.
@@ -81,6 +82,7 @@ func ExecuteChat(
 		p.kbSegments = chatCtx.KBSegments
 		p.needsClarification = chatCtx.NeedsClarification
 		p.clarification = chatCtx.Clarification
+		p.clarificationExpressionInstruction = chatCtx.ClarificationExpressionInstruction
 
 		if chatCtx.FocusedWorkResult != nil {
 			p.focusedWorkResult = &FocusedWorkResultForAssembly{
@@ -111,19 +113,21 @@ func ExecuteChat(
 
 	messages, earlyContent, earlyReturn := p.assembleContext(ctx)
 	if earlyReturn {
-		return &ChatResult{Content: earlyContent}, nil
+		expressionInstruction := ""
+		if p.needsClarification {
+			expressionInstruction = p.clarificationExpressionInstruction
+		}
+		return &ChatResult{Content: earlyContent, ExpressionInstruction: expressionInstruction}, nil
 	}
 
-	fullContent, err := p.streamResponse(ctx, messages)
+	result, err := p.generateResponse(ctx, messages)
 	if err != nil {
-		return &ChatResult{Content: fullContent}, err
+		return result, err
 	}
 
 	p.postProcess(ctx)
 
-	return &ChatResult{
-		Content: fullContent,
-	}, nil
+	return result, nil
 }
 
 // ChatContext carries optional background information for the chat pipeline.
@@ -144,6 +148,9 @@ type ChatContext struct {
 	NeedsClarification bool
 	// Clarification is the clarifying question text.
 	Clarification string
+	// ClarificationExpressionInstruction is authored by the same LLM that
+	// generated Clarification and is transported without application overrides.
+	ClarificationExpressionInstruction string
 	// FocusedWorkResult carries the result of completed focused work.
 	FocusedWorkResult *focusedwork.FocusedWorkResult
 	// FocusContext carries runtime-selected handoffs and shared session notes.

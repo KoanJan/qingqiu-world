@@ -128,6 +128,15 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 		}
 
 		if len(sessionIDs) > 0 {
+			var messageIDs []int64
+			if err := tx.Model(&model.Message{}).Where("session_id IN ?", sessionIDs).Pluck("id", &messageIDs).Error; err != nil {
+				return fmt.Errorf("pluck messages for speech history cleanup: %w", err)
+			}
+			if len(messageIDs) > 0 {
+				if err := tx.Where("message_id IN ?", messageIDs).Delete(&model.SpeechRenderHistory{}).Error; err != nil {
+					return fmt.Errorf("delete speech render histories: %w", err)
+				}
+			}
 			// NOTE: This logic assumes 1v1 (one agent per session).
 			// In multi-agent/group chat, deleting one agent should NOT cascade delete the entire session.
 			tables := []interface{}{
@@ -160,6 +169,9 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 		}
 		if err := tx.Where("person_id = ?", personID).Delete(&model.FocusHandoff{}).Error; err != nil {
 			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentVoice{}).Error; err != nil {
+			return fmt.Errorf("delete Agent voice versions: %w", err)
 		}
 
 		// Delete KB access grants (application-level cascade, no FK)

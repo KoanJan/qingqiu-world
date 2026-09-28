@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../logger';
-import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityPage, Jinshu, KBAccessPerson } from '../types';
+import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityPage, Jinshu, KBAccessPerson, TTSProviderDefinition, TTSRenderer, TTSRendererDetail, AgentVoice } from '../types';
 
 declare global {
   interface Window {
@@ -95,7 +95,15 @@ interface ApiEnvelope<T = unknown> {
   data?: T;
 }
 
-const CODE_SUCCESS = 0;
+// API_BUSINESS_CODE mirrors the backend's transport-independent response
+// envelope codes. Feature code must distinguish expected business absence from
+// transport and server failures instead of treating every rejection as missing.
+export const API_BUSINESS_CODE = {
+  SUCCESS: 0,
+  BAD_REQUEST: 1,
+  NOT_FOUND: 2,
+  INTERNAL_ERROR: 3,
+} as const;
 
 // Response interceptor: unwrap the backend business-code envelope.
 // Frontend code continues to access response.data as the real payload.
@@ -107,7 +115,7 @@ api.interceptors.response.use(
     // Non-envelope responses (e.g. SSE streams) pass through unchanged.
     if (typeof body?.code !== 'number') return response;
 
-    if (body.code === CODE_SUCCESS) {
+    if (body.code === API_BUSINESS_CODE.SUCCESS) {
       response.data = body.data;
       return response;
     }
@@ -116,8 +124,10 @@ api.interceptors.response.use(
     // existing error.response.data.detail access patterns.
     const err = new Error(body.message) as Error & {
       response?: { data: { detail: string; message: string } };
+      code?: number;
     };
     err.response = { data: { detail: body.message, message: body.message } };
+    err.code = body.code;
     return Promise.reject(err);
   },
   (error) => Promise.reject(error),
@@ -164,6 +174,11 @@ export const jinshuApi = {
 /** API client for message operations. */
 export const messageApi = {
   list: (sessionId: number) => api.get<Message[]>(`/messages/${sessionId}`),
+  // The server may wait for one on-demand render before returning audio.
+  getSpeech: (messageId: number) => api.get<Blob>(`/messages/${messageId}/speech`, {
+    responseType: 'blob',
+    timeout: 25_000,
+  }),
   send: (sessionId: number, content: string) =>
       api.post<{message_id: number}>(`/chat/send/${sessionId}?message=${encodeURIComponent(content)}`),
   createAndSend: (content: string, agentId?: number, title?: string) =>
@@ -177,6 +192,50 @@ export const llmConfigApi = {
   create: (data: Partial<LLMConfig>) => api.post<LLMConfig>('/llm-configs', data),
   update: (id: number, data: Partial<LLMConfig>) => api.put<LLMConfig>(`/llm-configs/${id}`, data),
   delete: (id: number) => api.delete(`/llm-configs/${id}`),
+};
+
+/** API client for the provider-schema-driven TTS renderer configuration. */
+export const ttsRendererApi = {
+  listProviders: () => api.get<TTSProviderDefinition[]>('/tts-providers'),
+  list: () => api.get<TTSRenderer[]>('/tts-renderers'),
+  get: (id: number) => api.get<TTSRendererDetail>(`/tts-renderers/${id}`),
+  create: (data: {
+    name: string;
+    provider: number;
+    connection_config: Record<string, unknown>;
+    description?: string;
+  }) => api.post<TTSRenderer>('/tts-renderers', data),
+  update: (id: number, data: {
+    name: string;
+    connection_config: Record<string, unknown>;
+    description?: string;
+  }) => api.put<TTSRenderer>(`/tts-renderers/${id}`, data),
+  delete: (id: number) => api.delete(`/tts-renderers/${id}`),
+};
+
+/** API client for the canonical voice binding of an Agent. */
+export const agentVoiceApi = {
+  get: (personID: number) => api.get<AgentVoice>(`/agent-voices/agent/${personID}`),
+  // Scalar fields are declarative. Omitting sampleAudio alone preserves the
+  // current immutable audio file.
+  save: (data: {
+    personID: number;
+    ttsRendererID: number;
+    termsConfirmed: boolean;
+    sampleLocale: string;
+    sampleTranscript: string;
+    sampleAudio?: File;
+  }) => {
+    const formData = new FormData();
+    formData.append('tts_renderer_id', String(data.ttsRendererID));
+    formData.append('terms_confirmed', String(data.termsConfirmed));
+    formData.append('sample_locale', data.sampleLocale);
+    formData.append('sample_transcript', data.sampleTranscript);
+    if (data.sampleAudio) {
+      formData.append('sample_audio', data.sampleAudio);
+    }
+    return api.put<AgentVoice>(`/agent-voices/agent/${data.personID}`, formData, { headers: { 'Content-Type': 'multipart/form-data' } });
+  },
 };
 
 /** API client for embedding configuration. */

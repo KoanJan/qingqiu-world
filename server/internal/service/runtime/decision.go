@@ -97,6 +97,7 @@ Action types (use the integer value for the "type" field):
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
+   - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
 
 6. 5 (update_bio) — Update your own Bio (self-introduction displayed to others).
    - MUST include a "bio_update" object with "bio".
@@ -230,6 +231,7 @@ If you decide to act, you have these kinds of action available:
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
+   - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
 
 3. 5 (update_bio) — Update your own Bio (self-introduction that others see).
    - MUST include a "bio_update" object with "bio".
@@ -342,8 +344,15 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		// Fast path: a send_message alarm carries pre-computed content that is
 		// committed directly, skipping the LLM chat pipeline.
 		if p, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok && p != nil &&
-			p.Action == model.ScheduledEventActionSendMessage && p.ActionContent != "" {
+			p.Action == model.ScheduledEventActionSendMessage {
+			if strings.TrimSpace(p.ActionContent) == "" || strings.TrimSpace(p.ExpressionInstruction) == "" {
+				applogger.Error("scheduled send_message is missing content or expression instruction",
+					"scheduled_event_id", p.ScheduledEventID,
+				)
+				return DecisionResult{}
+			}
 			plan.Content = p.ActionContent
+			plan.ExpressionInstruction = p.ExpressionInstruction
 		}
 		return DecisionResult{
 			Actions: []action.Action{
@@ -836,10 +845,16 @@ func isValidCreateAlarmAction(dec action.Action) bool {
 		applogger.Error("Decision create_alarm: missing message, skipping")
 		return false
 	}
-	// send_message action requires action_content.
-	if dec.AlarmPlan.Action == "send_message" && dec.AlarmPlan.ActionContent == "" {
-		applogger.Error("Decision create_alarm: 'send_message' action requires action_content, skipping")
-		return false
+	// send_message commits both fields directly without another LLM call.
+	if dec.AlarmPlan.Action == "send_message" {
+		if strings.TrimSpace(dec.AlarmPlan.ActionContent) == "" {
+			applogger.Error("Decision create_alarm: 'send_message' action requires action_content, skipping")
+			return false
+		}
+		if strings.TrimSpace(dec.AlarmPlan.ExpressionInstruction) == "" {
+			applogger.Error("Decision create_alarm: 'send_message' action requires expression_instruction, skipping")
+			return false
+		}
 	}
 	return true
 }

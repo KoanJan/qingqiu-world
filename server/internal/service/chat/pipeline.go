@@ -2,7 +2,9 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"strings"
 
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
@@ -44,12 +46,13 @@ type pipeline struct {
 	selfName        string // Agent's own name, for identity anchoring in chat generation
 
 	// Results from pipeline stages
-	personStateResult  *comprehendTypes.PersonState
-	historySegments    []comprehendTypes.Segment
-	kbSegments         []comprehendTypes.Segment
-	needsClarification bool
-	clarification      string
-	focusedWorkResult  *FocusedWorkResultForAssembly
+	personStateResult                  *comprehendTypes.PersonState
+	historySegments                    []comprehendTypes.Segment
+	kbSegments                         []comprehendTypes.Segment
+	needsClarification                 bool
+	clarification                      string
+	clarificationExpressionInstruction string
+	focusedWorkResult                  *FocusedWorkResultForAssembly
 }
 
 // loadMessages loads the trigger message from the database (when applicable),
@@ -120,6 +123,12 @@ func (p *pipeline) loadMessages() error {
 // Returns (messages, earlyContent, earlyReturn). When earlyReturn is true,
 // earlyContent contains the response string and the pipeline should terminate early.
 func (p *pipeline) assembleContext(ctx context.Context) ([]llm.Message, string, bool) {
+	// Clarification is independent of context-window size. Comprehend may request
+	// it for a short conversation when KB grants caused preprocessing to run.
+	if p.needsClarification {
+		applogger.Info("Query needed clarification", "session_id", p.session.ID)
+		return nil, p.clarification, true
+	}
 	if p.messageCount < int64(p.windowSize) {
 		return p.assembleSimpleContext()
 	}
@@ -198,12 +207,6 @@ func (p *pipeline) getContextMessages(limit int) []model.Message {
 // engineering pipeline including summary, retrieval, and assembly.
 // Waits for async preprocessing to complete before using the result.
 func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message, string, bool) {
-	// Handle clarification needed case — return clarification as content
-	// without writing to messages table (caller handles draft commit)
-	if p.needsClarification {
-		applogger.Info("Query needed clarification", "session_id", p.session.ID)
-		return []llm.Message{}, p.clarification, true
-	}
 	contextResult := getContext(p.session.ID, p.aiPersonID, p.readMessageRange[1], p.windowSize)
 
 	// Merge knowledge base segments with chat history segments
@@ -280,41 +283,71 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	return messages, "", false
 }
 
-// streamResponse sends the assembled messages to the LLM and collects the
-// complete response. The LLM stream API is still used (to avoid long blocking),
-// but chunks are accumulated internally without per-chunk callbacks or DB updates.
-func (p *pipeline) streamResponse(ctx context.Context, messages []llm.Message) (string, error) {
+// generateResponse sends the assembled messages through the single structured
+// Chat call whose result is committed atomically as one Message.
+func (p *pipeline) generateResponse(ctx context.Context, messages []llm.Message) (*ChatResult, error) {
 	// Check cancellation before starting the LLM call
 	if ctx.Err() != nil {
-		return "", ctx.Err()
+		return &ChatResult{}, ctx.Err()
 	}
 
 	a, err := agent.GetAgent(p.aiPersonID)
 	if err != nil {
-		applogger.Error("streamResponse: failed to get agent", "person_id", p.aiPersonID, "error", err)
-		return "", err
+		applogger.Error("generateResponse: failed to get agent", "person_id", p.aiPersonID, "error", err)
+		return &ChatResult{}, err
 	}
 
 	chatModel := llm.NewChatModelWithTemperature(
 		a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureCreative,
 	)
 
-	stream, err := chatModel.ChatStream(ctx, messages)
+	result, err := chatModel.ChatWithJSONSchema(ctx, messages, llm.JSONSchemaDefinition{
+		Name:        "ChatResponse",
+		Description: "The final agent reply and its natural-language speech expression instruction",
+		Strict:      true,
+		Schema:      llm.GenerateSchema[structuredChatResponse](),
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to start stream: %w", err)
+		return &ChatResult{}, fmt.Errorf("chat structured response: %w", err)
 	}
-	applogger.Info("Starting LLM stream", "session_id", p.session.ID)
-
-	fullContent, err := chatModel.ConsumeStream(stream, nil)
+	var output structuredChatResponse
+	if err := json.Unmarshal([]byte(result), &output); err != nil {
+		applogger.Error("chat returned invalid structured response", "session_id", p.session.ID, "error", err)
+		return &ChatResult{}, fmt.Errorf("decode chat structured response: %w", err)
+	}
+	chatResult, err := newChatResult(output)
 	if err != nil {
-		return fullContent, err
+		applogger.Error("chat returned invalid structured response", "session_id", p.session.ID, "error", err)
+		return &ChatResult{}, err
 	}
 
 	applogger.Info("Chat processing completed",
 		"session_id", p.session.ID,
-		"response_length", len(fullContent),
+		"response_length", len(output.Content),
 	)
-	return fullContent, nil
+	return chatResult, nil
+}
+
+// structuredChatResponse is the one-call Chat result committed to Message.
+type structuredChatResponse struct {
+	Content               string `json:"content" jsonschema:"description=The final user-visible reply,required"`
+	ExpressionInstruction string `json:"expression_instruction" jsonschema:"description=Required non-empty natural-language instruction describing how to express the reply in speech; never return an empty string,required,minLength=1"`
+}
+
+// newChatResult enforces semantic constraints that JSON Schema cannot fully
+// express, notably rejecting strings that contain only whitespace.
+func newChatResult(output structuredChatResponse) (*ChatResult, error) {
+	if strings.TrimSpace(output.Content) == "" {
+		return nil, fmt.Errorf("chat structured response content is empty")
+	}
+	expressionInstruction := strings.TrimSpace(output.ExpressionInstruction)
+	if expressionInstruction == "" {
+		return nil, fmt.Errorf("chat structured response expression_instruction is empty")
+	}
+	return &ChatResult{
+		Content:               output.Content,
+		ExpressionInstruction: expressionInstruction,
+	}, nil
 }
 
 // postProcess handles post-response work.

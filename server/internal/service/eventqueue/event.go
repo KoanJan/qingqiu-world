@@ -226,12 +226,14 @@ type NewMessagePayload struct {
 //     supplementary context in the pipeline
 //   - Action determines whether the runtime takes the fast path (direct
 //     message) or the full pipeline path
-//   - ActionContent carries the pre-computed message for the fast path
+//   - ActionContent and ExpressionInstruction carry the LLM-authored message
+//     values for the fast path
 type ScheduledEventPayload struct {
-	ScheduledEventID int64                      // ID of the ScheduledEvent record
-	Message          string                     // Agent's note to its future self when the alarm fires
-	Action           model.ScheduledEventAction // model.ScheduledEventAction* constant
-	ActionContent    string                     // Pre-computed message content for fast path (ActionSendMessage)
+	ScheduledEventID      int64                      // ID of the ScheduledEvent record
+	Message               string                     // Agent's note to its future self when the alarm fires
+	Action                model.ScheduledEventAction // model.ScheduledEventAction* constant
+	ActionContent         string                     // Pre-computed message content for fast path (ActionSendMessage)
+	ExpressionInstruction string                     // Speech delivery instruction for fast path (ActionSendMessage)
 }
 
 // WorkCompletedPayload is the payload type for EventTypeWorkCompleted events.

@@ -7,8 +7,10 @@ import useAppearance, { getBackgroundUrl } from './hooks/useAppearance';
 import SessionList from './components/SessionList';
 import ChatWindow from './components/ChatWindow';
 import LLMConfigList from './components/LLMConfigList';
+import TTSRendererList from './components/TTSRendererList';
 import EmbeddingConfigForm from './components/EmbeddingConfigForm';
 import AgentConfig from './components/AgentConfig';
+import AgentDetail from './components/AgentDetail';
 import SearchConfigForm from './components/SearchConfigForm';
 import UserProfileForm from './components/UserProfileForm';
 import AppearancePanel from './components/AppearancePanel';
@@ -24,7 +26,7 @@ import ConfigIcon from './components/ConfigIcon';
 import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, initApiClient, sessionApi } from './services/api';
 import { logger } from './logger';
 import type { IconType } from './components/ConfigIcon';
-import type { Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
+import type { Agent, Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
 import { useUserSSE } from './hooks/useUserSSE';
 import { CLIENT_NOTIFICATION_TYPES, subscribeClientNotifications, type ClientNotification } from './services/clientNotifications';
 import { TEMP_SESSION_ID } from './types';
@@ -46,11 +48,13 @@ type RingKey = typeof RING[number];
 // The user profile entry lives in the mine big view, not here.
 type SettingsSubview =
   | 'agent'
+  | 'agent-detail'
   | 'kb'
   | 'experience'
   | 'kb-detail'
   | 'exp-detail'
   | 'llm'
+  | 'tts'
   | 'embedding'
   | 'search'
   | 'custom';
@@ -61,6 +65,7 @@ const SETTINGS_CARDS: { key: SettingsSubview; iconType: IconType }[] = [
   { key: 'kb', iconType: 'kb' },
   { key: 'experience', iconType: 'exp' },
   { key: 'llm', iconType: 'llm' },
+  { key: 'tts', iconType: 'tts' },
   { key: 'embedding', iconType: 'embedding' },
   { key: 'search', iconType: 'search' },
   { key: 'custom', iconType: 'custom' },
@@ -102,9 +107,11 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [showCreateLLM, setShowCreateLLM] = useState(false);
+  const [showCreateTTSRenderer, setShowCreateTTSRenderer] = useState(false);
   const [showCreateKB, setShowCreateKB] = useState(false);
   const [showIngestExp, setShowIngestExp] = useState(false);
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [selectedExp, setSelectedExp] = useState<PublicExperience | null>(null);
   const [version, setVersion] = useState<string>('');
   const [isMacElectron, setIsMacElectron] = useState(false);
@@ -283,11 +290,13 @@ function App() {
 
   const settingsLabelMap: Record<SettingsSubview, string> = {
     agent: t('settings.agentConfig'),
+    'agent-detail': '',
     kb: t('settings.kbConfig'),
     experience: t('settings.publicExperience'),
     'kb-detail': '',
     'exp-detail': '',
     llm: t('settings.llmConfig'),
+    tts: t('settings.ttsConfig'),
     embedding: t('settings.embeddingConfig'),
     search: t('settings.searchConfig'),
     custom: t('settings.custom'),
@@ -368,9 +377,24 @@ function App() {
         showCreate={showCreateAgent}
         onCreateClose={() => setShowCreateAgent(false)}
         onAgentCreated={handleAgentCreated}
+        onSelectAgent={(agent) => {
+          setSelectedAgent(agent);
+          setSettingsSubview('agent-detail');
+        }}
       />
     </PanelDetail>
   );
+
+  const renderAgentDetailPanel = () => selectedAgent ? (
+    <PanelDetail
+      onBack={() => {
+        setSelectedAgent(null);
+        setSettingsSubview('agent');
+      }}
+    >
+      <AgentDetail agent={selectedAgent} onUpdated={setSelectedAgent} />
+    </PanelDetail>
+  ) : null;
 
   const renderKBPanel = () => (
     <PanelDetail
@@ -469,6 +493,18 @@ function App() {
     </PanelDetail>
   );
 
+  const renderTTSPanel = () => (
+    <PanelDetail
+      title={t('settings.ttsConfig')}
+      onAdd={() => setShowCreateTTSRenderer(true)}
+    >
+      <TTSRendererList
+        showCreate={showCreateTTSRenderer}
+        onCreateClose={() => setShowCreateTTSRenderer(false)}
+      />
+    </PanelDetail>
+  );
+
   const renderSearchPanel = () => (
     <PanelDetail title={t('settings.searchConfig')}>
       <SearchConfigForm />
@@ -477,11 +513,13 @@ function App() {
 
   const settingsPanelMap: Record<string, () => React.ReactNode> = {
     agent: renderAgentPanel,
+    'agent-detail': renderAgentDetailPanel,
     kb: renderKBPanel,
     experience: renderExpPanel,
     'kb-detail': renderKBDetailPanel,
     'exp-detail': renderExpDetailPanel,
     llm: renderLLMPanel,
+    tts: renderTTSPanel,
     embedding: renderEmbeddingPanel,
     search: renderSearchPanel,
     custom: renderPersonalizationPanel,

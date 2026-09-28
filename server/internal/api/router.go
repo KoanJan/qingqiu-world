@@ -26,7 +26,6 @@ func SetupRouter(hub realtime.Hub) *gin.Engine {
 
 	r.GET("/", h.Root)
 	r.GET("/api/version", h.GetVersion)
-
 	avatarsDir := config.Get().GetAvatarsDir()
 	os.MkdirAll(avatarsDir, 0755)
 	r.GET("/avatars/:filename", func(c *gin.Context) {
@@ -53,6 +52,26 @@ func SetupRouter(hub realtime.Hub) *gin.Engine {
 			llmConfigs.GET("/:id", h.GetLLMConfig)
 			llmConfigs.PUT("/:id", h.UpdateLLMConfig)
 			llmConfigs.DELETE("/:id", h.DeleteLLMConfig)
+		}
+
+		ttsProviders := api.Group("/tts-providers")
+		{
+			ttsProviders.GET("", h.ListTTSProviders)
+		}
+
+		ttsRenderers := api.Group("/tts-renderers")
+		{
+			ttsRenderers.POST("", h.CreateTTSRenderer)
+			ttsRenderers.GET("", h.ListTTSRenderers)
+			ttsRenderers.GET("/:id", h.GetTTSRenderer)
+			ttsRenderers.PUT("/:id", h.UpdateTTSRenderer)
+			ttsRenderers.DELETE("/:id", h.DeleteTTSRenderer)
+		}
+
+		agentVoices := api.Group("/agent-voices")
+		{
+			agentVoices.GET("/agent/:id", h.GetAgentVoice)
+			agentVoices.PUT("/agent/:id", h.UpsertAgentVoice)
 		}
 
 		embeddingConfig := api.Group("/embedding-config")
@@ -104,6 +123,7 @@ func SetupRouter(hub realtime.Hub) *gin.Engine {
 		messages := api.Group("/messages")
 		{
 			messages.GET("/:id", h.ListMessages)
+			messages.GET("/:id/speech", h.GetMessageSpeech)
 		}
 
 		chat := api.Group("/chat")

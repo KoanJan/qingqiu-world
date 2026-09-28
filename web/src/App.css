@@ -648,6 +648,40 @@
   background: rgba(0, 0, 0, 0.06);
 }
 
+.speech-loading-icon {
+  animation: speech-loading-spin 0.9s linear infinite;
+}
+
+.tts-provider-description {
+  margin: -4px 0 14px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.tts-schema-group {
+  margin: 0 0 12px;
+  padding: 10px 12px 0;
+  border: 1px solid var(--color-border, #e5e7eb);
+  border-radius: 6px;
+}
+
+.tts-schema-group-title {
+  margin-bottom: 8px;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--color-text-secondary);
+}
+
+.tts-terms-note {
+  margin: -4px 0 14px;
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+@keyframes speech-loading-spin {
+  to { transform: rotate(360deg); }
+}
+
 .loading-spinner {
   display: inline-block;
   font-size: 14px;
@@ -1063,6 +1097,76 @@
   display: flex;
   flex-direction: column;
   height: 100%;
+}
+
+/* Agent configuration is a first-level page, not a modal layered on the list. */
+.agent-detail {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+
+.agent-detail-header {
+  margin-bottom: 4px;
+}
+
+.agent-detail-title {
+  font-size: 16px;
+  font-weight: 600;
+  color: var(--color-text-primary);
+}
+
+.agent-detail-tabs.ant-tabs {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.agent-detail-tabs .ant-tabs-content-holder {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.agent-detail-form {
+  max-width: 640px;
+  padding: 12px 0 24px;
+}
+
+.agent-detail-name {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 0 0 24px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.agent-detail-name strong {
+  color: var(--color-text-primary);
+  font-size: 15px;
+}
+
+.agent-voice-status {
+  margin: 0 0 20px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.agent-voice-section-title {
+  margin: 0 0 16px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+/* Mirrors the settings forms: the primary action stays at the form's lower right. */
+.agent-detail-save-action {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 24px;
 }
 
 .kb-detail-header {

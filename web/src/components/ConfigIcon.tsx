@@ -1,6 +1,6 @@
 import React from 'react';
 
-export type IconType = 'user' | 'agent' | 'llm' | 'embedding' | 'search' | 'mail' | 'kb' | 'exp' | 'custom';
+export type IconType = 'user' | 'agent' | 'llm' | 'tts' | 'embedding' | 'search' | 'mail' | 'kb' | 'exp' | 'custom';
 
 /* ===== Clean geometric SVG icons =====
    Simple shapes using currentColor + opacity for theme consistency. */
@@ -38,6 +38,16 @@ const FlatLLMIcon = () => (
     <circle cx="18" cy="3" r=".5" fill="currentColor" opacity=".7" />
     <circle cx="20" cy="21" r=".5" fill="currentColor" opacity=".7" />
     <circle cx="20" cy="8" r=".5" fill="currentColor" opacity=".7" />
+  </svg>
+);
+
+// TTS: compact sound waves, visually distinct from the LLM circuit icon.
+const FlatTTSIcon = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round">
+    <path d="M4 12h2" opacity=".45" />
+    <path d="M9 8v8" opacity=".85" />
+    <path d="M14 5v14" opacity=".7" />
+    <path d="M19 8v8" opacity=".5" />
   </svg>
 );
 
@@ -117,6 +127,7 @@ const ICON_MAP: Record<IconType, IconConfig> = {
   user:    { icon: <FlatUserIcon />,        colorVar: 'var(--color-primary)',    bgVar: 'var(--color-primary-bg)' },
   agent:   { icon: <FlatAgentIcon />,       colorVar: 'var(--color-agent)',      bgVar: 'var(--color-agent-bg)' },
   llm:     { icon: <FlatLLMIcon />,         colorVar: 'var(--color-llm)',        bgVar: 'var(--color-llm-bg)' },
+  tts:     { icon: <FlatTTSIcon />,         colorVar: 'var(--color-agent)',      bgVar: 'var(--color-agent-bg)' },
   embedding:{ icon: <FlatEmbeddingIcon />,  colorVar: 'var(--color-embedding)',  bgVar: 'var(--color-embedding-bg)' },
   search:  { icon: <FlatSearchIcon />,      colorVar: 'var(--color-search)',     bgVar: 'var(--color-search-bg)' },
   mail:    { icon: <FlatMailIcon />,        colorVar: 'var(--color-mail)',       bgVar: 'var(--color-mail-bg)' },

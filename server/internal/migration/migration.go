@@ -84,6 +84,11 @@ var migrations = []migration{
 		description: "Add natural-language applicability notes to knowledge-base relations",
 		fn:          migrate_0_1_15,
 	},
+	{
+		version:     "0.1.17",
+		description: "Add agent voice, TTS renderer, speech history, and message/alarm expression fields",
+		fn:          migrate_0_1_17,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database

@@ -28,8 +28,9 @@ func (r *agentRuntime) handleMessageCommits(ctx context.Context) {
 
 // commitRequest carries the data needed to commit a message.
 type commitRequest struct {
-	sessionID int64
-	content   string
+	sessionID             int64
+	content               string
+	expressionInstruction string
 }
 
 // commitMessage atomically creates a message record and performs all
@@ -45,9 +46,10 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 	defer tx.Rollback()
 
 	msg := &model.Message{
-		SessionID: req.sessionID,
-		PersonID:  r.agentPersonID,
-		Content:   req.content,
+		SessionID:             req.sessionID,
+		PersonID:              r.agentPersonID,
+		Content:               req.content,
+		ExpressionInstruction: req.expressionInstruction,
 	}
 	if err := tx.Create(msg).Error; err != nil {
 		applogger.Error("commitMessage: failed to create message",
@@ -111,7 +113,7 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 	r.notifyOtherAIParticipants(req.sessionID, msg.ID, req.content, eventID)
 
 	// Push message event to SSE clients.
-	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content})
+	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content, ExpressionInstruction: msg.ExpressionInstruction})
 }
 
 // notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to

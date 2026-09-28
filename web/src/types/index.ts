@@ -36,6 +36,7 @@ export interface Message {
   session_id: number;
   person_id: number;
   content: string;
+  expression_instruction: string;
   status: number;
   created_at: string;
   updated_at: string | null;
@@ -50,6 +51,44 @@ export interface LLMConfig {
   description: string;
   created_at: string;
   updated_at: string | null;
+}
+
+/** A provider-declared JSON Schema used to configure a TTS renderer. */
+export interface TTSProviderDefinition {
+  provider: number;
+  name: string;
+  connection_config_json_schema: string;
+  /** Provider-owned terms URL displayed before reference material is sent. */
+  terms_url: string;
+  description: string;
+}
+
+/** A user-configured TTS provider connection. Credentials are write-only. */
+export interface TTSRenderer {
+  id: number;
+  name: string;
+  provider: number;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Editable renderer detail. Provider credentials remain write-only. */
+export interface TTSRendererDetail extends TTSRenderer {
+  connection_config: Record<string, unknown>;
+  configured_secret_fields: string[];
+}
+
+/** One immutable version of an Agent's voice configuration. */
+export interface AgentVoice {
+  id: number;
+  person_id: number;
+  tts_renderer_id: number;
+  sample_audio_filename: string;
+  sample_transcript: string;
+  sample_locale: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface EmbeddingConfig {

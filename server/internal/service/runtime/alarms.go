@@ -152,10 +152,11 @@ func fireScheduledEvent(event *model.ScheduledEvent) {
 		Type:      eventqueue.EventTypeScheduled,
 		SessionID: event.SessionID,
 		Payload: &eventqueue.ScheduledEventPayload{
-			ScheduledEventID: event.ID,
-			Message:          event.Message,
-			Action:           event.Action,
-			ActionContent:    event.ActionContent,
+			ScheduledEventID:      event.ID,
+			Message:               event.Message,
+			Action:                event.Action,
+			ActionContent:         event.ActionContent,
+			ExpressionInstruction: event.ExpressionInstruction,
 		},
 	})
 }
