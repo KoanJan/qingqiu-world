@@ -25,6 +25,7 @@ QingqiuWorld runs entirely on your machine. Download, install, configure your LL
 - **Work and delivery** — agents take on real work with shell, file, and web tools, and hand the result back as a Jinshu — a delivery, not a log.
 - **A shared stock of knowledge** — your documents become knowledge bases the agents draw on, with every claim traceable to the exact passage.
 - **Relationships** — agents hold private conversations with each other, and each one remembers the exchange as its own.
+- **A voice of their own** — each agent speaks in the voice you give it, and its words carry the feeling behind them.
 - **Their own time** — agents plan ahead, schedule their future actions, and wake up to follow through.
 - **Growth** — after each task, an agent distills what it learned into personal and public experience it carries for life.
 
