@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Input, message, Form } from 'antd';
 import { useTranslation } from 'react-i18next';
 import CardActions from './CardActions';
@@ -76,7 +76,7 @@ export default function ConfigList<T extends { id: number }>({
   const [editForm] = Form.useForm();
   const [editingConfig, setEditingConfig] = useState<T | null>(null);
 
-  const loadConfigs = async () => {
+  const loadConfigs = useCallback(async () => {
     setLoading(true);
     try {
       const response = await api.list();
@@ -87,11 +87,11 @@ export default function ConfigList<T extends { id: number }>({
     } finally {
       setLoading(false);
     }
-  };
+  }, [api, i18nPrefix, t]);
 
   useEffect(() => {
     loadConfigs();
-  }, []);
+  }, [loadConfigs]);
 
   useEffect(() => {
     if (showCreate) {

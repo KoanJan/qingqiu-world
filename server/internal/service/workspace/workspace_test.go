@@ -18,6 +18,11 @@ func TestAOSPathsAndLocators(t *testing.T) {
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
 
 	const personID int64 = 17
 	const sessionID int64 = 23
@@ -72,6 +77,11 @@ func TestRemoveWorkspaceIsSessionScoped(t *testing.T) {
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
 
 	const personID int64 = 53
 	InitWorkspace(personID, 1)

@@ -1,9 +1,12 @@
 package sandbox
 
 import (
-	applogger "qingqiu-world-server/internal/logger"
+	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
+
+	applogger "qingqiu-world-server/internal/logger"
 )
 
 // requireWindows skips the test if not running on Windows.
@@ -39,7 +42,8 @@ func TestRunWindows_FallbackExec(t *testing.T) {
 		t.Fatal("expected non-nil *exec.Cmd")
 	}
 	// In current fallback mode, the command should be passed through
-	if cmd.Path != "cmd" {
+	commandName := strings.TrimSuffix(strings.ToLower(filepath.Base(cmd.Path)), strings.ToLower(filepath.Ext(cmd.Path)))
+	if commandName != "cmd" {
 		t.Errorf("expected 'cmd', got %q", cmd.Path)
 	}
 }

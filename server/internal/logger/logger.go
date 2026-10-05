@@ -17,9 +17,15 @@ import (
 
 // L is the global logger instance.
 var globalInstance *slog.Logger
+var logOutput *os.File
 
 // Init initializes the global logger with JSON output to stdout and a daily log file.
 func Init() {
+	if logOutput != nil {
+		_ = logOutput.Close()
+		logOutput = nil
+	}
+
 	settings := config.Get()
 
 	logDir := settings.LogDir
@@ -34,6 +40,7 @@ func Init() {
 		globalInstance = slog.Default()
 		return
 	}
+	logOutput = f
 
 	var (
 		level     slog.Level
@@ -77,6 +84,17 @@ func Init() {
 	Error = globalInstance.Error
 
 	slog.SetDefault(globalInstance)
+}
+
+// Close releases the active log file. It is safe to call when file logging was
+// not initialized or has already been closed.
+func Close() error {
+	if logOutput == nil {
+		return nil
+	}
+	err := logOutput.Close()
+	logOutput = nil
+	return err
 }
 
 type multiHandler struct {

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Modal, Form, Input, message, Tag } from 'antd';
 import { useTranslation } from 'react-i18next';
 import CardActions from './CardActions';
@@ -30,21 +30,21 @@ const KnowledgeBaseList: React.FC<KnowledgeBaseListProps> = ({ onSelectKB, showC
   const [form] = Form.useForm();
   const [editForm] = Form.useForm();
 
-  const loadKBs = async () => {
+  const loadKBs = useCallback(async () => {
     setLoading(true);
     try {
       const response = await kbApi.list();
       setKBs(response.data);
-    } catch (error) {
+    } catch {
       message.error(t('messages.loadFailed'));
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     loadKBs();
-  }, []);
+  }, [loadKBs]);
 
   useEffect(() => {
     if (showCreate) {

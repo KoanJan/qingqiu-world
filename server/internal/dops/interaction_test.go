@@ -16,7 +16,21 @@ func TestListActivityInteractions(t *testing.T) {
 	t.Setenv("DATA_ROOT", tempRoot)
 	t.Setenv("LOG_DIR", filepath.Join(tempRoot, "logs"))
 	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
 	database.Init()
+	sqlDB, err := database.DB.DB()
+	if err != nil {
+		t.Fatalf("get database connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
 
 	work := model.Work{PersonID: 1, SessionID: 1, Description: "Activity pagination"}
 	if err := database.DB.Create(&work).Error; err != nil {

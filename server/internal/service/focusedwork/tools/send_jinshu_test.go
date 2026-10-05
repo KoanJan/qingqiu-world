@@ -29,7 +29,21 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 
 	// Initialize logger and DB
 	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
 	database.Init()
+	sqlDB, err := database.DB.DB()
+	if err != nil {
+		t.Fatalf("get database connection: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := sqlDB.Close(); err != nil {
+			t.Errorf("close database: %v", err)
+		}
+	})
 
 	// Create test persons — Bob (sender) and Alice (recipient).
 	bobPerson := model.Person{Name: "Bob", Type: model.PersonTypeAI}

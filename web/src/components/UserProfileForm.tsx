@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Form, Input, Button, message, Spin } from 'antd';
 import { SaveOutlined, ArrowRightOutlined, ArrowLeftOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -17,17 +17,7 @@ const UserProfileForm: React.FC<{ onCreated?: () => void; welcome?: boolean }> =
   const [enteredName, setEnteredName] = useState('');
   const [dirty, setDirty] = useState(false);
 
-  useEffect(() => {
-    // In welcome mode, App.tsx already confirmed no profile exists — skip redundant fetch.
-    if (welcome) {
-      setProfile(null);
-      setLoading(false);
-      return;
-    }
-    loadProfile();
-  }, []);
-
-  const loadProfile = async () => {
+  const loadProfile = useCallback(async () => {
     setLoading(true);
     try {
       const response = await userProfileApi.get();
@@ -44,7 +34,17 @@ const UserProfileForm: React.FC<{ onCreated?: () => void; welcome?: boolean }> =
     } finally {
       setLoading(false);
     }
-  };
+  }, [form, t]);
+
+  useEffect(() => {
+    // In welcome mode, App.tsx already confirmed no profile exists — skip redundant fetch.
+    if (welcome) {
+      setProfile(null);
+      setLoading(false);
+      return;
+    }
+    void loadProfile();
+  }, [loadProfile, welcome]);
 
   const handleSave = async (name: string, bio?: string) => {
     setSaving(true);

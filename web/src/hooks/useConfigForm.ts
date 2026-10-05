@@ -44,7 +44,9 @@ export function useConfigForm<T>(opts: UseConfigFormOptions<T>): UseConfigFormRe
   const [dirty, setDirty] = useState(false);
   const [config, setConfig] = useState<T | null>(null);
   const optsRef = useRef(opts);
-  optsRef.current = opts;
+  useEffect(() => {
+    optsRef.current = opts;
+  }, [opts]);
 
   const markDirty = useCallback(() => setDirty(true), []);
 

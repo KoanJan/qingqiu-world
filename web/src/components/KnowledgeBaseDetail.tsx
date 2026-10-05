@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Button, Upload, Tag, message, Empty, Slider, Tooltip, Tabs } from 'antd';
 import { UploadOutlined, FileTextOutlined, EditOutlined, CheckOutlined, CloseOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -64,7 +64,7 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
   /**
    * Loads the document list for the current knowledge base.
    */
-  const loadDocuments = async () => {
+  const loadDocuments = useCallback(async () => {
     setLoading(true);
     try {
       const response = await kbApi.listDocuments(kb.id);
@@ -75,12 +75,12 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
     } finally {
       setLoading(false);
     }
-  };
+  }, [kb.id, t]);
 
   /**
    * Loads the authorized agent list for the current knowledge base.
    */
-  const loadAccess = async () => {
+  const loadAccess = useCallback(async () => {
     try {
       const response = await kbApi.listAccess(kb.id);
       setAccessList(response.data);
@@ -88,19 +88,19 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
       logger.error('Failed to load KB access list:', error);
       message.error(t('messages.loadFailed'));
     }
-  };
+  }, [kb.id, t]);
 
   /**
    * Loads all agents as the candidates for access editing.
    */
-  const loadAgents = async () => {
+  const loadAgents = useCallback(async () => {
     try {
       const response = await agentApi.list();
       setAgents(response.data);
     } catch (error) {
       logger.error('Failed to load agents:', error);
     }
-  };
+  }, []);
 
   useEffect(() => {
     loadDocuments();
@@ -109,7 +109,7 @@ const KnowledgeBaseDetail: React.FC<KnowledgeBaseDetailProps> = ({ kb }) => {
     // Leave access editing mode and drop the draft when switching KBs.
     setEditingAccess(false);
     setDraftIds(new Set());
-  }, [kb.id]);
+  }, [kb.id, loadAccess, loadAgents, loadDocuments]);
 
   /**
    * Handles document upload with file type validation.

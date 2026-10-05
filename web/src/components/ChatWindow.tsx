@@ -158,7 +158,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
       }
     };
     load();
-  }, [session?.id, session?.agent_id]);
+  }, [currentAgent, isTempSession, session]);
 
   // Load agent
   useEffect(() => {
