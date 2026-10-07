@@ -1,12 +1,10 @@
 package chat
 
 import (
-	"context"
 	"testing"
-
-	"qingqiu-world-server/internal/model"
 )
 
+// TestNewChatResultRequiresExpressionInstruction rejects an empty speech cue.
 func TestNewChatResultRequiresExpressionInstruction(t *testing.T) {
 	if _, err := newChatResult(structuredChatResponse{
 		Content:               "I understand.",
@@ -24,19 +22,5 @@ func TestNewChatResultRequiresExpressionInstruction(t *testing.T) {
 	}
 	if result.ExpressionInstruction != "Speak gently and reassuringly." {
 		t.Fatalf("expression instruction = %q", result.ExpressionInstruction)
-	}
-}
-
-func TestAssembleContextHonorsClarificationBeforeWindowBranch(t *testing.T) {
-	p := &pipeline{
-		session:            &model.Session{ID: 42},
-		messageCount:       1,
-		windowSize:         50,
-		needsClarification: true,
-		clarification:      "Which date should I use?",
-	}
-	messages, content, earlyReturn := p.assembleContext(context.Background())
-	if !earlyReturn || content != p.clarification || messages != nil {
-		t.Fatalf("clarification was not returned before simple context: early=%v content=%q messages=%v", earlyReturn, content, messages)
 	}
 }

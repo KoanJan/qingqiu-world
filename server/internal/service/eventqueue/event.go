@@ -61,7 +61,7 @@ type AgentEvent struct {
 	Payload   any // Type depends on the event type
 	Type      AgentEventType
 	SessionID int64
-	EventID   int64 // Memory system event record ID (0 if no memory event)
+	EventID   int64 // Durable Event ID for every Decide input; control-only events may use 0.
 
 	// TriggerAction carries the originating Action's cognitive context when
 	// this event was produced by the agent's own Decide output. It is nil for
@@ -103,6 +103,9 @@ func (e AgentEvent) FormatDescription() string {
 		p, ok := e.Payload.(*WorkCompletedPayload)
 		if !ok || p == nil {
 			return "[Work completed]"
+		}
+		if p.CancelActionID > 0 {
+			return fmt.Sprintf("[Work stopped after cancellation] %s (status: %s). The earlier work request was stopped: %s", p.Guidance, p.Status, p.CancelReason)
 		}
 		return fmt.Sprintf("[Work completed] %s (status: %s)", p.Guidance, p.Status)
 	case EventTypeBiography:
@@ -247,11 +250,13 @@ type ScheduledEventPayload struct {
 // The originating Action's provenance is carried by AgentEvent.TriggerAction,
 // not this payload.
 type WorkCompletedPayload struct {
-	WorkID     int64  // ID of the completed work
-	Guidance   string // The original guidance (execution intent) of the work
-	Status     string // "success" or "failure"
-	WorkOutput string // Focused-work output (for successful focused work)
-	WorkError  string // Focused-work error (for failed focused work)
+	WorkID         int64  // ID of the completed work
+	Guidance       string // The original guidance (execution intent) of the work
+	Status         string // "success", "failure", or "abandoned"
+	WorkOutput     string // Focused-work output (for successful focused work)
+	WorkError      string // Focused-work error (for failed focused work)
+	CancelActionID int64  // Explicit Cancel Action that stopped this Work, or zero
+	CancelReason   string // Why the Cancel Action stopped this Work, or empty
 }
 
 // PSCompletedPayload is the payload type for EventTypePSCompleted events.

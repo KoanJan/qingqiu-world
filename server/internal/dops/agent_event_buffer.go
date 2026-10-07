@@ -21,6 +21,15 @@ func ListAgentEventBuffers(personID int64) ([]model.AgentEventBuffer, error) {
 	return buffers, err
 }
 
+// HasAgentEventBuffer reports whether a durable event is already awaiting replay.
+func HasAgentEventBuffer(personID, eventID int64) (bool, error) {
+	var count int64
+	err := database.DB.Model(&model.AgentEventBuffer{}).
+		Where("person_id = ? AND event_id = ?", personID, eventID).
+		Count(&count).Error
+	return count > 0, err
+}
+
 // DeleteAgentEventBuffer removes a processed or invalid buffered event.
 func DeleteAgentEventBuffer(id int64) error {
 	return database.DB.Delete(&model.AgentEventBuffer{}, id).Error

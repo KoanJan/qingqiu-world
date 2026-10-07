@@ -13,6 +13,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -311,12 +312,26 @@ func (cm *ChatModel) ChatStream(ctx context.Context, messages []Message) (*strea
 // This is the Go equivalent of the former Python focused-work client invocation, using the OpenAI Tools API.
 // (not the deprecated Functions API) for proper tool_calls support.
 func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
+	return cm.chatWithTools(ctx, messages, toolDefs, nil, nil)
+}
+
+// ChatWithRequiredTools requires a tool call when the caller's protocol has
+// no free-text continuation. It also requests one call per model response.
+func (cm *ChatModel) ChatWithRequiredTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
+	return cm.chatWithTools(ctx, messages, toolDefs, "required", false)
+}
+
+// chatWithTools sends the shared tool-call request. The public wrappers set
+// toolChoice and parallelToolCalls for their respective loop protocols.
+func (cm *ChatModel) chatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition, toolChoice, parallelToolCalls any) (ToolResponse, error) {
 	logMessages(messages)
 
 	req := openai.ChatCompletionRequest{
-		Model:    cm.modelID,
-		Messages: toOpenAIMessages(messages),
-		Tools:    toOpenAIToolDefs(toolDefs),
+		Model:             cm.modelID,
+		Messages:          toOpenAIMessages(messages),
+		Tools:             toOpenAIToolDefs(toolDefs),
+		ToolChoice:        toolChoice,
+		ParallelToolCalls: parallelToolCalls,
 	}
 
 	if cm.temperature > 0 {
@@ -328,6 +343,10 @@ func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, tool
 	latencyMs := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			applogger.Info("llm call with tools canceled", "model", cm.modelID, "latency_ms", latencyMs)
+			return ToolResponse{}, fmt.Errorf("chat completion with tools canceled: %w", err)
+		}
 		applogger.Error("llm call with tools failed", "model", cm.modelID, "latency_ms", latencyMs, "error", err)
 		return ToolResponse{}, fmt.Errorf("chat completion with tools failed: %w", err)
 	}

@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.18] - 2026-10-08
+
+### Added
+- **Broader Agent Recall**: Agents can look up past conversations, their own actions, focused work, and sent or received Jinshu when deciding how to respond to a new situation.
+
+### Changed
+- **Better Conversation Continuity**: Agents receive more context about messages they previously sent and actions still in progress, helping them handle follow-up messages without losing track of what they have already said or started.
+- **More Natural Clarification**: Agents can continue casual conversation, jokes, and other exchanges without treating every ambiguity as a request for confirmation; they ask for details when those details matter to the next action.
+- **Chat and Written Deliveries**: Agents are guided to use chat for conversation and Jinshu for substantial written material, and to distinguish a planned delivery from one that has actually been sent.
+- **Grounded Replies**: The same world rules now guide both agents' decisions and their spoken replies, giving them a clearer basis for describing shared history and experiences.
+
+### Fixed
+- **Stopping Focused Work**: A request to stop active focused work now interrupts its running process instead of only changing the work's recorded status.
+- **Incoming Messages During Replies**: An agent sending its own message no longer marks earlier incoming messages as handled before the agent has processed them.
+
 ## [0.1.17] - 2026-09-29
 
 ### Added

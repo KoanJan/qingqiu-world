@@ -126,6 +126,25 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 			WHERE ps.participant_id = ?`, personID).Pluck("session_id", &sessionIDs).Error; err != nil {
 			return fmt.Errorf("pluck sessions via participant_sessions: %w", err)
 		}
+		if err := deleteSessionReferencesTx(tx, sessionIDs); err != nil {
+			return fmt.Errorf("delete session references: %w", err)
+		}
+		for _, source := range []struct {
+			eventType model.EventType
+			table     string
+		}{
+			{model.EventTypeBiography, "agent_biographies"},
+			{model.EventTypePSDigest, "ps_digests"},
+			{model.EventTypeScheduled, "scheduled_events"},
+			{model.EventTypeWorkCompleted, "works"},
+		} {
+			if err := deleteSourceEventsTx(tx, source.eventType, source.table, "person_id = ?", personID); err != nil {
+				return fmt.Errorf("delete agent event references: %w", err)
+			}
+		}
+		if err := deleteDecisionsTx(tx, "person_id = ?", personID); err != nil {
+			return fmt.Errorf("delete agent decisions: %w", err)
+		}
 
 		if len(sessionIDs) > 0 {
 			var messageIDs []int64
@@ -159,6 +178,21 @@ func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
 
 		// Agent-level memory and cognition — now keyed by person_id.
 		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentObservation{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentEventBuffer{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.PSDigest{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.ScheduledEvent{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("person_id = ?", personID).Delete(&model.Work{}).Error; err != nil {
+			return err
+		}
+		if err := tx.Where("owner_person_id = ?", personID).Delete(&model.MemoryTerm{}).Error; err != nil {
 			return err
 		}
 		if err := tx.Where("person_id = ?", personID).Delete(&model.EntityProfile{}).Error; err != nil {

@@ -57,36 +57,32 @@ type Comprehension struct {
 //
 // Comprehend only collects information — it does not make judgments.
 type ChatComprehension struct {
+	// ReadMessageRange is the accepted message-ID interval for this batch.
 	ReadMessageRange [2]int64
-	HistorySearch    *HistorySearch
-	KBRetrieval      *KBRetrieval
-
-	// NeedsClarification indicates the query is too vague and needs
-	// a clarification question before proceeding.
-	NeedsClarification bool
-
-	// Clarification contains the generated clarification question
-	// when NeedsClarification is true.
-	Clarification string
-	// ClarificationExpressionInstruction is the clarification LLM's own
-	// decision about how its question should be expressed in speech.
-	ClarificationExpressionInstruction string
+	// ReadMessageIDs is the exact batch used in this comprehension, not an
+	// inferred continuous range in the global message ID sequence.
+	ReadMessageIDs []int64
+	// HistorySearch carries lexical hints, not pre-read chat history.
+	HistorySearch *HistorySearch
+	// KBRetrieval carries independent knowledge-base lookup context.
+	KBRetrieval *KBRetrieval
 
 	// PersonState holds the inferred state of the other party
 	// (emotion, purpose, situation).
 	PersonState *PersonState
 
-	// ActiveWorksSummary is a natural language description of the agent's
-	// currently running works. This gives the Comprehend phase self-awareness:
-	// when the user says "change the approach" or "stop", the agent knows
-	// what it is currently doing and can understand the reference.
-	ActiveWorksSummary string
+	// Narrative is the cached background of this conversation, when available.
+	// It is an interpretation of older messages, not a record of recent speech.
+	Narrative string
+	// RecentMessages preserves observed speech in this conversation so Decide
+	// can resolve references that the current message alone cannot identify.
+	RecentMessages []ConversationMessage
 }
 
-// HistorySearch describes a completed keyword search over conversation history.
+// HistorySearch carries lexical hints to Chat after its target session is known.
 type HistorySearch struct {
+	// Keywords are applied only after Chat chooses its target session.
 	Keywords []string
-	Segments []Segment
 }
 
 // KBRetrieval describes a KB investigation suggested during comprehension.
@@ -100,10 +96,24 @@ type KBRetrieval struct {
 
 // ConversationMessage is a domain-level message used during comprehension.
 type ConversationMessage struct {
+	ID         int64
 	PersonID   int64
 	PersonName string
 	Content    string
 	CreatedAt  time.Time
+	// OwnAction is the agent's recorded intention when it sent this message.
+	// It is absent for other people's messages and for legacy messages without
+	// a recorded Chat action.
+	OwnAction *MessageActionContext
+}
+
+// MessageActionContext describes the agent's own action at the time of speech.
+// It is historical context, not a current instruction or a claim about how
+// the other person interpreted the message.
+type MessageActionContext struct {
+	Background string
+	Reason     string
+	Guidance   string
 }
 
 // SessionInfo holds session-level parameters needed for comprehension.
@@ -154,18 +164,46 @@ type Segment struct {
 //
 // Three-dimensional model:
 //   - Emotion: person's current emotional state (affects response tone)
-//   - Purpose: person's current conversational goal (affects response content direction)
+//   - Purpose: a coarse guess about the latest message's conversational goal
 //   - Situation: person's physical context (affects response constraints)
-//
-// Intent type is implicitly derived from purpose + situation, not modeled separately.
 //
 // Field descriptions serve dual purpose:
 //  1. Guide LLM structured output generation
 //  2. Provide natural language fragments for prompt template assembly
 type PersonState struct {
-	Emotion   string `json:"emotion" jsonschema:"description=The person's current emotional state: calm for relaxed or neutral, anxious for worried or uneasy, frustrated for annoyed or impatient (e.g. repeated failed attempts), urgent for time-pressured or emergency, curious for inquisitive or exploratory,enum=calm,enum=anxious,enum=frustrated,enum=urgent,enum=curious,required"`
-	Purpose   string `json:"purpose" jsonschema:"description=The person's current conversational goal: seek_help for needing a solution or fix, seek_advice for wanting recommendations or guidance, seek_confirmation for validating a decision or understanding, express_feeling for sharing emotions without expecting solutions, casual_chat for social or non-goal-oriented conversation,enum=seek_help,enum=seek_advice,enum=seek_confirmation,enum=express_feeling,enum=casual_chat,required"`
-	Situation string `json:"situation" jsonschema:"description=Brief natural language description of the person's physical context if inferable from the conversation, such as time of day, device, environment, or activity. Use unknown if not inferable. Examples: at work on desktop, late evening on mobile, in a meeting, commuting,required"`
+	Emotion   string        `json:"emotion" jsonschema:"description=The person's current emotional state: calm for relaxed or neutral, anxious for worried or uneasy, frustrated for annoyed or impatient (e.g. repeated failed attempts), urgent for time-pressured or emergency, curious for inquisitive or exploratory,enum=calm,enum=anxious,enum=frustrated,enum=urgent,enum=curious,required"`
+	Purpose   PersonPurpose `json:"purpose" jsonschema:"description=Coarse purpose of the other person's latest message: 0 for other or unclear (including acknowledgments and closings without a new request); 1 for an explicit request for information or action (including advice or validation); 2 for expressing feelings without requesting a solution; 3 for social or non-goal-oriented chat. Do not force messages into a specific category.,enum=0,enum=1,enum=2,enum=3,required"`
+	Situation string        `json:"situation" jsonschema:"description=Brief natural language description of the person's physical context if inferable from the conversation, such as time of day, device, environment, or activity. Use unknown if not inferable. Examples: at work on desktop, late evening on mobile, in a meeting, commuting,required"`
+}
+
+// PersonPurpose is a coarse conversational cue, not a required reply policy.
+// Other is the zero value so absent or unclear purpose adds no prompt claim.
+type PersonPurpose int
+
+const (
+	PersonPurposeOther PersonPurpose = iota
+	PersonPurposeRequest
+	PersonPurposeExpressFeeling
+	PersonPurposeCasualChat
+)
+
+// Description returns a prompt-ready cue only when the category adds information.
+func (purpose PersonPurpose) Description() string {
+	switch purpose {
+	case PersonPurposeRequest:
+		return "requesting information or action"
+	case PersonPurposeExpressFeeling:
+		return "expressing feelings without requesting a solution"
+	case PersonPurposeCasualChat:
+		return "engaging in casual conversation"
+	default:
+		return ""
+	}
+}
+
+// Valid reports whether a purpose belongs to the LLM output contract.
+func (purpose PersonPurpose) Valid() bool {
+	return purpose >= PersonPurposeOther && purpose <= PersonPurposeCasualChat
 }
 
 // emotionDescriptions maps emotion codes to natural language descriptions.
@@ -177,15 +215,6 @@ var emotionDescriptions = map[string]string{
 	"curious":    "curious and exploratory",
 }
 
-// purposeDescriptions maps purpose codes to natural language descriptions.
-var purposeDescriptions = map[string]string{
-	"seek_help":         "seeking help with a problem",
-	"seek_advice":       "looking for advice or recommendations",
-	"seek_confirmation": "seeking confirmation or validation",
-	"express_feeling":   "expressing feelings without expecting solutions",
-	"casual_chat":       "engaging in casual conversation",
-}
-
 // ToNaturalLanguage converts the structured person state into a natural language description
 // suitable for injection into the prompt's instruction area.
 // personName is the actual name of the person (empty = no profile set).
@@ -194,19 +223,16 @@ func (ps *PersonState) ToNaturalLanguage(personName string) string {
 	if desc, ok := emotionDescriptions[ps.Emotion]; ok {
 		emotionDesc = desc
 	}
-	purposeDesc := ps.Purpose
-	if desc, ok := purposeDescriptions[ps.Purpose]; ok {
-		purposeDesc = desc
-	}
-
 	subject := personName
 
 	parts := []string{
 		fmt.Sprintf("%s appears %s", subject, emotionDesc),
-		fmt.Sprintf("is %s", purposeDesc),
+	}
+	if purposeDesc := ps.Purpose.Description(); purposeDesc != "" {
+		parts = append(parts, "is "+purposeDesc)
 	}
 	if ps.Situation != "" && ps.Situation != "unknown" {
-		parts = append(parts, fmt.Sprintf("and is likely %s", ps.Situation))
+		parts = append(parts, fmt.Sprintf("is likely %s", ps.Situation))
 	}
 
 	return strings.Join(parts, ", ") + "."

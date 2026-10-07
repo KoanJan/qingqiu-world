@@ -1,14 +1,14 @@
 # Memory System: Forgetting, Retrieval, and Narrative Understanding
 
-How we design a long-term memory system for LLM-based agents — a system that, by default, remembers nothing, and only retains what repeated use demands.
+How we design long-term memory for LLM-based agents: durable records of experienced events, use-dependent prominence, and deliberate recall when a decision needs history.
 
 ---
 
 ## The Problem
 
-An LLM-based agent can only know what is placed in its prompt. A chat session's conversation history is a finite resource — the earlier messages are compressed into summaries, the later ones held verbatim; everything sits in a single prompt window. When a session ends, the window closes. If the agent interacts with the same user in a new session, it starts fresh — no recollection of prior conversations, no accumulated understanding of the person, no memory of its own previous actions.
+An LLM-based agent can only use what is placed in its prompt or returned by an available tool. A chat session's conversation history is a finite resource — the earlier messages may be compressed into summaries, the later ones held verbatim. When a session ends, that prompt window closes. Without persistent memory and a way to recall it, a later session cannot carry forward prior conversations, impressions, or the agent's previous actions.
 
-The same applies within a session: the agent processes one message at a time. Each API call is a new instance with no shared state. Without explicit memory infrastructure, the agent cannot deliberately recall relevant past events when forming a response — it must rely entirely on whatever context the framing layer happens to provide.
+The same applies within a session: each model call has no implicit shared state. The runtime can comprehend a bounded batch of unread messages together, but without explicit memory infrastructure the model must rely on whatever context the framing layer happens to provide.
 
 This is not just a recall problem. It is a knowledge integration problem. The agent produces observations every time it processes a message — not for the user (the reply handles that), but for itself. These observations constitute its experience. Without memory, the agent throws away its experience after each invocation.
 
@@ -26,45 +26,45 @@ The intuitive approach to machine memory is preservation: record everything, the
 
 **Second, indiscriminate preservation overfits to the past.** An agent that remembers every interaction treats its entire history as equally relevant to the present. But past conversations reflect past contexts — moods, tasks, environments that may no longer apply. A memory that cannot fade is a memory that cannot adapt.
 
-The alternative: **a forgetting-first model.** By default, nothing is remembered. Retention is use-driven:
+The alternative: **a forgetting-first model of prominence, not deletion.** Durable sources remain available, while their prominence in reflection is use-driven:
 
-- Every new event is mechanically recorded as an observation — a passive trace, not an active memory.
-- Only when an observation is *retrieved and used* (i.e., injected into a prompt to assist a response) does it begin to accumulate importance.
-- Importance is the sole measure of retention value. It rises on use and decays continuously with disuse — every observation fades a little each day, but actively retrieved ones can outpace the decay through retrieval boosts.
-- Observations that are never retrieved drift asymptotically toward zero — slow enough to avoid premature loss, but inexorable enough to ensure genuinely unused content fades.
+- An Event records an occurrence; an AgentObservation records that this particular agent encountered it. Mere membership in a conversation does not create an observation of every message.
+- An observed historical message selected for Chat's longer context can gain importance. Decide's read-only recall does not currently provide this feedback.
+- Importance is a use-dependent prominence signal for evidence selected during EntityProfile reflection, not a truth score or a prerequisite for historical recall.
+- Unreinforced observations fade in prominence, but their rows and source Events are not deleted by decay.
 
 This model is grounded in two well-established cognitive phenomena. **Use-dependent retention** (Anderson & Schooler, 1991) demonstrates that human memory strength follows the pattern of environmental demand — items needed more frequently are retained better, and the retention function closely tracks actual usage probability. **Forgetting as adaptive regulation** (Bjork & Bjork, 1992) reframes forgetting not as a failure of recall but as a functional mechanism: by reducing interference from outdated information, forgetting improves retrieval of currently relevant content. An agent that remembers a user's obsolete preferences is worse at serving their current needs than an agent that has let those preferences fade.
 
-An important distinction: this is **not** recency-only decay. Pure recency-based forgetting (e.g., simple exponential decay) assumes time alone determines relevance — older items fade regardless of their importance. Use-dependent retention preserves items that are repeatedly accessed even if they are old. A core user preference revealed months ago and referenced frequently stays strong; a transient chat from last week disappears without reinforcement. The system forgets *what is not used*, not *what is old*.
+An important distinction: this is **not** recency-only ranking. Time-based decay lowers every active importance value, while qualifying use can raise it again. A repeatedly reused older observation can therefore remain prominent in EntityProfile evidence selection. An unreinforced recent one can sink in that ordering. Neither outcome deletes the historical source or establishes whether a user's stated preference is still true.
 
 ### The Two-Way Relationship with Retrieval
 
-In most memory systems, retrieval reads and storage writes. They are separate phases with a unidirectional flow. In our design, retrieval is also a write operation: every retrieval hit modifies the memory it touches.
+In many memory systems, retrieval reads and storage writes are separate. Qingqiu has one feedback path between them: when Chat selects historical message segments for its longer context, `OnRetrievalHit` updates existing observations for those messages before final assembly. Decide's `recall_*` tools remain read-only; simply finding a candidate does not strengthen it.
 
-When an observation is retrieved and injected into the agent's context:
+For an eligible observation on that Chat path:
 
 ```
 importance += α × (1 - importance)         # asymptote toward 1.0
 last_accessed_at = NOW()
 ```
 
-The importance update follows an asymptotic curve: the first hit moves it from 0.5 to 0.55, the next to 0.595, then 0.6355 — each successive hit contributes less. This saturating gain means no observation can reach 1.0 from hits alone, and the first few retrievals carry the most information about what deserves retention.
+The importance update uses α = 0.1 and a ten-minute scoring cooldown. Consecutive qualifying hits move importance from 0.5 to 0.55, then 0.595, then 0.6355 — each successive hit contributes less. A hit inside the cooldown updates `last_accessed_at` but does not raise importance. This saturating gain means direct hits alone approach 1.0 asymptotically; propagation can also affect the score.
 
-Retrieval also triggers **relevance propagation**: a fraction of the importance gain spreads to related observations — those temporally adjacent in the conversation, those semantically similar (cosine > 0.8), and those in the same session. Propagation is one-way (increase only) and independently applies anti-hot cooldowns to prevent feedback loops. This captures a subtler aspect of use-dependent retention: retrieving one memory often reactivates associated memories, a process with empirical support in the spreading activation literature (Collins & Loftus, 1975).
+A qualifying positive gain also triggers **relevance propagation** within that agent's observed messages in the same session: a fraction spreads to temporal neighbors, vector-similar observations when vectors exist (cosine > 0.8), and other messages in the session. Propagation is one-way (increase only), applies its own cooldown, and does not prove that the related messages express the same fact. This borrows the idea of spreading activation (Collins & Loftus, 1975) as a design analogy, not as validation of these particular weights.
 
 ### Importance as Retention Signal
 
-The `importance` field serves as the system's sole retention signal. An observation starts at importance=0.5. When retrieved or reached by relevance propagation, importance rises above 0.5 — this increment is the system's behavioral signal that the observation matters.
+The `importance` field is the observation's use-dependent prominence signal. An observation starts at importance=0.5. A qualifying Chat history hit or association can raise it; decay can later bring it below 0.5. The score does not determine whether the Event happened or whether it may be recalled.
 
-**Decay**: Every 24 hours, all active observations undergo multiplicative decay: `importance *= 0.98`. This is a continuous, uniform process — no binary gates, no special conditions. An observation at 0.85 decays to ~0.48 after 30 days without reinforcement. One at 0.55 (retrieved once) drops to ~0.50 after 5 days and ~0.30 after 30 days. A never-retrieved observation at 0.50 drops to ~0.27 after 30 days.
+**Decay**: Each maintenance pass multiplies values above 1e-6 by 0.98. Without reinforcement, an observation at 0.85 reaches ~0.46 after 30 passes; 0.55 reaches ~0.50 after five and ~0.30 after 30; 0.50 reaches ~0.27 after 30. The worker runs once at startup and then every 24 hours while running. It does not persist a last-decay date, so frequent restarts can cause more than one pass in a day.
 
-**Boost outpaces decay for active content**: An observation retrieved roughly once every 5 days will hover around steady state, because a single boost (+0.05 at 0.5) roughly compensates 5 days of decay (×0.98^5 ≈ ×0.904, i.e., ~5% loss from 0.5). More frequent retrievals drive importance upward despite decay. Observations that are never retrieved drift toward zero asymptotically — slow enough to avoid premature loss of potentially relevant content (30+ days before a 0.5 observation falls below 0.3), but inexorable enough that genuinely unused content eventually vanishes from retrieval results.
+**Boost can counter decay for active content**: Around importance 0.5, one qualifying hit adds ~0.05, roughly offsetting five maintenance passes (×0.98^5 ≈ ×0.904). This is an illustrative trajectory, not a guarantee about real usage or a fixed daily schedule. Unused observations approach the practical floor over many passes, but do not disappear from Decide recall merely because their importance fell.
 
 **Relevance propagation also counters decay**: An observation that received a propagated delta can have importance > 0.5 even without direct retrieval. The propagation path provides a second defense against decay — semantically or temporally related observations are protected by association.
 
-**The continuous nature matters**: Continuous decay means every observation is slowly losing strength. Once-useful but now-obsolete content will eventually fade, regardless of whether it was retrieved in the distant past. The system has genuine forgetting, not just a one-time filter.
+**The continuous nature matters**: Repeated decay means once-useful but now-unreinforced evidence can lose prominence in reflection. This is a soft ordering signal, not a binary gate on historical sources.
 
-Note that decay is multiplicative, so importance never reaches exactly zero (barring floating-point underflow after thousands of days). Observations with importance below a practical floor (≤ 1e-6) are excluded from daily decay updates and from the retrieval set via the `importance > 0` filter — they have been effectively forgotten.
+Decay is multiplicative, so importance does not normally reach exactly zero. Observations at or below 1e-6 are skipped by maintenance. The 0.1.18 recall tools do not use an `importance > 0` filter: the Event remains available under its normal access and Observation checks.
 
 ### Memory vs. Notes: Orthogonal Permanence Mechanisms
 
@@ -75,12 +75,12 @@ This system operates alongside the existing notes mechanism (task-execution-leve
 | **Scope** | Single task execution | Cross-session, agent-wide |
 | **Purpose** | Task continuity (what-to-do-next) | Experience accumulation (what-I've-seen) |
 | **Writer** | Agent during task execution (deliberate) | System (mechanical recording) |
-| **Reader** | Next LLM instance in the same task | Retrieval engine during context assembly |
-| **Lifetime** | One task; discarded on completion | Potentially indefinite, decay-driven |
+| **Reader** | Next LLM instance in the same task | Chat context assembly or Decide recall, subject to access checks |
+| **Lifetime** | One task; discarded on completion | Durable record; prominence may decay |
 | **Content** | Deliberate reasoning, decisions, progress | Raw event content, loaded on demand |
-| **Selection** | Agent chooses what to write | System records everything; retrieval selects |
+| **Selection** | Agent chooses what to write | System records encountered Events; authorized recall selects sources |
 
-Notes are a communication channel across instances of the same task — a deliberate, agent-controlled artifact. Memory is a passive, system-controlled record that the agent may draw from but does not directly manage. The agent writes notes to its future self within a task; the system builds memory from the agent's experience across all tasks.
+Notes are a communication channel across instances of the same task — a deliberate, agent-controlled artifact. Observations are passive, system-controlled records of encountered Events; Decide can deliberately inspect permitted history but does not edit the records by recalling them. The agent writes notes to its future self within a task; the system builds memory from the agent's experience across tasks.
 
 ---
 
@@ -96,82 +96,68 @@ Layer 1 (Observation): Mechanical recording of events
 Layer 2 (EntityProfile): LLM-generated reflection on accumulated observations
 ```
 
-**Layer 1 — Observation** is fully automated and zero-LLM. When a message is created (user or agent), the system:
-1. Creates an `Event` record (event_type=message, ref_id=message_id)
-2. Generates an embedding vector for the message content (via the configured embedding service) and stores it as an `EventVector`
-3. Creates an `AgentObservation` for each agent participating in the message's session, with default scores (importance=0.5)
+**Layer 1 — Observation** is fully automated and zero-LLM:
+1. A message is committed with a corresponding `Event` record (`event_type=message`, `ref_id=message_id`). Embedding generation for the Event is queued separately when configured; it is not required for the Event or Observation to exist.
+2. For incoming chat, Comprehend reports the exact message IDs it read. The runtime then creates this agent's Observations for those message Events and the triggering Event. A buffered, unread message does not become an experience solely because it was stored.
+3. For the agent's own outgoing message, its Observation is committed with the Message and Event. Other event types gain an Observation when that agent actually processes them through Comprehend.
 
-This mechanical recording ensures nothing is lost before it can be evaluated. The observation contains no content — event content is loaded on demand via `event_id → events → (event_type, ref_id) → originating table`. This separation keeps the observation table lightweight and avoids content duplication.
+The observation contains no content — event content is loaded on demand via `event_id → events → (event_type, ref_id) → originating table`. This separation keeps the observation table lightweight and avoids content duplication. An Event records occurrence, not the truth of claims made in a message; an Observation records encounter, not agreement or complete understanding.
 
 **Layer 2 — EntityProfile** is LLM-driven and triggered by density. When an agent accumulates sufficient observations pointing to a specific entity (user, agent, or session), a reflection is triggered:
 
-1. Check density during heartbeat (adaptive interval, performed periodically)
+1. Check density during heartbeat (performed periodically)
 2. Count observations per entity direction (each observation can point to multiple: session + user + agent)
 3. When count >= threshold for a direction, select top-N by importance for LLM reflection
 4. Generate a fresh narrative (no prior narrative is fed to the LLM) describing the agent's understanding of the entity
 5. MD5 dedup: if the evidence text is unchanged from the last generation, skip
 
-EntityProfile is deliberately not retrieval-focused. It is a synthesis layer — the agent forms an impression. This impression can be loaded into the agent's system prompt as background understanding, complementing the point retrieval of specific observations during context assembly.
+EntityProfile is a synthesis layer — the agent forms a revisable impression, not a new objective fact. It can be loaded as background understanding or read by identity during Decide, complementing inspection of source records. The current profile is not a versioned archive of previous impressions.
 
-### Retrieval: Semantic Search with Composite Scoring
+### Retrieval: Source Inspection at Decision Time
 
-When the agent needs to recall relevant past events (e.g., during context assembly for a new message), the Search function performs semantic retrieval:
+Decide receives a bounded `Situation`: `Subject` describes current capacity and ongoing commitments; `Environment` lists generally available people, sessions, and resources without loading all their histories; `Matter` presents the triggering Event with direct Comprehension, or a heartbeat description. This is the current decision context, not the whole memory corpus. Chat Comprehend also includes a small observed same-session window; an agent's own recent messages can carry the background, reason, and guidance of the Actions that produced them.
 
-```
-query = current_message + recent_context  (concatenated text)
-query_embedding = EmbeddingService(query)
+For an LLM-driven decision, a short DecideLoop offers read-only `recall_*` tools. The agent can inspect observed Events and Messages, its own Actions and their siblings under a Decision, Works, Focus handoffs, and a current EntityProfile for a known entity. It can also browse sent and received Jinshu metadata and read a Jinshu description; attachment content requires a separate, deeper path. Fixed-rule decisions retain their direct path.
 
-For each eligible observation (importance > 0):
-    similarity = cosine_similarity(query_embedding, event_vector)
-    recency = 1 / (1 + days_since_last_access)
-    composite = 0.7 × similarity + 0.2 × importance + 0.1 × recency
+Known IDs and causal links permit precise navigation. When the agent needs discovery, query terms and time bounds yield bounded, paginated candidates across authorized sources. The shared term index is a replaceable lexical aid; it is not BM25 or an LLM relevance judgment. Results are checked against original records and access rules. `recall_message` can discover observed messages across accessible sessions even when the triggering session contains no clue. An empty or limited result does not establish that no relevant source exists. Event vectors exist, but Decide recall does not currently use them for semantic search. No composite `0.7 similarity + 0.2 importance + 0.1 recency` ranking runs in this path, and the `recall_*` tools do not update importance.
 
-Return top-K sorted by composite score
-```
-
-The composite score balances three signals:
-
-- **Semantic relevance (0.7)**: how well the observation's content matches the current query context. This is the dominant factor — memory retrieval should primarily serve the present need. The system retrieves what is relevant, not what is important.
-- **Importance (0.2)**: how significant the observation has proven to be over time. This provides a mild boost to reinforced content, preventing a superficial semantic match from completely dominating. But relevance to the query always carries more weight than historical importance.
-- **Recency (0.1)**: a minimal temporal bias toward recently accessed content. Freshly reinforced memories are slightly preferred over stale ones with similar semantic+importance scores, but recency alone does not determine ranking.
-
-After retrieval, every top-K result receives a retrieval boost (importance + last_accessed_at updated) — retrieval reinforces memory across the entire result set. Relevance propagation is triggered only from the top result: a single importance delta spreads to related observations, forming a closed loop — retrieval reinforces memory, which improves future retrieval.
+These sources preserve distinct kinds of evidence: Event/Message says what occurred or was said; AgentObservation says what this agent encountered; Decision and Action record why and what it chose; ActionEffect links a durably observed effect; Work and Focus handoff report continuing work and executor findings; EntityProfile is an interpretation. `Decision → Action → ActionEffect` records exact causal links where available, without claiming that a message from another person inherits the agent's private reasoning. An Action's ended state alone does not prove that its intended outcome succeeded. The same Decision can produce multiple Actions without defining an order between them.
 
 ### Relevance Propagation: Spreading Activation
 
-When an observation receives an importance delta (from retrieval hit or RAG hit), a fraction spreads to related observations:
+When an observed historical Message gains importance through Chat's retrieval feedback, a fraction can spread to other observations of that agent in the same session:
 
 | Propagation Rule | Factor | Rationale |
 |-----------------|--------|-----------|
-| Temporally adjacent (±1 event) | 0.5 | Immediate conversational neighbors share strong topical continuity |
-| Temporally near (±2 events) | 0.2 | Weaker continuity with a two-step gap |
-| Semantically similar (cosine > 0.8) | 0.2 | Topical association across time and sessions |
+| Adjacent observed message (±1 position) | 0.5 | Immediate conversational neighbors may share topical continuity |
+| Nearby observed message (±2 positions) | 0.2 | Weaker continuity with a two-step gap |
+| Vector-similar observed message (cosine > 0.8, when vectors exist) | 0.2 | Possible topical association within this session |
 | Same session | 0.15 | All events in the same session share a contextual frame |
 
 Each target independently applies an anti-hot cooldown (10 minutes) — if a target was scored within the cooldown window, the propagation is ignored for that target. This prevents a single retrieval from triggering cascading updates that artificially inflate scores across the observation population.
 
-The factors form a hierarchy: temporal adjacency is weighted most heavily because conversational flow provides the strongest evidence of relatedness. Semantic similarity is weighted lower to prevent overfitting to embedding proximity (embeddings can produce false-positives for lexically similar but semantically distinct content). Same-session propagation is lightest — it captures the broad contextual connection without over-weighting it.
+The factors form a heuristic hierarchy: conversational adjacency gets the largest weight; vector similarity gets less because embeddings can produce false positives; same-session association is lightest. These links change prominence, not causal provenance or factual status. Each target is processed at most once for a source hit, so the order of these rules matters.
 
 ### Daily Maintenance: The Decay Cycle
 
-Every 24 hours, a cron process applies multiplicative decay to all active observations:
+On startup and then every 24 hours while the service runs, maintenance applies multiplicative decay to active observations:
 
 ```
 importance *= 0.98   (applied to every observation with importance > 1e-6)
 ```
 
-This is a uniform, continuous operation — every observation loses 2% of its importance per day, regardless of its current value.
+This is a uniform per-pass operation. The last pass date is not persisted, so restarts can apply additional decay within one day.
 
 The decay factor of 0.98 was chosen to balance two concerns:
 
-- **Too fast** (e.g., 0.90): observations would vanish within weeks, losing content before it has a chance to prove useful. A message from last month's conversation that suddenly becomes relevant today would already be gone.
-- **Too slow** (e.g., 0.995): decay would be negligible — an observation at 0.85 would take 200 days to drop to ~0.31. Obsolete content would linger indefinitely, and the system would behave like a binary gate in practice.
+- **Too fast** (e.g., 0.90): evidence could lose prominence in reflection before it has a chance to prove useful. A message from last month's conversation might be overlooked in profile synthesis.
+- **Too slow** (e.g., 0.995): decay would be negligible — an observation at 0.85 would take roughly 200 passes to drop to ~0.31. Obsolete content could remain prominent for too long.
 
-At 0.98, the decay provides a meaningful gradient: actively used content stays strong (retrieval boost > decay loss), occasionally used content slowly fades, and never-used content sinks below practical relevance within 1-3 months.
+At 0.98, the decay provides a gradient in profile evidence selection: qualifying use can counter it, while unreinforced observations gradually recede. The parameter is a design choice, not a measured cognitive constant.
 
-Observations with importance below 1e-6 are excluded from decay updates — at this point they are effectively zero and do not meaningfully participate in retrieval.
+Observations with importance at or below 1e-6 are excluded from decay updates. That floor does not exclude their source Events from authorized Decide recall.
 
-The row is never deleted — it remains in the table as an archival trace. If a propagated relevance wave from a related observation reaches it, the importance reactivates above zero and it re-enters the active set. This is a soft fade, not a hard delete — the cost of preserving the row (a few bytes) is negligible compared to the benefit of recoverability.
+The row is never deleted by decay — it remains as an archival trace. A later qualifying hit or association can raise its importance again. This is a soft fade in prominence, not a hard delete or a change in the agent's right to inspect a source.
 
 ---
 
@@ -185,9 +171,9 @@ Many memory systems group observations into topic clusters automatically (e.g., 
 
 **Arguments against**: Automated clustering overfits to embedding space geometry. Two observations with high cosine similarity may be related (both discuss technical architecture) or may be false-positives (both use similar vocabulary about different topics). The embedding space does not encode semantic truth — it encodes distributional proximity. Relying on it for structural organization introduces a layer of misrepresentation that propagates downstream.
 
-More fundamentally, clustering creates a maintenance burden without clear retrieval benefit. Cluster boundaries shift as new observations arrive; cluster summaries become stale; cluster labels require regeneration. Each maintenance cycle introduces churn. A flat, scored table with semantic search at query time avoids all of this — it defers structure to the moment of retrieval, where it is driven by the specific query context rather than predetermined categories.
+More fundamentally, clustering creates a maintenance burden without clear retrieval benefit. Cluster boundaries shift as new observations arrive; cluster summaries become stale; cluster labels require regeneration. Each maintenance cycle introduces churn. Qingqiu keeps its source records separate and discovers candidates at query time, currently by exact links, lexical terms, or time rather than a permanent topic cluster.
 
-**Our choice**: Flat scoring + query-time retrieval. EntityProfile provides a separate synthesis path — LLM-generated narrative that is explicitly about understanding, not categorization. The two mechanisms are complementary: retrieval handles "what is relevant right now," EntityProfile handles "what do I think about this entity overall."
+**Our choice**: Source-preserving, query-time recall alongside a separate EntityProfile synthesis path. The mechanisms are complementary: recall inspects evidence for the present decision; EntityProfile asks, "What do I currently think about this entity overall?"
 
 ### Why Event Content Is Not Cached in Observations
 
@@ -195,17 +181,17 @@ Observations store only a reference (`event_id`). Content is loaded on demand wh
 
 **Why we accept this cost**: Content duplication creates a consistency problem. If a message is edited (unlikely in the current system but architecturally possible) or if content is normalized post-hoc, cached copies diverge. The event_id reference guarantees a single source of truth.
 
-More importantly, observations belong to agents — multiple agents in the same session each get an observation record for the same event. Caching content in every observation would multiply storage for no retrieval benefit, since content is identical across agents. The join cost is a one-time query overhead; the duplication cost is permanent.
+More importantly, observations belong to agents — multiple agents may each encounter the same event at different times, and some may not encounter it at all. Caching content in every observation would multiply storage for no retrieval benefit, since content is identical across agents. The join cost is a one-time query overhead; the duplication cost is permanent.
 
 ### Why a Single Importance Dimension
 
 A single `importance` field serves as the system's sole retention signal, rather than multiple scoring dimensions (e.g., intensity, surprise, importance).
 
-**Why a single dimension suffices**: Intensity — higher for longer, denser messages — correlates strongly with what retrieval naturally surfaces: important messages tend to be substantive. Surprise — measured as 1 minus cosine similarity with recent messaging — captures deviations that are already handled by the semantic search: unusual messages produce distinctive embeddings.
+**Why we currently use one dimension**: Additional dimensions such as intensity or surprise would need definitions, update rules, and evidence that they improve reflection. Length is not importance, and embedding distance is not a reliable measure of surprise. We do not currently have enough evidence to treat either as a separate retention signal.
 
-The marginal benefit of separate dimensions did not justify the implementation complexity. Each additional dimension requires its own update logic, decay function, and tuning parameters. More importantly, the agent has no cognitive model of intensity or surprise — these are system-level judgments imposed on the agent's experience. Importance, in contrast, is determined by the agent's own behavior (retrieval frequency), making it a behavioral rather than prescribed metric.
+The marginal benefit of separate dimensions did not justify the implementation complexity. Each additional dimension requires its own update logic, decay function, and tuning parameters. Importance is partially grounded in actual Chat history use, but also in heuristic association and decay; it is therefore an engineering signal rather than a direct measure of subjective importance.
 
-**The honest limitation**: A single dimension means the system cannot distinguish between "frequently retrieved because important" and "frequently retrieved because the agent keeps encountering similar situations." A topic that recurs frequently in conversation (e.g., daily status updates) will accumulate high importance even if no single occurrence was particularly significant. We accept this because retrieval frequency in this system serves as the operational definition of importance — if the agent consistently needs to recall information about a topic, that information is important by definition.
+**The honest limitation**: A single dimension cannot distinguish "repeatedly injected because useful" from "repeatedly injected because similar situations or retrieval heuristics keep surfacing it." A recurring topic can gain prominence even when no occurrence is especially significant. The score is useful for ordering profile evidence; it does not settle the agent's judgment of what matters or the truth of any claim.
 
 ### Rate Limiting vs. Continuous Profile Regeneration
 
@@ -229,17 +215,17 @@ More subtly, prior narrative introduces temporal anchoring. A profile formed ear
 
 ### Identity-Driven Memory: Why the Agent Remembers as Itself
 
-A subtler design choice runs through the entire memory system: the agent never encounters the label "Assistant," "AI," "user," or "agent" in its own memory records. All evidence labels use real names — the agent's own name and the person's name. The EntityProfile reflection prompt addresses the agent in the second person: "You are Alice, reflecting on your accumulated observations about Patrik."
+A subtler design choice runs through memory prompts: evidence of conversations uses participants' names rather than generic "Assistant" and "User" labels when names are available. The EntityProfile reflection prompt addresses the agent in the second person: "You are Alice, reflecting on your accumulated observations about Patrik."
 
 This is not cosmetic. It is a deliberate stance on agency and embodiment.
 
 #### The Sycophancy Problem
 
-When an LLM is told it is "an AI assistant," it activates training patterns associated with reinforcement learning from human feedback (RLHF) alignment — specifically the helpful-harmless-honest (HHH) objective. A well-documented side effect of HHH training is sycophancy: the model agrees with the user, avoids disagreement, and tailors responses to what it believes the user wants to hear (Perez et al., 2022; Sharma et al., 2023). An "assistant" has no independent perspective — its role is to serve.
+The labels used in a prompt can cue different conversational roles. Research on sycophancy documents cases in which language models agree with a user's stated view or tailor a response to perceived expectations (Perez et al., 2022; Sharma et al., 2023). A generic assistant frame may encourage service-oriented wording; the size and direction of that effect depend on the model and context.
 
-By contrast, when the system prompt and memory records use the agent's character name ("Alice"), the pre-training associations with HHH alignment are bypassed. The agent is not "an assistant reflecting on its interactions with a user" — it is "Alice reflecting on its conversations with Patrik." The shift from role-archetype to named identity breaks the sycophancy affordance: a person with a name can hold opinions, disagree, and form independent judgments in a way an "assistant" cannot.
+Using the agent's character name ("Alice") in memory evidence instead frames a conversation among named participants: "Alice reflecting on conversations with Patrik." This may support a more coherent perspective for reflection, but it does not bypass model training, remove sycophancy, or establish that the agent has an independent inner life.
 
-Empirically, this matters for memory quality. An agent that remembers itself as "the assistant" produces self-referential narratives that orbit its functional role: "I helped the user with X, I clarified Y for the user." An agent that remembers itself by name produces narratives about relationships: "Patrik tends to approach technical problems methodically. I've noticed he values concrete examples over abstract explanations." The latter is memory; the former is a service log.
+One possible design effect is the difference between a service log ("I helped the user with X") and a relational impression ("Patrik tends to approach technical problems methodically"). These are examples of framing, not evidence that naming alone improves factual accuracy. Source attribution still matters when the agent revises an impression.
 
 #### First-Person Observation, Not Third-Person Logging
 
@@ -247,9 +233,9 @@ Conventional dialogue systems log conversations in third person: "User said X. A
 
 Our memory system uses first-person framing. The agent is not observing "User said X, Assistant said Y" — it is observing "[Patrik] said X, [Alice] said Y." Both parties are named persons in a shared conversation. The agent's own messages are tagged with its own name, not "Assistant." The person's messages are tagged with their configured name, not "User."
 
-This distinction has a precise cognitive parallel: episodic memory (Tulving, 1972) is memory for personally experienced events, encoded from the first-person perspective. Semantic memory is memory for facts, encoded independently of personal experience. An assistant reading a transcript exercises semantic memory — it knows what happened. A person recalling a conversation exercises episodic memory — it remembers experiencing it.
+This design has a useful analogy to Tulving's (1972) distinction between memory for personally experienced events and general semantic knowledge. The engineering record can preserve which Events this agent encountered, while a retrieved transcript alone may show only what was said. This analogy does not establish that a model has human episodic memory.
 
-Our design pushes toward the episodic. The agent's observations are its own experiences. The agent's EntityProfile is its own reflection on those experiences — "What do I think about X?" — not a system-generated summary of "What happened between the user and the assistant about X?"
+Our design pushes the *description* toward personally situated history. AgentObservations record encounters; EntityProfile is the agent's generated interpretation of evidence — "What do I currently think about X?" — rather than an objective summary of everything that happened.
 
 #### Evidence Labels as Embodiment Reinforcement
 
@@ -287,24 +273,24 @@ Similarly, the `messages` table uses `role = 2` (integer enum for assistant) for
 
 ### Ingestion Hooks
 
-Memory ingestion is triggered at the message creation boundary:
+Memory ingestion separates durable occurrence from asynchronous vectorization:
 
-- **User messages**: The API handler calls `SubmitVectorization` after persisting the message
-- **Agent messages**: The runtime calls `SubmitVectorization` after the agent generates a reply
+- **Incoming messages**: A Message Event is persisted when the message is created. Embedding generation is queued separately. The receiving agent's Observations are written for the exact messages Comprehend consumed and the triggering Event; messages still buffered or unread are not treated as encountered.
+- **Agent messages**: The runtime commits its outgoing Message, Event, and its own Observation together. Embedding generation remains a separate background step.
 
-The `SubmitVectorization` function is non-blocking — it enqueues the message for background processing (event creation → embedding generation → observation creation). If the queue is full, the task is silently dropped. This design ensures that memory ingestion never blocks the primary message flow.
+Vectorization failure does not erase a committed Event or retroactively create an Observation. The term index and Event vectors aid candidate search where their paths use them; the source record remains authoritative.
 
 ### Retrieval Integration Points
 
-Memory retrieval is not yet wired into context assembly. The architecture defines two integration points:
+Memory retrieval now has two distinct integrations:
 
-1. **RAG hit processing** (`OnRAGHit`): The existing session-level RAG system retrieves historically relevant message segments for the prompt. `OnRAGHit` bridges these RAG-selected messages into the memory system, applying retrieval boosts to the corresponding observations. This is currently operational.
+1. **Chat history feedback** (`OnRetrievalHit`): When Chat selects historical Message segments for its longer context, their existing Observations can receive use-dependent boosts and association propagation. This is not a general boost for all prompt contents; the hook runs before final prompt assembly.
 
-2. **Direct semantic search** (`Search`): Context assembly would call Search with the current query + recent conversation as the search text, retrieving top-K memories for injection into the system prompt. This is architecturally defined and implemented but not yet integrated into the prompt assembly pipeline.
+2. **Decide recall** (`recall_*`): A bounded tool loop lets the agent inspect authorized records on demand. It supports exact IDs, causal navigation, time-bounded browsing, and lexical discovery across several source types. This path is read-only; it does not use a composite semantic score or write retrieval boosts. EntityProfile can be read by a known person or session ID.
 
 ### Heartbeat-Driven Density Check
 
-EntityProfile density checks are driven by the agent heartbeat system (adaptive interval: 5 minutes active, 30 minutes steady, 2 hours dormant). During each heartbeat, the runtime calls `CheckProfileDensity` for the agent, which scans observations and triggers profile generation for eligible entity directions.
+EntityProfile density checks are driven periodically by the agent heartbeat system. The runtime calls `CheckProfileDensity`, which scans observations and triggers profile generation for eligible entity directions.
 
 This integration is intentionally lightweight — density checks are read-only scans; profile generation is spawned asynchronously. The heartbeat continues uninterrupted regardless of profile generation outcome.
 

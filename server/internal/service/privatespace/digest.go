@@ -90,8 +90,13 @@ func (l *Loop) generateDigest() {
 	}
 	if err := dops.CreateFocusHandoff(handoff); err != nil {
 		applogger.Error("PrivateSpace failed to persist focus handoff", "person_id", l.personID, "digest_id", record.ID, "error", err)
-	} else if err := workspace.AppendFocusHandoff(handoff); err != nil {
-		applogger.Error("PrivateSpace failed to project focus handoff to AOSMeta", "person_id", l.personID, "digest_id", record.ID, "handoff_id", handoff.ID, "error", err)
+	} else {
+		if err := memory.RefreshSource(model.MemorySourceFocusHandoff, handoff.ID); err != nil {
+			applogger.Error("PrivateSpace failed to index focus handoff", "handoff_id", handoff.ID, "error", err)
+		}
+		if err := workspace.AppendFocusHandoff(handoff); err != nil {
+			applogger.Error("PrivateSpace failed to project focus handoff to AOSMeta", "person_id", l.personID, "digest_id", record.ID, "handoff_id", handoff.ID, "error", err)
+		}
 	}
 
 	eventID, err := memory.RecordPSDigestEvent(record.ID, digest)

@@ -76,7 +76,7 @@ graph TB
     AgentCache -.cache lookup.-> Chat
 ```
 
-The runtime is a global singleton (`globalRuntimeManager` in manager.go). Each agent gets one `agentRuntime` with a dedicated goroutine running an event loop. The event loop processes one event at a time, serializing all agent work.
+The runtime is a global singleton (`globalRuntimeManager` in manager.go). Each agent gets one `agentRuntime` with a dedicated goroutine running an event loop. The event loop processes decision opportunities serially; accepted Chat and Focus actions can continue asynchronously while later events are considered.
 
 ## Agent Info Cache (`service/agent`)
 
@@ -129,13 +129,13 @@ flowchart TD
     EnergyCheck -->|yes, isReplay=true| PauseReplay["log + return false<br/>(pause replay, keep buffer record)"]
     EnergyCheck -->|yes, isReplay=false| Buffer["bufferEvent(event)<br/>write agent_event_buffer<br/>set sleep_since if empty"]
     Buffer --> ReturnFalse["return false"]
-    EnergyCheck -->|no| PreRead["Create observation<br/>(NewPrivateChatMessage only)"]
-    PreRead --> BatchCheck{"last_read_message_id<br/>>= payload.MessageID?"}
-    BatchCheck -->|yes, already read| Skip["return true<br/>(observation-only)"]
+    EnergyCheck -->|no| BatchCheck{"last_read_message_id<br/>>= payload.MessageID?"}
+    BatchCheck -->|yes, already read| Skip["return true<br/>(already observed with prior batch)"]
     BatchCheck -->|no| ComprehendPhase["Run Comprehend Phase"]
-    ComprehendPhase --> BuildSituation["buildExternalSituation<br/>event + ComprehensionResult + energy + activeWorks"]
-    BuildSituation --> DecidePhase["Run Decide(situation, personID, activeWorks)"]
-    DecidePhase --> AdvanceRead["Advance last_read_message_id<br/>to ReadMessageRange[1]"]
+    ComprehendPhase --> Observe["Observe exact events<br/>actually comprehended"]
+    Observe --> BuildSituation["Situation<br/>Subject + Environment + Matter"]
+    BuildSituation --> DecidePhase["Run Decide<br/>with optional recall tools"]
+    DecidePhase --> AdvanceRead["Persist Decision + Actions<br/>and read boundary"]
     AdvanceRead --> Deduct{"len(Actions) > 0?"}
     Deduct -->|yes| DeductEnergy["energy.DeductEnergy(personID, cost)"]
     Deduct -->|no| SkipDeduct["skip deduction"]
@@ -150,17 +150,17 @@ flowchart TD
    - **Replay path** (`isReplay=true`): log and `return false`. The current buffer record is NOT deleted.
    - **Channel path** (`isReplay=false`): `bufferEvent` serializes the event payload to `agent_event_buffers`, sets `sleep_since` to `now` if it was empty, and `return false`.
 
-2. **Observation creation**: For `NewPrivateChatMessage`, `memory.CreateObservation` records the event in the agent's observation stream. Happens before the read-skip check.
+2. **Observation creation**: After Comprehend, the runtime records the triggering durable Event and the exact Message Events it read. A message already consumed by an earlier batch already has its Observation; a buffered or unread message is not observed. An outgoing Message receives the sender's Observation when its Message and Event are committed.
 
 3. **Batched message skip**: For `NewPrivateChatMessage`, if `last_read_message_id >= payload.MessageID`, the message was consumed by an earlier batch — return early.
 
-4. **Comprehend**: Runs the three-part parallel comprehension phase. Produces a `ComprehensionResult`. See [context-engineering-pipeline.md](./context-engineering-pipeline.md).
+4. **Comprehend**: Routes by Event type and returns a `Comprehension`. Chat comprehension can run preprocessing and person-state inference concurrently. See [context-engineering-pipeline.md](./context-engineering-pipeline.md).
 
-5. **Build Situation**: `buildExternalSituation(event, comprehension, energy, activeWorksSummary)` assembles a `Situation` DTO with `Source=External`, `Matter.Event`, and `Matter.Comprehension`. This unified DTO is the sole input to Decide.
+5. **Build Situation**: The runtime assembles a `Situation` with `Source`, general `Subject` and `Environment`, and event-specific `Matter.Event` and `Matter.Comprehension`. It is the unified input to Decide.
 
-6. **Decide**: `Decide(ctx, situation, personID, activeWorks)` produces a `DecisionResult`. For `NewPrivateChatMessage`, calls `decideWithLLM` which internally fetches agent info via `agent.GetAgent(personID)`. For rule-based paths (`WorkCompleted`, `Scheduled`), produces `ChatPlan` with guidance directly.
+6. **Decide**: `Decide(ctx, situation, personID, activeWorks)` produces a `DecisionResult`. LLM-driven paths may inspect authorized history in a bounded, read-only DecideLoop before calling the `decide` tool. Fixed-rule paths retain their direct behavior.
 
-7. **Advance `last_read_message_id`**: After Decide returns, if `ReadMessageRange[1] > ReadMessageRange[0]`, advance `last_read_message_id` to `ReadMessageRange[1]`.
+7. **Persist cause and read boundary**: An accepted Decision and its Actions are persisted with the triggering Event relationship; for a chat batch, `last_read_message_id` advances to `ReadMessageRange[1]` in the same transaction. A rejected or failed decision does not advance that boundary.
 
 8. **Energy deduction**: If `len(Actions) > 0`, deduct energy. Cost depends on `Situation.Source` (External=1, Internal=5).
 
@@ -174,7 +174,7 @@ flowchart TD
 
 | Event Type | Source | Handling |
 |---|---|---|
-| `NewPrivateChatMessage` | User sends a message | Energy check → Create observation → Batch-skip check → Comprehend → buildExternalSituation → Decide → Advance last_read → DeductEnergy → Execute |
+| `NewPrivateChatMessage` | Another person sends a message | Energy check → Batch-skip check → Comprehend → record exact Observations → Situation → Decide → persist Decision, Actions, and read boundary → DeductEnergy → Execute |
 | `WorkCompleted` | Work finishes (task loop) | Energy check → Remove from activeWorks → Rule-based Decide (ChatPlan with guidance) → DeductEnergy → Execute |
 | `Scheduled` | Alarm fires | Energy check → Fast-path check → Rule-based Decide (ChatPlan with guidance) → DeductEnergy → Execute |
 | `AlarmCreated` | `CreateAlarm` action from Decide | Energy check → AlarmRegistry registers goroutine → return |
@@ -264,7 +264,7 @@ Two detection points:
 
 ## Comprehend Phase
 
-The Comprehend phase runs three parallel tasks to understand the incoming event context. For full details, see [context-engineering-pipeline.md](./context-engineering-pipeline.md).
+For chat Events, Comprehend runs preprocessing and person-state inference concurrently after fixing the unread message boundary. For full details, see [context-engineering-pipeline.md](./context-engineering-pipeline.md).
 
 ```mermaid
 flowchart LR
@@ -272,7 +272,7 @@ flowchart LR
         Range["ReadMessageRange<br/>=[prev_last_read, max_message_id]<br/>loaded from DB at entry"]
     end
     subgraph "Parallel Tasks"
-        A["Preprocessing<br/>→ HistorySearch + KBRetrieval<br/>(bounded by ReadMessageRange[1])"]
+        A["Preprocessing<br/>→ history keywords + KB hint"]
         B["Person State Inference<br/>emotion, purpose, situation"]
     end
     Range --> A
@@ -281,7 +281,7 @@ flowchart LR
     B --> Join
 ```
 
-For `NewPrivateChatMessage`, Comprehend loads all unread messages in the fixed `ReadMessageRange`. For non-message events, the full pipeline is skipped — `event.FormatDescription()` carries the context.
+For `NewPrivateChatMessage`, Comprehend loads unread messages in the fixed `ReadMessageRange`, returns their exact IDs, and provides a bounded observed same-session window. Non-message Events use their event-specific comprehension path without the chat-specific inference pipeline.
 
 ## Situation — Unified Decide Input
 
@@ -290,12 +290,13 @@ Between Comprehend and Decide, the runtime builds a `Situation` DTO that is the 
 ```go
 type Situation struct {
     Source  SituationSource  // External (event) or Internal (heartbeat)
-    Subject SituationSubject // Energy + active works summary
+    Subject SituationSubject // Energy + active works and actions
+    Environment SituationEnvironment // General sessions, people, and resources
     Matter  SituationMatter  // Event + Comprehension (external) or Description (internal)
 }
 ```
 
-**External path**: `event + ComprehensionResult + energy + activeWorksSummary → buildExternalSituation → Decide`
+**External path**: `event + direct Comprehension + general Subject and Environment → Situation → Decide`
 
 **Internal (heartbeat) path**: `heartbeat self-observation → buildHeartbeatSituation → Decide`
 
@@ -353,7 +354,7 @@ type ChatPlan struct {
 
 ### Sessions context injection
 
-The Decide prompt includes the agent's full social picture via `buildSessionsContext` (all sessions, participant names, EntityProfile narratives, recent messages) and `buildContactablePersonsContext` (all persons in the world). This lets the LLM choose between replying in the current session, continuing an existing conversation, or starting a new one — all encoded via `session_id` in the `ChatPlan`.
+The general `Situation.Environment` provides a bounded roster of accessible sessions, contactable people, and resources. It does not preload every conversation or EntityProfile. The triggering chat's direct Comprehension can include a small observed same-session window; the DecideLoop can inspect other authorized history and a known entity's current profile on demand. This lets the LLM choose a session target without treating unobserved messages as memories.
 
 ### `trigger` field — causal semantic description
 
@@ -383,6 +384,8 @@ flowchart TD
 ### Chat — lightweight action
 
 Chat is NOT a Work. It is a lightweight goroutine that calls `chat.ExecuteChat` and commits the result directly:
+
+It is nevertheless a persistent Action: its Decision records why it was chosen, and its Action can be shown as ongoing until the asynchronous execution ends. Active Works and active Actions answer different questions; neither replaces the other.
 
 ```mermaid
 flowchart LR

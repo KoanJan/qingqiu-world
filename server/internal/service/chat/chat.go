@@ -5,7 +5,7 @@
 //
 // The pipeline includes:
 //   - User state inference (including needs_world_interaction detection)
-//   - Query preprocessing (routing, clarification, RAG optimization)
+//   - Query preprocessing (retrieval routing and RAG optimization)
 //   - Agent execution for world-interaction requests
 //   - Context engineering (summary, retrieval, assembly)
 //   - LLM streaming responses
@@ -25,6 +25,7 @@ import (
 	"qingqiu-world-server/internal/service/agent"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/focusedwork"
+	"qingqiu-world-server/internal/service/memory"
 )
 
 // User-friendly error message for unexpected failures
@@ -79,10 +80,8 @@ func ExecuteChat(
 	if chatCtx != nil {
 		p.personStateResult = chatCtx.PersonState
 		p.historySegments = chatCtx.HistorySegments
+		p.historyKeywords = chatCtx.HistoryKeywords
 		p.kbSegments = chatCtx.KBSegments
-		p.needsClarification = chatCtx.NeedsClarification
-		p.clarification = chatCtx.Clarification
-		p.clarificationExpressionInstruction = chatCtx.ClarificationExpressionInstruction
 
 		if chatCtx.FocusedWorkResult != nil {
 			p.focusedWorkResult = &FocusedWorkResultForAssembly{
@@ -106,18 +105,31 @@ func ExecuteChat(
 	if err := p.loadMessages(); err != nil {
 		return &ChatResult{Content: userFriendlyErrorMessage}, err
 	}
+	if len(p.historyKeywords) > 0 && (p.readMessageRange[1] == 0 || p.readMessageRange[0] > 0) {
+		// The target session is known here. The source session contributes only
+		// lexical hints, never pre-read snippets from another conversation.
+		maxHistoryID := p.readMessageRange[0]
+		rows, err := memory.SearchObservedMessages(aiPersonID, session.ID, maxHistoryID, p.historyKeywords, 5)
+		if err != nil {
+			return &ChatResult{Content: userFriendlyErrorMessage}, err
+		}
+		seen := make(map[int64]struct{}, len(p.historySegments))
+		for _, segment := range p.historySegments {
+			seen[segment.MessageID] = struct{}{}
+		}
+		for _, row := range rows {
+			if _, exists := seen[row.ID]; !exists {
+				p.historySegments = append(p.historySegments, comprehendTypes.Segment{MessageID: row.ID, Content: row.Content, Source: comprehendTypes.SourceChatHistory})
+			}
+		}
+	}
 
-	// Skip preprocessing, inference, KB retrieval, and agent execution —
-	// all of these were done in the Comprehend phase.
-	// Go directly to context assembly and response.
+	// Comprehend supplied inference and KB context. The target-session history
+	// lookup above is the only deferred read before assembly and response.
 
 	messages, earlyContent, earlyReturn := p.assembleContext(ctx)
 	if earlyReturn {
-		expressionInstruction := ""
-		if p.needsClarification {
-			expressionInstruction = p.clarificationExpressionInstruction
-		}
-		return &ChatResult{Content: earlyContent, ExpressionInstruction: expressionInstruction}, nil
+		return &ChatResult{Content: earlyContent}, nil
 	}
 
 	result, err := p.generateResponse(ctx, messages)
@@ -134,7 +146,7 @@ func ExecuteChat(
 // All fields are optional — only guidance (passed as a separate parameter) is
 // semantically required. The caller populates different subsets depending on
 // the chat trigger path:
-//   - External events: PersonState, HistorySegments, KBSegments, NeedsClarification, Clarification
+//   - External events in the same session: PersonState, HistoryKeywords, KBSegments
 //   - Focused-work completion: FocusedWorkResult set alongside external event fields
 //   - Heartbeat (autonomous): nil (guidance alone drives the chat)
 type ChatContext struct {
@@ -142,15 +154,10 @@ type ChatContext struct {
 	PersonState *comprehendTypes.PersonState
 	// HistorySegments are RAG-retrieved chat history fragments.
 	HistorySegments []comprehendTypes.Segment
+	// HistoryKeywords are searched only after the target session is selected.
+	HistoryKeywords []string
 	// KBSegments are RAG-retrieved knowledge base fragments.
 	KBSegments []comprehendTypes.Segment
-	// NeedsClarification indicates the agent needs to ask a clarifying question.
-	NeedsClarification bool
-	// Clarification is the clarifying question text.
-	Clarification string
-	// ClarificationExpressionInstruction is authored by the same LLM that
-	// generated Clarification and is transported without application overrides.
-	ClarificationExpressionInstruction string
 	// FocusedWorkResult carries the result of completed focused work.
 	FocusedWorkResult *focusedwork.FocusedWorkResult
 	// FocusContext carries runtime-selected handoffs and shared session notes.

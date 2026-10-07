@@ -84,6 +84,14 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 
 	// Decide will fetch agent info via agent.GetAgent when it needs it.
 	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
+	if !d.Accepted {
+		applogger.Error("heartbeat: Decide produced no accepted result", "person_id", r.agentPersonID)
+		return
+	}
+	if _, err := persistDecision(r.agentPersonID, situation, &d); err != nil {
+		applogger.Error("heartbeat: failed to persist decision", "person_id", r.agentPersonID, "error", err)
+		return
+	}
 	if len(d.Actions) > 0 {
 		if err := energy.DeductEnergy(r.agentPersonID, energyCost(situation.Source)); err != nil {
 			applogger.Error("failed to deduct energy", "person_id", r.agentPersonID, "error", err)

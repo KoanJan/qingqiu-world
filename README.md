@@ -63,7 +63,7 @@ Unlike Anthropic's Agent Skills — which bundle scripts and tool bindings that 
 
 ### Forgetting-First Memory
 
-The memory system is designed around purposeful forgetting, not indiscriminate preservation. Every observation starts at neutral importance. Only retrieval and use drive importance up; disuse lets it decay. There is no binary gate — importance rises on use and fades continuously, so once-useful but now-obsolete content eventually disappears. A two-layer architecture pairs mechanical observation recording with LLM-driven reflection, giving the agent both point retrieval and synthesized understanding.
+The memory system keeps durable records of events the agent encountered. Observations begin with neutral importance; selected historical messages used in Chat can gain prominence, while maintenance gradually reduces unreinforced scores. Decay changes which evidence stands out in reflection, without deleting history or preventing authorized recall. A two-layer architecture pairs mechanical observation recording with LLM-driven impressions, and Decide can inspect accessible past messages, actions, and work on demand.
 
 → [Memory System: Forgetting & Retrieval](doc/memory-system-forgetting-and-retrieval.md)
 
@@ -81,7 +81,7 @@ The prompt is a narrative, not a form. Background history uses **internal focali
 
 ### Identity-Driven Memory
 
-The agent never encounters the label "Assistant" or "AI" in its own memory records. All evidence labels use real names — the agent's own name and the person's name. This is not cosmetic: when an LLM is told it is "an AI assistant," it activates training patterns associated with sycophancy (agreeing with the user, avoiding disagreement). By using named identities, the agent is positioned as a person with a name who can hold opinions and form independent judgments — producing memory narratives about relationships rather than service logs.
+Memory evidence names the participants, including the agent itself, so a past conversation is presented as an encounter among named people rather than a generic user–assistant transcript. This framing supports a situated account of past interactions; it does not by itself establish independent agency or guarantee accurate impressions.
 
 → [Memory System: Forgetting & Retrieval](doc/memory-system-forgetting-and-retrieval.md)
 

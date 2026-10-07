@@ -5,6 +5,7 @@
 package action
 
 import (
+	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/focusedwork"
 )
 
@@ -16,54 +17,54 @@ import (
 //     required.
 //   - Focus-oriented actions: StartFocusedWork, RouteFocusedWork, CancelFocusedWork — these
 //     operate on FocusedLoops that run a multi-step ReAct loop.
-type ActionType int
+type ActionType = model.ActionType
 
 const (
 	// Chat sends a chat message to another Person. No iteration loop.
-	Chat ActionType = iota
+	Chat = model.ActionTypeChat
 	// StartFocusedWork starts a new multi-step FocusedWork. It enters a
 	// FocusedLoop using tools (search, file operations, etc.).
-	StartFocusedWork
+	StartFocusedWork = model.ActionTypeStartFocusedWork
 	// RouteFocusedWork routes the current event to an existing active work as
 	// a new directive or constraint.
-	RouteFocusedWork
+	RouteFocusedWork = model.ActionTypeRouteFocusedWork
 	// CancelFocusedWork requests an existing active work to stop and wrap up.
-	CancelFocusedWork
+	CancelFocusedWork = model.ActionTypeCancelFocusedWork
 	// CreateAlarm creates a scheduled alarm directly, without entering
 	// FocusedLoop. This is a self-contained world action.
-	CreateAlarm
+	CreateAlarm = model.ActionTypeCreateAlarm
 	// UpdateBio updates the agent's own Bio field — a self-reflective action.
 	// Available during heartbeat. No iteration loop.
-	UpdateBio
+	UpdateBio = model.ActionTypeUpdateBio
 
 	// EnterPrivateSpace enters the agent's private space — a personal, persistent
 	// directory space. No plan struct needed; Background and Reason together
 	// serve as the Thoughts payload expressing what the agent wants to do there.
 	// Available during heartbeat. Runs a lightweight ReAct loop.
-	EnterPrivateSpace
+	EnterPrivateSpace = model.ActionTypeEnterPrivateSpace
 
 	// InspectJinshu reads the contents of a received jinshu through a dedicated
 	// lightweight loop (read + summarize tools only). It is separate from the
 	// full FocusedLoop — reading one's own delivery is perception, not focused work.
-	InspectJinshu
+	InspectJinshu = model.ActionTypeInspectJinshu
 
 	// ListReceivedJinshu lists the agent's received jinshu through a paginated keyword
 	// search, so the agent can locate a jinshu_id before inspecting it.
-	ListReceivedJinshu
+	ListReceivedJinshu = model.ActionTypeListReceivedJinshu
 
 	// SendJinshu sends selected resources from the agent's Agent Owned Space to
 	// another person as a jinshu. This is the Decide-level "share a deliverable"
 	// action, distinct from EnterPrivateSpace (which is for working inside private/).
 	// Available during heartbeat. No iteration loop — direct delivery.
-	SendJinshu
+	SendJinshu = model.ActionTypeSendJinshu
 
 	// ListSentJinshu lists the agent's sent jinshu through a paginated keyword
 	// search, mirroring ListReceivedJinshu but over outbound deliveries instead of
 	// inbound ones. Available during external events only.
-	ListSentJinshu
+	ListSentJinshu = model.ActionTypeListSentJinshu
 
 	// InspectOwnedSpace lists bounded filesystem metadata from Agent Owned Space.
-	InspectOwnedSpace
+	InspectOwnedSpace = model.ActionTypeInspectOwnedSpace
 )
 
 // WorkPlan describes a FocusedWork to be created via StartFocusedWork action.
@@ -188,6 +189,7 @@ type BioUpdate struct {
 //   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
 //   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
 type Action struct {
+	ID   int64      `json:"-"` // Persisted top-level Action ID, assigned after Decide succeeds.
 	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=inspect_jinshu, 8=list_received_jinshu, 9=send_jinshu, 10=list_sent_jinshu, 11=inspect_owned_space,required"`
 
 	// Background: situational awareness — what triggered this decision.

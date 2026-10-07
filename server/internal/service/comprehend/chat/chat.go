@@ -8,6 +8,7 @@ package chat
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,15 +20,18 @@ import (
 	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/kb"
+	"qingqiu-world-server/internal/service/memory"
 )
+
+const comprehensionLocalContextLimit = 5
 
 // ComprehendMessage performs the comprehension phase for a private chat
 // message event: understanding what the other party means before making any
 // judgment.
 //
 // It returns the formatted event description plus the chat-specific
-// comprehension payload. Prompt semantics are preserved — the same LLM calls
-// are made, just in a different order (before Decide instead of after).
+// comprehension payload. Retrieval planning and person-state inference run
+// here; the need to ask a question is decided later in Decide.
 func ComprehendMessage(
 	ctx context.Context,
 	event *eventqueue.AgentEvent,
@@ -37,12 +41,7 @@ func ComprehendMessage(
 ) (string, *types.ChatComprehension) {
 	sessionInfo := buildSessionInfo(event.SessionID, ac)
 
-	result := &types.ChatComprehension{
-		// Active works summary for self-awareness.
-		// This allows the agent to understand references like "change the approach"
-		// or "stop" by knowing what it is currently doing.
-		ActiveWorksSummary: activeWorksSummary,
-	}
+	result := &types.ChatComprehension{}
 
 	participantSession, err := dops.GetParticipantSession(event.SessionID, ac.PersonID)
 	if err != nil {
@@ -60,6 +59,9 @@ func ComprehendMessage(
 		applogger.Error("chat.ComprehendMessage: failed to load message range", "session_id", event.SessionID, "error", err)
 		return "", result
 	}
+	for _, message := range messages {
+		result.ReadMessageIDs = append(result.ReadMessageIDs, message.ID)
+	}
 	eventDescription := formatMessageRange(messages)
 	if eventDescription == "" {
 		applogger.Info("chat.ComprehendMessage: empty event, skipping",
@@ -68,6 +70,21 @@ func ComprehendMessage(
 		)
 		return "", result
 	}
+	// Keep the same observed, bounded conversation window used by Chat. The
+	// current batch is admitted explicitly because its observations are written
+	// only after Comprehend returns.
+	contextMessages, _, narrative, err := memory.LoadObservedSessionContext(
+		ac.PersonID, event.SessionID, result.ReadMessageRange[1], sessionInfo.WindowSize, result.ReadMessageIDs,
+	)
+	if err != nil {
+		applogger.Error("chat.ComprehendMessage: failed to load session context", "session_id", event.SessionID, "person_id", ac.PersonID, "error", err)
+	}
+	if sessionInfo.MessageCount >= int64(sessionInfo.WindowSize) {
+		result.Narrative = narrative
+	}
+	result.RecentMessages = conversationMessagesFromModels(contextMessages, ac.PersonID)
+	localMessages := contextMessages[max(0, len(contextMessages)-comprehensionLocalContextLimit):]
+	localHistory := result.RecentMessages[max(0, len(result.RecentMessages)-comprehensionLocalContextLimit):]
 
 	// concurrent work
 	wg := sync.WaitGroup{}
@@ -77,29 +94,17 @@ func ComprehendMessage(
 			// Step 1: Query preprocessing (conditional — same conditions as before)
 			// Runs when V >= N (for context engineering) or when the agent holds
 			// KB grants (for agentic KB retrieval decisions).
-			preprocessingHistory := getPreprocessingHistory(sessionInfo.SessionID, sessionInfo.WindowSize)
 			preprocessingResult := PreprocessQuery(
 				ctx,
 				llmConfig,
 				eventDescription,
-				preprocessingHistory,
-				ac.CharacterSettings,
+				localHistory,
 				sessionInfo.AuthorizedKBs,
 				sessionInfo.WindowSize,
 			)
-			result.NeedsClarification = preprocessingResult.NeedsClarification
-			result.Clarification = preprocessingResult.Clarification
-			result.ClarificationExpressionInstruction = preprocessingResult.ClarificationExpressionInstruction
 			if len(preprocessingResult.HistorySearchKeywords) > 0 {
-				result.HistorySearch = &types.HistorySearch{
-					Keywords: preprocessingResult.HistorySearchKeywords,
-					Segments: SearchMessagesByKeywordsBefore(
-						[]int64{event.SessionID},
-						result.ReadMessageRange[1],
-						preprocessingResult.HistorySearchKeywords,
-						defaultHistorySearchLimit,
-					),
-				}
+				// Chat fetches the matching history after its target session is known.
+				result.HistorySearch = &types.HistorySearch{Keywords: preprocessingResult.HistorySearchKeywords}
 			}
 
 			// Step 3: Knowledge-base intent capture. Comprehend no longer runs
@@ -121,20 +126,15 @@ func ComprehendMessage(
 
 	// Step 2: Person state inference (always runs — same as before)
 	wg.Go(func() {
-		recentMessagesForState := getRecentMessagesBefore(
-			sessionInfo.SessionID,
-			result.ReadMessageRange[1],
-			min(int(sessionInfo.MessageCount), sessionInfo.WindowSize),
-		)
 		result.PersonState = InferPersonState(
 			ctx,
 			llmConfig,
-			recentMessagesForState,
+			localMessages,
 			sessionInfo.PartnerName,
 			dops.GetAgentConfigName(ac.ID),
 			ac.PersonID,
 			ac.CharacterSettings,
-			result.ActiveWorksSummary,
+			activeWorksSummary,
 		)
 	})
 
@@ -144,8 +144,7 @@ func ComprehendMessage(
 	applogger.Info("chat.ComprehendMessage completed",
 		"agent_config_id", ac.ID,
 		"session_id", sessionInfo.SessionID,
-		"needs_clarification", result.NeedsClarification,
-		"history_segments", historySegmentCount(result.HistorySearch),
+		"history_keywords", historyKeywordCount(result.HistorySearch),
 		"kb_segments", kbSegmentCount(result.KBRetrieval),
 	)
 
@@ -175,29 +174,15 @@ func filterAuthorizedKBIDs(selected []int64, authorized []types.KBDescriptor) []
 	return kept
 }
 
-func getRecentMessagesBefore(sessionID, maxMessageID int64, limit int) []model.Message {
-	query := database.DB.Where("session_id = ?", sessionID)
-	if maxMessageID > 0 {
-		query = query.Where("id <= ?", maxMessageID)
-	}
-	var messages []model.Message
-	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
-		applogger.Error("chat.getRecentMessagesBefore: failed to load bounded recent messages", "session_id", sessionID, "max_message_id", maxMessageID, "error", err)
-		return nil
-	}
-	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
-		messages[left], messages[right] = messages[right], messages[left]
-	}
-	return messages
-}
-
-func historySegmentCount(search *types.HistorySearch) int {
+// historyKeywordCount reports how many search terms Comprehend planned.
+func historyKeywordCount(search *types.HistorySearch) int {
 	if search == nil {
 		return 0
 	}
-	return len(search.Segments)
+	return len(search.Keywords)
 }
 
+// kbSegmentCount reports how many knowledge-base excerpts were retrieved.
 func kbSegmentCount(retrieval *types.KBRetrieval) int {
 	if retrieval == nil {
 		return 0
@@ -205,6 +190,7 @@ func kbSegmentCount(retrieval *types.KBRetrieval) int {
 	return len(retrieval.Segments)
 }
 
+// formatMessageRange describes the unread message batch as one chat Event.
 func formatMessageRange(messages []model.Message) string {
 	if len(messages) == 0 {
 		return ""
@@ -234,23 +220,9 @@ func formatMessageRange(messages []model.Message) string {
 	return strings.Join(lines, "\n")
 }
 
-// getPreprocessingHistory retrieves recent messages for preprocessing context.
-// Returns messages as a ConversationMessage slice in chronological order.
-func getPreprocessingHistory(sessionID int64, limit int) []types.ConversationMessage {
-	var messages []model.Message
-	if err := database.DB.Where("session_id = ?", sessionID).
-		Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
-		applogger.Error("chat.getPreprocessingHistory: failed to load messages",
-			"session_id", sessionID, "error", err,
-		)
-		return nil
-	}
-
-	// Reverse to chronological order
-	for i, j := 0, len(messages)-1; i < j; i, j = i+1, j-1 {
-		messages[i], messages[j] = messages[j], messages[i]
-	}
-
+// conversationMessagesFromModels keeps observed speech and the agent's own
+// recorded intention together when sharing the bounded chat window with Decide.
+func conversationMessagesFromModels(messages []model.Message, selfPersonID int64) []types.ConversationMessage {
 	personIDs := make([]int64, 0, len(messages))
 	seenPersonIDs := make(map[int64]struct{}, len(messages))
 	for _, message := range messages {
@@ -261,9 +233,10 @@ func getPreprocessingHistory(sessionID int64, limit int) []types.ConversationMes
 	}
 	names, err := dops.GetPersonNames(personIDs)
 	if err != nil {
-		applogger.Error("chat.getPreprocessingHistory: failed to load person names", "error", err)
+		applogger.Error("chat.conversationMessagesFromModels: failed to load person names", "error", err)
 		names = map[int64]string{}
 	}
+	ownActions := loadOwnMessageActions(messages, selfPersonID)
 
 	history := make([]types.ConversationMessage, 0, len(messages))
 	for _, message := range messages {
@@ -272,13 +245,75 @@ func getPreprocessingHistory(sessionID int64, limit int) []types.ConversationMes
 			personName = fmt.Sprintf("person_%d", message.PersonID)
 		}
 		history = append(history, types.ConversationMessage{
+			ID:         message.ID,
 			PersonID:   message.PersonID,
 			PersonName: personName,
 			Content:    message.Content,
 			CreatedAt:  message.CreatedAt,
+			OwnAction:  ownActions[message.ID],
 		})
 	}
 	return history
+}
+
+// loadOwnMessageActions resolves only the current agent's outgoing messages.
+// ActionEffect is the recorded Message-to-Action link; other speakers' private
+// actions are never queried or exposed through conversation history.
+func loadOwnMessageActions(messages []model.Message, selfPersonID int64) map[int64]*types.MessageActionContext {
+	result := make(map[int64]*types.MessageActionContext)
+	var ownMessageIDs []int64
+	for _, message := range messages {
+		if message.PersonID == selfPersonID {
+			ownMessageIDs = append(ownMessageIDs, message.ID)
+		}
+	}
+	if len(ownMessageIDs) == 0 {
+		return result
+	}
+	var rows []struct {
+		MessageID  int64  `gorm:"column:message_id"`
+		Background string `gorm:"column:background"`
+		Reason     string `gorm:"column:reason"`
+		PlanJSON   string `gorm:"column:plan_json"`
+	}
+	err := database.DB.Table("action_effects AS effects").
+		Select("effects.effect_id AS message_id, actions.background, actions.reason, actions.plan_json").
+		Joins("JOIN actions ON actions.id = effects.action_id").
+		Joins("JOIN decisions ON decisions.id = actions.decision_id").
+		Where("effects.effect_type = ? AND effects.effect_id IN ? AND actions.type = ? AND decisions.person_id = ?",
+			model.ActionEffectMessage, ownMessageIDs, model.ActionTypeChat, selfPersonID).
+		Scan(&rows).Error
+	if err != nil {
+		applogger.Error("chat.loadOwnMessageActions: failed to load own message origins", "person_id", selfPersonID, "error", err)
+		return result
+	}
+	seenIDs := make(map[int64]struct{})
+	duplicateIDs := make(map[int64]struct{})
+	for _, row := range rows {
+		if _, duplicate := duplicateIDs[row.MessageID]; duplicate {
+			continue
+		}
+		if _, duplicate := seenIDs[row.MessageID]; duplicate {
+			applogger.Error("chat.loadOwnMessageActions: multiple Chat actions produced one message", "person_id", selfPersonID, "message_id", row.MessageID)
+			duplicateIDs[row.MessageID] = struct{}{}
+			delete(result, row.MessageID)
+			continue
+		}
+		seenIDs[row.MessageID] = struct{}{}
+		var plan struct {
+			Guidance string `json:"guidance"`
+		}
+		if err := json.Unmarshal([]byte(row.PlanJSON), &plan); err != nil {
+			applogger.Error("chat.loadOwnMessageActions: invalid Chat action plan", "person_id", selfPersonID, "message_id", row.MessageID, "error", err)
+			continue
+		}
+		result[row.MessageID] = &types.MessageActionContext{
+			Background: row.Background,
+			Reason:     row.Reason,
+			Guidance:   plan.Guidance,
+		}
+	}
+	return result
 }
 
 // buildSessionInfo loads session-level parameters needed for comprehension.

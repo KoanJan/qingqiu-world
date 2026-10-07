@@ -94,6 +94,15 @@ type LoopResult struct {
 	Reason string `json:"reason,omitempty"` // Failure reason on failure
 }
 
+// interruptedResult reports any completed context without attributing it to
+// a Cancel Action. The Work runtime owns that causal attribution.
+func interruptedResult(ctx context.Context) *LoopResult {
+	if err := ctx.Err(); err != nil {
+		return &LoopResult{Status: "failure", Reason: "FocusedWork interrupted: " + err.Error()}
+	}
+	return nil
+}
+
 // Run executes the agent loop.
 //
 // This is the main entry point. It runs the ReAct loop until:
@@ -102,7 +111,8 @@ type LoopResult struct {
 //
 // The focused-work requirement is already injected via ContextManager
 // (as part of the system prompt with Guidance), so it is not passed
-// as a parameter here.
+// as a parameter here. ctx must be non-nil, as required by context.WithCancel
+// and the downstream LLM client.
 func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 	applogger.Info("FocusedLoop starting",
 		"max_iterations", tl.maxIterations,
@@ -111,13 +121,13 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 	)
 
 	for iteration := 1; iteration <= tl.maxIterations; iteration++ {
-		// Check if focused work has been cancelled (e.g., session deleted)
-		if ctx != nil && ctx.Err() != nil {
-			applogger.Info("FocusedLoop cancelled, stopping execution",
+		// Stop before beginning another iteration if the Work was interrupted.
+		if interrupted := interruptedResult(ctx); interrupted != nil {
+			applogger.Info("FocusedLoop interrupted, stopping execution",
 				"session_id", tl.sessionID,
 				"iteration", iteration,
 			)
-			return &LoopResult{Status: "failure", Reason: "FocusedWork cancelled"}
+			return interrupted
 		}
 
 		// If cycle detection triggered a forced checkpoint, run it now.
@@ -130,7 +140,8 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 		// Observe new guidance from the channel at each iteration boundary.
 		// New guidance is an environment event that the agent must observe
 		// in the ReAct cycle — it represents a change in execution intent
-		// (e.g., user correction, approach change, cancellation).
+		// (e.g., user correction or approach change). Cancellation is signaled
+		// through the Work's context instead.
 		// Drain all pending guidance to handle multiple updates.
 		tl.observeNewGuidance(iteration)
 
@@ -159,6 +170,10 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 		})
 
 		response, err := tl.invokeLLM(ctx, messages)
+		if interrupted := interruptedResult(ctx); interrupted != nil {
+			applogger.Info("FocusedLoop interrupted during LLM request", "session_id", tl.sessionID, "iteration", iteration)
+			return interrupted
+		}
 		if err != nil {
 			applogger.Error("FocusedLoop LLM error", "iteration", iteration, "error", err)
 			return &LoopResult{Status: "failure", Reason: fmt.Sprintf("LLM invocation failed at iteration %d: %s", iteration, err.Error())}
@@ -205,6 +220,9 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 		case "stop":
 			applogger.Info("FocusedLoop completed", "iteration", iteration)
 			tl.updateNotesOnStop(ctx, iteration, content, messages)
+			if interrupted := interruptedResult(ctx); interrupted != nil {
+				return interrupted
+			}
 			return &LoopResult{Status: "success", Result: content}
 
 		case "tool_calls":
@@ -236,6 +254,10 @@ func (tl *FocusedLoop) Run(ctx context.Context) *LoopResult {
 			var toolResults []llm.Message
 			hasWriteNotes := false
 			for _, tc := range toolCalls {
+				if interrupted := interruptedResult(ctx); interrupted != nil {
+					applogger.Info("FocusedLoop interrupted before next tool call", "session_id", tl.sessionID, "iteration", iteration)
+					return interrupted
+				}
 				if tc.Function.Name == tools.ToolNameWriteNotes.String() {
 					hasWriteNotes = true
 				}
@@ -430,6 +452,9 @@ After writing notes, you will regain access to all tools.`
 
 	toolDefs := []llm.FunctionDefinition{tl.writeNotesTool.Schema()}
 	response, err := tl.checkpointClient.ChatWithTools(ctx, messagesWithCheckpoint, toolDefs)
+	if interrupted := interruptedResult(ctx); interrupted != nil {
+		return interrupted
+	}
 	if err != nil {
 		applogger.Error("Notes iteration LLM error", "error", err)
 		if isFinal {
@@ -452,6 +477,9 @@ After writing notes, you will regain access to all tools.`
 	if finishReason == "tool_calls" {
 		var toolResults []llm.Message
 		for _, tc := range toolCalls {
+			if interrupted := interruptedResult(ctx); interrupted != nil {
+				return interrupted
+			}
 			toolCallID := tc.ID
 
 			if tc.Function.Name != tools.ToolNameWriteNotes.String() {
@@ -539,7 +567,12 @@ This will help you continue work if changes are requested later.`
 	toolDefs := []llm.FunctionDefinition{tl.writeNotesTool.Schema()}
 	response, err := tl.checkpointClient.ChatWithTools(ctx, messagesWithUpdate, toolDefs)
 	if err != nil {
-		applogger.Error("Notes update on stop failed", "error", err)
+		if ctx.Err() == nil {
+			applogger.Error("Notes update on stop failed", "error", err)
+		}
+		return
+	}
+	if ctx.Err() != nil {
 		return
 	}
 
@@ -556,6 +589,9 @@ This will help you continue work if changes are requested later.`
 
 	if finishReason == "tool_calls" {
 		for _, tc := range toolCalls {
+			if ctx.Err() != nil {
+				return
+			}
 			if tc.Function.Name != tools.ToolNameWriteNotes.String() {
 				continue
 			}
@@ -621,6 +657,9 @@ This FocusedWork will end after you save your notes.`, reason)
 
 	toolDefs := []llm.FunctionDefinition{tl.writeNotesTool.Schema()}
 	response, err := tl.checkpointClient.ChatWithTools(ctx, messagesWithCheckpoint, toolDefs)
+	if interrupted := interruptedResult(ctx); interrupted != nil {
+		return interrupted
+	}
 	if err != nil {
 		applogger.Error("Cycle-blocked checkpoint LLM error", "error", err)
 		return &LoopResult{Status: "failure", Reason: reason}
@@ -640,6 +679,9 @@ This FocusedWork will end after you save your notes.`, reason)
 
 	if finishReason == "tool_calls" {
 		for _, tc := range toolCalls {
+			if interrupted := interruptedResult(ctx); interrupted != nil {
+				return interrupted
+			}
 			if tc.Function.Name != tools.ToolNameWriteNotes.String() {
 				continue
 			}

@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -10,7 +9,6 @@ import (
 	"unicode"
 
 	"qingqiu-world-server/internal/database"
-	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
@@ -87,9 +85,9 @@ Action types (use the integer value for the "type" field):
 	- MUST include "work_guidance" with "target_work_id" and "guidance" (what I now want the target work to do, written in first-person).
 	- Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
 
-4. 3 (cancel_focused_work) — Request an existing active work to stop and wrap up. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
-	- MUST include "work_guidance" with "target_work_id" and "guidance" (how I want the target work to wrap up, written in first-person, e.g., "I should save my progress to notes and stop").
-   - Cancel is a request, not a forceful kill — the target work receives the directive and decides how to wrap up (save notes, record reasons) before exiting.
+4. 3 (cancel_focused_work) — Stop an existing active work. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
+	- MUST include "work_guidance" with "target_work_id" and "guidance" (why I am stopping this work, written in first-person).
+   - Cancel interrupts further Focus iterations. A tool call already in progress may finish; the runtime records a cancellation handoff.
 
 5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
@@ -157,6 +155,10 @@ Decision rules (apply in order):
 6. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
 7. When in doubt, consider silence before action — not every message requires a reply.
 
+Before asking for clarification, identify the next action that is actually blocked and the specific missing fact. Use the current message, conversation, and available context first. Casual talk, emotion, jokes, and playful language usually call for a natural response rather than task-parameter questions; ask briefly about a specific reference only when you cannot otherwise continue the conversation. You may still take independent actions while waiting for an answer. If you need to ask, choose an ordinary chat action addressed to the right person and session, and state the question's purpose in its guidance.
+
+Choose the delivery medium by how the recipient will use the result. Chat is a conversational turn: speak naturally and make it easy to read or hear. A document meant for repeated reading, exact characters, sections, tables, or sharing should be made as an AOS file and delivered by jinshu. Send an existing file with send_jinshu; if the file must be made first, start focused work and let its existing delivery flow finish that task. Actions in one decision have no execution order: do not send_jinshu for a file that a simultaneous focused work has not yet created. You may chat to say you will prepare it, but do not claim delivery before it is confirmed.
+
 ---
 
 Event: %s
@@ -182,13 +184,13 @@ Write background, guidance, reason, and plan in the same language as the event c
 //   - action.CreateAlarm (type=4): set a future alarm.
 //   - action.UpdateBio (type=5): update your self-introduction bio.
 //   - action.EnterPrivateSpace (type=6): enter your private space.
+//   - action.SendJinshu: send an existing deliverable.
 //   - action.InspectOwnedSpace (type=11): observe a bounded AOS directory listing.
 //   - action.StartFocusedWork / action.RouteFocusedWork / action.CancelFocusedWork: not allowed — there is no event
 //     to route and no active work context to cancel against in this path.
 //
-// The description parameter carries the agent's self-observation: its sessions
-// (with narratives and recent messages), Bio, and the world's contactable persons,
-// so the agent can choose session_id (positive or -1) accordingly.
+// The description parameter names the heartbeat opportunity; the separate
+// Subject and Environment context provides current routing choices.
 const heartbeatPromptTemplate = world.WorldDescriptions + `
 
 You are %s.
@@ -208,6 +210,8 @@ Energy parameters in this world:
 Letting your energy drop to zero is dangerous. You will lose all ability to perceive, reason about, or respond to anything. Guard your energy carefully — when it is low, prefer to wait rather than act unless you have a clear reason.
 
 You may decide to do nothing. Doing nothing is a legitimate choice — the world continues regardless. Do not invent reasons to act; only act when you actually have something to say, ask, or follow up on.
+
+When chatting, use a natural conversational turn. If you want to share an existing document for repeated reading, exact text, tables, or forwarding, deliver the file by jinshu instead of pasting its contents into chat. Do not claim a file was delivered until that result is confirmed.
 
 Every action MUST include "background" and "reason" at the action level:
 - background: What situation or observation triggered this intention.
@@ -277,21 +281,22 @@ Write background, guidance, and plan in the same language you would use to speak
 type DecisionResult struct {
 	Thoughts string          `json:"thoughts" jsonschema:"description=Your reasoning process: why you chose these actions,required"`
 	Actions  []action.Action `json:"actions" jsonschema:"description=List of actions to take. Each action is independent and self-contained.,required"`
+	Accepted bool            `json:"-"` // True only when Decide produced a valid result, including intentional silence.
 }
 
 // Decide determines how the agent should respond to a Situation.
 //
 // For SituationSourceInternal (heartbeat), the agent is granted an autonomous
 // cognitive opportunity — time has passed and it is idle. The LLM can:
-//   - Create a ComposeMessageWork (chat) to begin or continue a conversation
-//   - Create an alarm to wake itself at a future time
+//   - Chat, create an alarm, update its bio, enter private space,
+//     send Jinshu, or inspect its owned space
 //   - Produce no actions (the legitimate "I have nothing to act on" choice)
 //
-// For EventTypeNewPrivateChatMessage, EventTypeBiography, and
+// For EventTypeNewPrivateChatMessage, EventTypeBiography, and ordinary
 // EventTypeWorkCompleted (external), the decision is made by LLM which can
-// create, route, cancel, or produce no actions. Biography and WorkCompleted
-// differ only in their comprehension phase (non-LLM); their Decide phase still
-// goes through the LLM so the agent can judge whether (and how) to react.
+// create, route, cancel, or produce no actions. An explicitly cancelled Work
+// has a rule-based empty Decision because its terminal event is not a new
+// request to resume the stopped task.
 //
 // For other external event types, simple rule-based decisions are used.
 // The LLM call uses TemperatureDeterministic for consistent decision making.
@@ -306,10 +311,10 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 	switch event.Type {
 	case eventqueue.EventTypeGroupChatJoined:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "session_joined event")
-		return DecisionResult{}
+		return DecisionResult{Accepted: true}
 	case eventqueue.EventTypeGroupChatLeft, eventqueue.EventTypeSystemNotification:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "non-message event")
-		return DecisionResult{}
+		return DecisionResult{Accepted: true}
 	case eventqueue.EventTypeScheduled:
 		// A session-anchored alarm (session_id > 0) replies in its origin
 		// session via the rule-based chat path below. A standalone alarm
@@ -334,7 +339,8 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 				return DecisionResult{}
 			}
 			// ActiveWorksSummary stays empty, same as handleHeartbeat.
-			return decideHeartbeat(ctx, buildHeartbeatSituation(description, state.Energy, ""), personID, activeWorks)
+			alarmSituation := buildHeartbeatSituation(description, state.Energy, "")
+			return decideHeartbeat(ctx, alarmSituation, personID, activeWorks)
 		}
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "action", action.Chat, "reason", "scheduled event")
 		plan := &action.ChatPlan{
@@ -355,6 +361,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 			plan.ExpressionInstruction = p.ExpressionInstruction
 		}
 		return DecisionResult{
+			Accepted: true,
 			Actions: []action.Action{
 				{
 					Type:     action.Chat,
@@ -367,14 +374,31 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 		// goroutine as a side effect before entering the pipeline. There is
 		// nothing to decide cognitively, so produce no actions.
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "alarm_created event")
-		return DecisionResult{}
+		return DecisionResult{Accepted: true}
 	case eventqueue.EventTypePSCompleted:
 		// Observation-only: the digest was already turned into a memory
 		// observation by handleEvent, and its content needs no reaction. The
 		// decision phase has nothing to act on.
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "private-space digest observation-only")
-		return DecisionResult{}
-	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeWorkCompleted, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed, eventqueue.EventTypeOwnedSpaceInspected:
+		return DecisionResult{Accepted: true}
+	case eventqueue.EventTypeWorkCompleted:
+		payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
+		if !ok || payload == nil {
+			applogger.Error("Decision: work completion has no payload", "person_id", personID, "event_id", event.EventID)
+			return DecisionResult{}
+		}
+		if payload.CancelActionID > 0 {
+			if payload.Status != "abandoned" {
+				applogger.Error("Decision: cancelled work has unexpected terminal status", "work_id", payload.WorkID, "status", payload.Status)
+			}
+			// The cancellation has already been acknowledged by its own Decision.
+			// Its terminal event records the result; it is not a new request to resume.
+			applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "cancelled work terminal event", "work_id", payload.WorkID)
+			return DecisionResult{Accepted: true}
+		}
+		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
+		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
+	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed, eventqueue.EventTypeOwnedSpaceInspected:
 		// Proceed to LLM-based decision
 		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
 		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
@@ -437,6 +461,9 @@ func buildTriggerContext(event *eventqueue.AgentEvent) string {
 // and biography events); each event type contributes its own comprehension
 // context via buildComprehensionContext.
 func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sameSessionWorks []*work) DecisionResult {
+	if !situation.generalReady {
+		populateGeneralSituation(personID, situation)
+	}
 	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
 
@@ -466,8 +493,16 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 		comprehensionContext += buildWorkCompletedReplyAnchor(event.SessionID)
 	}
 	triggerContext := buildTriggerContext(event)
-	activeWorksContext := buildActiveWorksContext(sameSessionWorks)
-	completedWorksContext := buildCompletedWorksContext(personID, event.SessionID, eventDescription)
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && event.SessionID > 0 {
+		triggerContext += fmt.Sprintf("\nThis message batch is in session_id=%d. Use that ID to reply in this conversation.\n", event.SessionID)
+	}
+	activeWorksContext := formatGeneralSubject(situation.Subject)
+	completedWorksContext := ""
+	if event.SessionID > 0 {
+		if note := readLastNotesEntry(personID, event.SessionID); note != "" {
+			completedWorksContext = "Current shared session notes:\n" + note + "\n"
+		}
+	}
 
 	agentDescription := a.Config.CharacterSettings
 	bio := a.Person.Bio
@@ -478,8 +513,8 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	// (continue an existing conversation), and create_and_send (start a new
 	// conversation with another Person). Without this context, the agent
 	// cannot know who else it can talk to or which sessions it has.
-	sessionsContext := buildSessionsContext(a.Person.ID)
-	personsContext := buildContactablePersonsContext(a.Person.ID)
+	sessionsContext := situation.Environment.Sessions
+	personsContext := situation.Environment.Persons + "\n" + situation.Environment.Resources + "\n" + recallPromptInstruction
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
 		a.Person.Name, agentDescription, bio,
@@ -497,33 +532,8 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 		a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureDeterministic,
 	)
 
-	// Generate schema directly from DecisionResult — no separate LLM output type needed.
-	schema := llm.GenerateSchema[DecisionResult]()
-
-	result, err := chatModel.ChatWithJSONSchema(ctx, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, llm.JSONSchemaDefinition{
-		Name:        "Decision",
-		Description: "Agent's decision on how to handle an incoming event",
-		Strict:      true,
-		Schema:      schema,
-	})
-
-	if err != nil {
-		applogger.Error("Decision LLM call failed, ignoring",
-			"person_id", personID,
-			"error", err,
-		)
-		return DecisionResult{}
-	}
-
-	var decision DecisionResult
-	if err := json.Unmarshal([]byte(result), &decision); err != nil {
-		applogger.Error("Decision LLM output parse failed, ignoring",
-			"person_id", personID,
-			"error", err,
-			"raw_output", result,
-		)
+	decision, ok := runDecideLoop(ctx, chatModel, personID, event.EventID, prompt)
+	if !ok {
 		return DecisionResult{}
 	}
 
@@ -545,7 +555,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 		applogger.Info("Decision: agent chose to do nothing",
 			"person_id", personID,
 		)
-		return DecisionResult{}
+		return DecisionResult{Accepted: true}
 	}
 	if len(validActions) == 0 {
 		applogger.Error("Decision: all actions were invalid and filtered out",
@@ -555,6 +565,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	}
 
 	return DecisionResult{
+		Accepted: true,
 		Thoughts: decision.Thoughts,
 		Actions:  validActions,
 	}
@@ -564,15 +575,18 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 //
 // Unlike decideWithLLM (which handles an external event), this path presents
 // the agent with the world fact "you are idle" and asks whether it wants to
-// form an intention. Theaction.Actionsurface is narrower: only ComposeMessageWork
-// (chat) and action.CreateAlarm are allowed. No routing/cancelling active works.
+// form an intention. Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
+// SendJinshu, and InspectOwnedSpace are allowed; focused-work actions are not.
 //
-// The agent's self-observation (sessions, contactable persons) is carried in
-// situation.Matter.Description, assembled by the runtime before calling Decide.
+// General state comes from Subject and Environment. Matter.Description only
+// describes this heartbeat decision opportunity.
 //
 // Energy cost (CostActive = 5) is only deducted when the agent actually
 // produces actions — an empty Actions list (choosing to do nothing) is free.
 func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, activeWorks []*work) DecisionResult {
+	if !situation.generalReady {
+		populateGeneralSituation(personID, situation)
+	}
 	// Fetch agent info at the point of use.
 	a, err := agent.GetAgent(personID)
 	if err != nil {
@@ -586,7 +600,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 	prompt := fmt.Sprintf(heartbeatPromptTemplate,
 		a.Person.Name, agentDescription, bio,
 		situation.Matter.Description,
-		buildAgentFocusContext(personID, activeWorks),
+		formatGeneralSubject(situation.Subject)+"\n"+situation.Environment.Sessions+"\n"+situation.Environment.Persons+"\n"+situation.Environment.Resources+"\n"+recallPromptInstruction,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
@@ -594,32 +608,8 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 		a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureDeterministic,
 	)
 
-	schema := llm.GenerateSchema[DecisionResult]()
-
-	result, err := chatModel.ChatWithJSONSchema(ctx, []llm.Message{
-		{Role: "user", Content: prompt},
-	}, llm.JSONSchemaDefinition{
-		Name:        "HeartbeatDecision",
-		Description: "Agent's autonomous decision during a heartbeat",
-		Strict:      true,
-		Schema:      schema,
-	})
-
-	if err != nil {
-		applogger.Error("Heartbeat Decide LLM call failed, ignoring",
-			"person_id", personID,
-			"error", err,
-		)
-		return DecisionResult{}
-	}
-
-	var decision DecisionResult
-	if err := json.Unmarshal([]byte(result), &decision); err != nil {
-		applogger.Error("Heartbeat Decide LLM output parse failed, ignoring",
-			"person_id", personID,
-			"error", err,
-			"raw_output", result,
-		)
+	decision, ok := runDecideLoop(ctx, chatModel, personID, 0, prompt)
+	if !ok {
 		return DecisionResult{}
 	}
 
@@ -629,17 +619,19 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 		"action_count", len(decision.Actions),
 	)
 
-	// Validate the LLM's decision — only action.Chat (type=0) and
-	// action.CreateAlarm (type=4) are allowed in the heartbeat path.
+	// Validate the narrower heartbeat action set before execution.
 	validActions := filterValidActions(decision.Actions, nil, situation)
 	if len(validActions) == 0 {
-		applogger.Info("Heartbeat Decide: no valid actions (agent chose to do nothing)",
-			"person_id", personID,
-		)
-		return DecisionResult{}
+		if len(decision.Actions) > 0 {
+			applogger.Error("Heartbeat Decide: all actions were invalid", "person_id", personID)
+			return DecisionResult{}
+		}
+		applogger.Info("Heartbeat Decide: agent chose to do nothing", "person_id", personID)
+		return DecisionResult{Accepted: true}
 	}
 
 	return DecisionResult{
+		Accepted: true,
 		Thoughts: decision.Thoughts,
 		Actions:  validActions,
 	}
@@ -651,9 +643,8 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks).
 //   - Internal (heartbeat): Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
-//     and SendJinshu are allowed; StartFocusedWork, RouteFocusedWork, CancelFocusedWork,
-//     InspectJinshu, and ListReceivedJinshu are rejected (no event to route, no active
-//     works context, and no incoming jinshu reference in this path).
+//     SendJinshu, and InspectOwnedSpace are allowed. Focused-work actions and
+//     Jinshu inspection/list actions require an external event.
 //
 // session_id==0 is always illegal — it is the Go zero value and
 // indistinguishable from a missing field in the LLM's JSON output.
@@ -1215,20 +1206,18 @@ func buildComprehensionContext(comprehension *comprehendTypes.Comprehension) str
 	if comprehension == nil {
 		return ""
 	}
+	var eventAnalysis string
 	switch comprehension.Type {
 	case comprehendTypes.ComprehensionTypeChat:
-		return buildChatComprehensionContext(comprehension.Chat)
+		eventAnalysis = buildChatComprehensionContext(comprehension.Chat)
 	case comprehendTypes.ComprehensionTypeBiography:
 		// Biography comprehension carries no extra analysis: the origin
 		// statement is already the event description itself.
-		return ""
 	case comprehendTypes.ComprehensionTypeWorkCompleted:
 		// Work-completed comprehension carries no extra analysis: the event
 		// description (guidance plus status) is the understanding itself.
-		return ""
-	default:
-		return ""
 	}
+	return eventAnalysis
 }
 
 // buildWorkCompletedReplyAnchor tells the Decide LLM the exact session a
@@ -1254,183 +1243,77 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 		return ""
 	}
 
+	var sections []string
+	if chatComprehension.Narrative != "" {
+		sections = append(sections, "Background conversation narrative (a summary of earlier dialogue):\n"+chatComprehension.Narrative)
+	}
+	// The triggering batch is already shown as Event. Preserve the preceding
+	// original messages as evidence for references in the current utterance.
+	batchIDs := make(map[int64]struct{}, len(chatComprehension.ReadMessageIDs))
+	for _, id := range chatComprehension.ReadMessageIDs {
+		batchIDs[id] = struct{}{}
+	}
+	var recentLines []string
+	for _, message := range chatComprehension.RecentMessages {
+		if _, current := batchIDs[message.ID]; current {
+			continue
+		}
+		recentLines = append(recentLines, fmt.Sprintf("%s [%s]: %s", message.PersonName, message.CreatedAt.Format("2006-01-02 15:04:05"), message.Content))
+		if message.OwnAction != nil {
+			// The source action explains this past utterance; its plan does not
+			// become a new instruction for the current decision.
+			var pastContext []string
+			if message.OwnAction.Background != "" {
+				pastContext = append(pastContext, "background: "+message.OwnAction.Background)
+			}
+			if message.OwnAction.Reason != "" {
+				pastContext = append(pastContext, "reason: "+message.OwnAction.Reason)
+			}
+			if message.OwnAction.Guidance != "" {
+				pastContext = append(pastContext, "intended speech: "+message.OwnAction.Guidance)
+			}
+			if len(pastContext) > 0 {
+				recentLines = append(recentLines, "  My context when I sent this: "+strings.Join(pastContext, "; "))
+			}
+		}
+	}
+	if len(recentLines) > 0 {
+		sections = append(sections, "Recent messages in this session (original messages, before the current event):\n"+strings.Join(recentLines, "\n"))
+	}
+
 	var parts []string
 
 	if chatComprehension.PersonState != nil {
-		if chatComprehension.PersonState.Purpose != "" {
-			parts = append(parts, fmt.Sprintf("Inferred intent: %s", chatComprehension.PersonState.Purpose))
+		if purpose := chatComprehension.PersonState.Purpose.Description(); purpose != "" {
+			parts = append(parts, "Possible conversational purpose: "+purpose)
 		}
 		if chatComprehension.PersonState.Situation != "" {
 			parts = append(parts, fmt.Sprintf("Situation context: %s", chatComprehension.PersonState.Situation))
 		}
 	}
 
-	if chatComprehension.NeedsClarification {
-		parts = append(parts, "Needs clarification: true (query is vague)")
-	}
 	if chatComprehension.KBRetrieval != nil && chatComprehension.KBRetrieval.Query != "" {
 		parts = append(parts, fmt.Sprintf(
-			"Knowledge-base investigation suggested: query=%q, kb_ids=%v. If answering this needs evidence rather than context already present, start a FocusedWork and use scan_kb/read_kb_evidence.",
+			"Knowledge-base search candidate: query=%q, kb_ids=%v.",
 			truncateWorkDescription(chatComprehension.KBRetrieval.Query),
 			chatComprehension.KBRetrieval.KnowledgeBaseIDs,
 		))
 	}
 
-	if len(parts) == 0 {
+	if len(parts) > 0 {
+		sections = append(sections, "Comprehension analysis:\n"+strings.Join(parts, "\n"))
+	}
+	if len(sections) == 0 {
 		return ""
 	}
-
-	return fmt.Sprintf("Comprehension analysis:\n%s\n\n", strings.Join(parts, "\n"))
+	return strings.Join(sections, "\n\n") + "\n\n"
 }
 
-// sessionContextRecentMessages is the number of recent messages included per
-// session in the Decide prompt's session list. Bounded to keep prompt size
-// manageable while preserving enough context for the LLM to recognize the
-// conversation's current state.
-const sessionContextRecentMessages = 5
-
-// buildSessionsContext constructs the "Your sessions" section of the heartbeat
-// Decide prompt. For each session the agent participates in, it includes:
-//   - The session ID
-//   - The EntityProfile narrative (if one exists for this (agent, session) pair)
-//   - The other participant's name
-//   - Up to sessionContextRecentMessages recent messages
-//
-// No pre-filtering is applied — the agent sees its full social situation and
-// decides for itself which sessions are worth acting on. Performance is
-// acceptable in early stages; if session count grows enough to overflow the
-// prompt, future versions can introduce vector retrieval or activity-based
-// truncation.
-func buildSessionsContext(personID int64) string {
-	// Load all sessions the agent participates in.
-	var participantSessions []model.ParticipantSession
-	if err := database.DB.Where("participant_id = ?", personID).
-		Order("last_active_at DESC").
-		Find(&participantSessions).Error; err != nil {
-		applogger.Error("buildSessionsContext: failed to load participant sessions",
-			"person_id", personID, "error", err)
-		return ""
-	}
-	if len(participantSessions) == 0 {
-		return "Your sessions: (none — you have no conversations yet)\n\n"
-	}
-
-	// Collect session IDs and load the other participants in one query.
-	sessionIDs := make([]int64, 0, len(participantSessions))
-	for _, ps := range participantSessions {
-		sessionIDs = append(sessionIDs, ps.SessionID)
-	}
-	var allParticipants []model.ParticipantSession
-	if err := database.DB.Where("session_id IN ? AND participant_id != ?",
-		sessionIDs, personID).Find(&allParticipants).Error; err != nil {
-		applogger.Error("buildSessionsContext: failed to load other participants",
-			"person_id", personID, "error", err)
-		return ""
-	}
-	otherBySession := make(map[int64][]int64, len(sessionIDs))
-	for _, ps := range allParticipants {
-		otherBySession[ps.SessionID] = append(otherBySession[ps.SessionID], ps.ParticipantID)
-	}
-	// Collect unique other person IDs for batch name lookup.
-	personIDSet := make(map[int64]struct{})
-	for _, ids := range otherBySession {
-		for _, id := range ids {
-			personIDSet[id] = struct{}{}
-		}
-	}
-	otherPersonIDs := make([]int64, 0, len(personIDSet))
-	for id := range personIDSet {
-		otherPersonIDs = append(otherPersonIDs, id)
-	}
-	personMap, err := dops.ListPersons(otherPersonIDs)
-	if err != nil {
-		applogger.Error("buildSessionsContext: failed to load persons", "error", err)
-		personMap = map[int64]*model.Person{}
-	}
-
-	// Load session narratives (EntityProfile, type=Session) for this agent in one query.
-	var profiles []model.EntityProfile
-	if err := database.DB.Where("person_id = ? AND entity_type = ?", personID, model.EntityTypeSession).
-		Find(&profiles).Error; err != nil {
-		applogger.Error("buildSessionsContext: failed to load session profiles",
-			"person_id", personID, "error", err)
-	}
-	narrativeBySession := make(map[int64]string, len(profiles))
-	for _, p := range profiles {
-		narrativeBySession[p.EntityID] = p.Narrative
-	}
-
-	var sb strings.Builder
-	sb.WriteString("Your sessions (most recently active first):\n")
-	for _, ps := range participantSessions {
-		sessionID := ps.SessionID
-		otherIDs := otherBySession[sessionID]
-		otherDescs := make([]string, 0, len(otherIDs))
-		for _, id := range otherIDs {
-			p, ok := personMap[id]
-			if !ok || p.Name == "" {
-				p = &model.Person{Name: fmt.Sprintf("person_%d", id)}
-			}
-			if p.Bio != "" {
-				otherDescs = append(otherDescs, fmt.Sprintf("%s (bio: %s)", p.Name, p.Bio))
-			} else {
-				otherDescs = append(otherDescs, p.Name)
-			}
-		}
-		fmt.Fprintf(&sb, "- [session_id=%d] participants: %s\n", sessionID, strings.Join(otherDescs, ", "))
-
-		if narrative, ok := narrativeBySession[sessionID]; ok && narrative != "" {
-			fmt.Fprintf(&sb, "    Your impression: %s\n", narrative)
-		}
-
-		// Recent messages (DESC then reverse to chronological).
-		var recent []model.Message
-		if err := database.DB.Where("session_id = ?", sessionID).
-			Order("id DESC").Limit(sessionContextRecentMessages).Find(&recent).Error; err != nil {
-			applogger.Error("buildSessionsContext: failed to load recent messages",
-				"session_id", sessionID, "error", err)
-			continue
-		}
-		for left, right := 0, len(recent)-1; left < right; left, right = left+1, right-1 {
-			recent[left], recent[right] = recent[right], recent[left]
-		}
-		for _, m := range recent {
-			p, ok := personMap[m.PersonID]
-			speaker := ""
-			if ok {
-				speaker = p.Name
-			}
-			if speaker == "" {
-				// Could be the agent itself or an unknown person.
-				if m.PersonID == personID {
-					speaker = "you"
-				} else {
-					speaker = fmt.Sprintf("person_%d", m.PersonID)
-				}
-			}
-			content := m.Content
-			if len(content) > 200 {
-				content = content[:200] + "..."
-			}
-			fmt.Fprintf(&sb, "    %s [%s]: %s\n", speaker,
-				m.CreatedAt.Format("2006-01-02 15:04"), content)
-		}
-	}
-	sb.WriteString("\n")
-	return sb.String()
-}
-
-// buildContactablePersonsContext constructs the "Contactable persons" section
-// of the heartbeat Decide prompt. Lists every Person in the world except the
-// agent itself, with ID and name — the agent decides for itself who (if anyone)
-// to start a new conversation with.
-//
-// All persons are listed without filtering. The world is small at this stage;
-// if it grows large enough to overflow the prompt, future versions can
-// introduce relationship-based filtering.
+// buildContactablePersonsContext constructs a bounded general-world routing
+// roster. It carries no message history or inferred profile content.
 func buildContactablePersonsContext(selfPersonID int64) string {
 	var persons []model.Person
-	if err := database.DB.Where("id != ?", selfPersonID).Find(&persons).Error; err != nil {
+	if err := database.DB.Where("id != ?", selfPersonID).Order("id").Limit(20).Find(&persons).Error; err != nil {
 		applogger.Error("buildContactablePersonsContext: failed to load persons",
 			"self_person_id", selfPersonID, "error", err)
 		return ""
@@ -1442,10 +1325,16 @@ func buildContactablePersonsContext(selfPersonID int64) string {
 	sb.WriteString("Contactable persons (use these IDs to start a conversation):\n")
 	for _, p := range persons {
 		if p.Bio != "" {
-			fmt.Fprintf(&sb, "- person_id=%d, name=%s, bio=%s\n", p.ID, p.Name, p.Bio)
+			fmt.Fprintf(&sb, "- person_id=%d, name=%s, bio=%s\n", p.ID, p.Name, truncateWorkDescription(p.Bio))
 		} else {
 			fmt.Fprintf(&sb, "- person_id=%d, name=%s (no bio yet)\n", p.ID, p.Name)
 		}
+	}
+	var total int64
+	if err := database.DB.Model(&model.Person{}).Where("id != ?", selfPersonID).Count(&total).Error; err != nil {
+		applogger.Error("buildContactablePersonsContext: failed to count persons", "self_person_id", selfPersonID, "error", err)
+	} else if total > int64(len(persons)) {
+		fmt.Fprintf(&sb, "- %d further contactable persons are not shown\n", total-int64(len(persons)))
 	}
 	sb.WriteString("\n")
 	return sb.String()

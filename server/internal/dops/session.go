@@ -223,6 +223,9 @@ func DeleteSessionCascade(sessionID int64) (personID int64, agentConfigID int64,
 				"session_id", sessionID, "error", err)
 		}
 		personID = aiPersonID
+		if err := deleteSessionReferencesTx(tx, []int64{sessionID}); err != nil {
+			return fmt.Errorf("delete session references: %w", err)
+		}
 
 		tables := []interface{}{
 			&model.Work{}, &model.Interaction{},
@@ -233,6 +236,9 @@ func DeleteSessionCascade(sessionID int64) (personID int64, agentConfigID int64,
 			if err := tx.Where("session_id = ?", sessionID).Delete(table).Error; err != nil {
 				return err
 			}
+		}
+		if err := tx.Where("session_id = ?", sessionID).Delete(&model.ScheduledEvent{}).Error; err != nil {
+			return err
 		}
 		if err := tx.Delete(&sess).Error; err != nil {
 			return err

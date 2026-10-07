@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"qingqiu-world-server/internal/database"
@@ -43,6 +44,10 @@ type work struct {
 	focusedWorkResult *focusedwork.FocusedWorkResult     // Focused-work result
 	guidanceCh        chan focusedwork.GuidanceDirective // Channel for sending guidance/cancel directives to FocusedLoop
 	done              chan struct{}                      // Closed when work finishes (normal or abandoned)
+	cancelMu          sync.Mutex                         // Serializes cancellation with terminal status persistence
+	cancelRun         context.CancelFunc                 // Cancels only this Work's Focus execution
+	cancelActionID    int64                              // Explicit Cancel Action that stopped this Work, if any
+	cancelReason      string                             // The Cancel Action's reason for the terminal handoff
 
 	// triggerAction carries the originating Action's cognitive context for the
 	// WorkCompleted event (provenance only — Background and Reason).
@@ -58,6 +63,8 @@ type work struct {
 // signals removal from active works.
 // Respects context cancellation: exits early if the work is cancelled.
 func (w *work) Run(ctx context.Context) {
+	workCtx, cancel := w.executionContext(ctx)
+	defer cancel()
 	w.startedAt = time.Now() // Record start time for Decide-phase duration awareness
 	defer close(w.done)      // Signal completion regardless of how work exits
 	if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
@@ -66,9 +73,10 @@ func (w *work) Run(ctx context.Context) {
 	}
 
 	defer func() {
+		w.cancelMu.Lock()
 		// Finalize the DB status from the real outcome: a focused-work-reported
 		// failure must not be recorded as Completed. The update only applies
-		// when the work is still Running — abandon() may have already set
+		// when the work is still Running — cancellation may have already set
 		// Abandoned, in which case this is a no-op.
 		finalStatus := model.WorkStatusCompleted
 		if w.focusedWorkResult != nil && w.focusedWorkResult.Status != "success" {
@@ -81,15 +89,18 @@ func (w *work) Run(ctx context.Context) {
 			applogger.Error("work: failed to update work status", "work_id", w.ID, "error", err)
 		}
 
-		// Re-read the final status from DB. abandon() may have set Abandoned
+		// Re-read the final status from DB. Cancellation may have set Abandoned
 		// while focusedWorkResult is nil (e.g. cancelled before the pipeline), so the
 		// in-memory result alone cannot be trusted to derive the outcome.
 		var workRow model.Work
 		if err := database.DB.Select("status").First(&workRow, w.ID).Error; err != nil {
+			w.cancelMu.Unlock()
 			applogger.Error("work: failed to load final status for memory event",
 				"work_id", w.ID, "error", err)
 			return
 		}
+		cancelActionID, cancelReason := w.cancelActionID, w.cancelReason
+		w.cancelMu.Unlock()
 
 		// Derive the outcome from the real final DB status, not from focusedWorkResult
 		// alone, so abandoned works are never misreported as success.
@@ -112,15 +123,17 @@ func (w *work) Run(ctx context.Context) {
 				"work_id", w.ID, "status", workRow.Status)
 			return
 		}
+		applogger.Info("work ended", "work_id", w.ID, "session_id", w.sessionID,
+			"status", status, "cancel_action_id", cancelActionID)
 
-		persistWorkHandoff(w, workRow.Status, output, workErr)
+		persistWorkHandoff(w, workRow.Status, output, workErr, cancelReason)
 		if err := kb.EnqueueFocusRelationAnalysisJob(w.ID); err != nil {
 			applogger.Error("work: failed to enqueue focus relation analysis", "work_id", w.ID, "error", err)
 		}
 
-		// Episodic gist for the memory event. The works row only carries
-		// description and status, so this text is the retrievable content.
-		// WorkOutput is used as-is (head-truncated) without re-summarization.
+		// The vector queue uses this episodic gist. Durable result text is
+		// retained in the Focus handoff created above, while the Event keeps
+		// the Work reference and the completion time.
 		gist := fmt.Sprintf("Guidance: %s\nStatus: %s\nDuration: %s",
 			w.plan.Guidance, status, time.Since(w.startedAt).Truncate(time.Second))
 		if output != "" {
@@ -130,6 +143,9 @@ func (w *work) Run(ctx context.Context) {
 		if workErr != "" {
 			truncated, _ := tools.TruncateHead(workErr, tools.DefaultTruncateBytes)
 			gist += "\nError: " + truncated
+		}
+		if cancelActionID > 0 {
+			gist += "\nCancellation reason: " + cancelReason
 		}
 
 		// Persist the episodic memory event; eventID links the eventqueue
@@ -149,11 +165,13 @@ func (w *work) Run(ctx context.Context) {
 			EventID:       eventID,
 			TriggerAction: w.triggerAction,
 			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:     w.ID,
-				Guidance:   w.plan.Guidance,
-				Status:     status,
-				WorkOutput: output,
-				WorkError:  workErr,
+				WorkID:         w.ID,
+				Guidance:       w.plan.Guidance,
+				Status:         status,
+				WorkOutput:     output,
+				WorkError:      workErr,
+				CancelActionID: cancelActionID,
+				CancelReason:   cancelReason,
 			},
 		})
 	}()
@@ -165,18 +183,27 @@ func (w *work) Run(ctx context.Context) {
 	)
 
 	// Check cancellation before starting
-	if ctx.Err() != nil {
+	if workCtx.Err() != nil {
 		applogger.Info("work cancelled before pipeline", "work_id", w.ID)
 		w.abandon()
 		return
 	}
 
-	w.runFocusedWork(ctx)
+	w.runFocusedWork(workCtx)
 
-	applogger.Info("work completed",
-		"work_id", w.ID,
-		"session_id", w.sessionID,
-	)
+}
+
+// executionContext gives this Work a cancellable Focus context and applies a
+// Cancel Action that arrived before Run began.
+func (w *work) executionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	w.cancelMu.Lock()
+	w.cancelRun = cancel
+	if w.cancelActionID > 0 {
+		cancel()
+	}
+	w.cancelMu.Unlock()
+	return ctx, cancel
 }
 
 // focusTerminalState maps a terminal Work status to its runtime-owned Focus checkpoint.
@@ -195,7 +222,7 @@ func focusTerminalState(workStatus model.WorkStatus, result *focusedwork.Focused
 
 // persistWorkHandoff records compact runtime-owned continuity metadata. It
 // intentionally does not attribute the shared session notes to this Work.
-func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr string) {
+func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr, cancelReason string) {
 	handoffStatus := model.FocusHandoffCompleted
 	unresolved := ""
 	nextStep := ""
@@ -212,6 +239,10 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 		handoffStatus = model.FocusHandoffCancelled
 		unresolved = "The work was abandoned before a normal completion."
 		nextStep = "Review the current session context before deciding whether to continue."
+		if cancelReason != "" {
+			unresolved = "The work stopped after a Cancel Action: " + cancelReason
+			nextStep = "Wait for a later instruction before resuming this work."
+		}
 	}
 	summary := output
 	if summary == "" {
@@ -225,11 +256,13 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 	}
 	confirmedFindings := confirmedFindingsForWork(workStatus, summary)
 	artifactReferences := extractHandoffSection(summary, "artifacts", "artifact", "产物", "交付")
-	if extracted := extractHandoffSection(summary, "unresolved", "未决", "未解决"); extracted != "" {
-		unresolved = extracted
-	}
-	if extracted := extractHandoffSection(summary, "next step", "next", "下一步"); extracted != "" {
-		nextStep = extracted
+	if cancelReason == "" {
+		if extracted := extractHandoffSection(summary, "unresolved", "未决", "未解决"); extracted != "" {
+			unresolved = extracted
+		}
+		if extracted := extractHandoffSection(summary, "next step", "next", "下一步"); extracted != "" {
+			nextStep = extracted
+		}
 	}
 	record := &model.FocusHandoff{
 		PersonID:           w.agent.agentPersonID,
@@ -248,6 +281,7 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 		applogger.Error("work: failed to persist focus handoff", "work_id", w.ID, "error", err)
 		return
 	}
+	refreshMemorySource(model.MemorySourceFocusHandoff, record.ID)
 	// The database is the canonical handoff store. AOSMeta is an append-only
 	// operational projection, so its failure cannot create a duplicate database record.
 	if err := workspace.AppendFocusHandoff(record); err != nil {
@@ -352,21 +386,10 @@ func (w *work) runFocusedWork(ctx context.Context) {
 		GuidanceCh:   w.guidanceCh,
 	})
 
-	applogger.Info("Focus completed",
-		"work_id", w.ID,
-		"session_id", w.sessionID,
-		"status", w.focusedWorkResult.Status,
-	)
 }
 
-// FeedGuidance sends a guidance directive to the work's guidance channel.
-// This is called when the Decide phase routes an event to an existing
-// Focus or cancels it - the directive becomes an environment event
-// that the FocusedLoop observes at the next iteration boundary.
-//
-// For cancel, the directive carries guidance like "save progress and stop"
-// and the reason explaining why. The FocusedLoop's LLM processes this and
-// decides how to wrap up - this is "appealable" cancellation, not forceful kill.
+// FeedGuidance sends a routed directive to the running Focus. Cancellation
+// uses requestCancel because a stop request must not depend on another LLM turn.
 func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) {
 	if w.guidanceCh == nil {
 		applogger.Error("FeedGuidance called on work with nil guidanceCh",
@@ -394,16 +417,52 @@ func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) {
 	}
 }
 
-// abandon marks the work as abandoned.
-// This is the fallback mechanism for when context is cancelled or
-// dependencies cannot be loaded. Normal cancellation goes through
-// FeedGuidance, allowing the FocusedLoop's LLM to wrap up gracefully.
-// This method is the safety net.
-//
-// Directly sets status to Abandoned in DB. The defer in Run() will not
-// overwrite it because it only transitions from Running -> Completed.
+// requestCancel atomically marks an active Work as abandoned and interrupts
+// its Focus context. A running tool may finish, but no later tool call or LLM
+// iteration may begin from the cancelled context.
+func (w *work) requestCancel(act action.Action) bool {
+	w.cancelMu.Lock()
+	defer w.cancelMu.Unlock()
+	reason := strings.TrimSpace(act.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(act.Background)
+	}
+	if reason == "" && act.WorkGuidance != nil {
+		reason = strings.TrimSpace(act.WorkGuidance.Guidance)
+	}
+	if reason == "" {
+		applogger.Error("work: cancel action has no reason", "work_id", w.ID, "action_id", act.ID)
+		reason = "Explicit cancellation requested."
+	}
+	result := database.DB.Model(&model.Work{}).
+		Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
+		Updates(map[string]interface{}{
+			"status":      model.WorkStatusAbandoned,
+			"focus_phase": model.FocusPhaseCancelled,
+			"checkpoint":  "Cancellation requested: " + reason,
+		})
+	if result.Error != nil {
+		applogger.Error("work: failed to cancel running work", "work_id", w.ID, "action_id", act.ID, "error", result.Error)
+		return false
+	}
+	if result.RowsAffected == 0 {
+		applogger.Error("work: cancel target was no longer running", "work_id", w.ID, "action_id", act.ID)
+		return false
+	}
+	w.cancelActionID = act.ID
+	w.cancelReason = reason
+	if w.cancelRun != nil {
+		w.cancelRun()
+	}
+	applogger.Info("work cancellation requested", "work_id", w.ID, "action_id", act.ID, "reason", reason)
+	return true
+}
+
+// abandon is the fallback for a Work that cannot enter or finish Focus.
+// Its update is limited to a running Work so it cannot overwrite a terminal
+// result. The defer in Run() also finalizes only from the running state.
 func (w *work) abandon() {
-	if err := database.DB.Model(&model.Work{}).Where("id = ?", w.ID).
+	if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
 		Updates(map[string]interface{}{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhaseCancelled, "checkpoint": "Focus was abandoned before normal completion."}).Error; err != nil {
 		applogger.Error("work: failed to mark work as abandoned", "work_id", w.ID, "error", err)
 	}

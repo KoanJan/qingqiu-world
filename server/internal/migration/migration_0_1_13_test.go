@@ -10,15 +10,15 @@ import (
 	"qingqiu-world-server/internal/service/workspace"
 )
 
-// TestLegacyOwnedSpaceMigrationIsRegistered verifies an upgrade to the current
-// release executes the filesystem migration through migration.Run.
+// TestLegacyOwnedSpaceMigrationIsRegistered verifies the filesystem migration
+// remains in the ordered upgrade history, independent of the current release.
 func TestLegacyOwnedSpaceMigrationIsRegistered(t *testing.T) {
 	for _, item := range migrations {
-		if item.version == config.AppVersion && item.fn != nil {
+		if item.version == "0.1.13" && item.fn != nil {
 			return
 		}
 	}
-	t.Fatalf("no migration registered for current version %s", config.AppVersion)
+	t.Fatal("legacy owned space migration is not registered")
 }
 
 // TestMigrateLegacyOwnedSpaceCopiesWithoutDeletingOrOverwriting verifies the

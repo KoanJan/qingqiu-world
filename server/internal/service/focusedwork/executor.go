@@ -53,8 +53,8 @@ type FocusedWorkResult struct {
 // (Guidance) and the cognitive context explaining why (Reason).
 //
 // This struct is passed through the guidance channel instead of a bare string,
-// so the FocusedLoop's LLM can understand the full context of a route or cancel
-// decision — not just the "what" but also the "why".
+// so the FocusedLoop's LLM can understand the context of a route decision.
+// Cancellation uses the Work's context instead of this channel.
 type GuidanceDirective struct {
 	Guidance string // What to do: the executable directive
 	Reason   string // Why: user's original message, inferred intent, and Decide's reasoning
@@ -264,10 +264,19 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 		} else {
 			result.Error = "Unknown error"
 		}
-		applogger.Error("FocusedWorkExecutor failed",
-			"session_id", params.SessionID,
-			"error", result.Error,
-		)
+		if params.Ctx.Err() != nil {
+			// The Work runtime owns the terminal state: an explicit Cancel Action
+			// becomes abandoned, while other interruptions retain their cause.
+			applogger.Info("FocusedWorkExecutor interrupted",
+				"session_id", params.SessionID,
+				"cause", params.Ctx.Err(),
+			)
+		} else {
+			applogger.Error("FocusedWorkExecutor failed",
+				"session_id", params.SessionID,
+				"error", result.Error,
+			)
+		}
 	}
 
 	return result

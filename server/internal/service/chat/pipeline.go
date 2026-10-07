@@ -46,13 +46,11 @@ type pipeline struct {
 	selfName        string // Agent's own name, for identity anchoring in chat generation
 
 	// Results from pipeline stages
-	personStateResult                  *comprehendTypes.PersonState
-	historySegments                    []comprehendTypes.Segment
-	kbSegments                         []comprehendTypes.Segment
-	needsClarification                 bool
-	clarification                      string
-	clarificationExpressionInstruction string
-	focusedWorkResult                  *FocusedWorkResultForAssembly
+	personStateResult *comprehendTypes.PersonState
+	historySegments   []comprehendTypes.Segment
+	historyKeywords   []string
+	kbSegments        []comprehendTypes.Segment
+	focusedWorkResult *FocusedWorkResultForAssembly
 }
 
 // loadMessages loads the trigger message from the database (when applicable),
@@ -123,26 +121,24 @@ func (p *pipeline) loadMessages() error {
 // Returns (messages, earlyContent, earlyReturn). When earlyReturn is true,
 // earlyContent contains the response string and the pipeline should terminate early.
 func (p *pipeline) assembleContext(ctx context.Context) ([]llm.Message, string, bool) {
-	// Clarification is independent of context-window size. Comprehend may request
-	// it for a short conversation when KB grants caused preprocessing to run.
-	if p.needsClarification {
-		applogger.Info("Query needed clarification", "session_id", p.session.ID)
-		return nil, p.clarification, true
-	}
 	if p.messageCount < int64(p.windowSize) {
 		return p.assembleSimpleContext()
 	}
 	return p.assembleEngineeredContext(ctx)
 }
 
-// assembleSimpleContext handles the V < N branch: skip context engineering,
-// use all messages directly without summary or narrative.
+// assembleSimpleContext handles the V < N branch using the observed messages
+// within this read boundary, without summary or narrative retrieval.
 func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 	applogger.Info("V < N, skipping context engineering",
 		"V", p.messageCount, "N", p.windowSize,
 	)
 
-	recentMessages := p.getContextMessages(int(p.messageCount))
+	// A new session has no history to load; the memory API requires a positive limit.
+	var recentMessages []model.Message
+	if p.messageCount > 0 {
+		recentMessages = p.getContextMessages(int(p.messageCount))
+	}
 
 	// Signal narrative generation if recent messages have accumulated enough.
 	// The narrative goroutine internally triggers summary generation if needed.
@@ -187,30 +183,33 @@ func (p *pipeline) assembleSimpleContext() ([]llm.Message, string, bool) {
 	return messages, "", false
 }
 
+// getContextMessages loads only messages visible to this agent and no newer
+// than the range being answered.
 func (p *pipeline) getContextMessages(limit int) []model.Message {
-	query := database.DB.Where("session_id = ?", p.session.ID)
-	if p.readMessageRange[1] > 0 {
-		query = query.Where("id <= ?", p.readMessageRange[1])
-	}
-	var messages []model.Message
-	if err := query.Order("id DESC").Limit(limit).Find(&messages).Error; err != nil {
+	messages, err := memory.ListObservedMessages(p.aiPersonID, p.session.ID, p.readMessageRange[1], limit, nil)
+	if err != nil {
 		applogger.Error("failed to load bounded chat context messages", "session_id", p.session.ID, "error", err)
 		return nil
-	}
-	for left, right := 0, len(messages)-1; left < right; left, right = left+1, right-1 {
-		messages[left], messages[right] = messages[right], messages[left]
 	}
 	return messages
 }
 
-// assembleEngineeredContext handles the V >= N branch: apply full context
-// engineering pipeline including summary, retrieval, and assembly.
-// Waits for async preprocessing to complete before using the result.
+// assembleEngineeredContext handles the V >= N branch using the cached
+// narrative, observed recent messages, and retrieval planned by Comprehend.
 func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message, string, bool) {
 	contextResult := getContext(p.session.ID, p.aiPersonID, p.readMessageRange[1], p.windowSize)
 
 	// Merge knowledge base segments with chat history segments
-	relevantSegments := append([]comprehendTypes.Segment{}, p.historySegments...)
+	recentIDs := make(map[int64]struct{}, len(contextResult.RecentMessages))
+	for _, message := range contextResult.RecentMessages {
+		recentIDs[message.ID] = struct{}{}
+	}
+	relevantSegments := make([]comprehendTypes.Segment, 0, len(p.historySegments)+len(p.kbSegments))
+	for _, segment := range p.historySegments {
+		if _, repeated := recentIDs[segment.MessageID]; !repeated {
+			relevantSegments = append(relevantSegments, segment)
+		}
+	}
 	if len(p.kbSegments) > 0 {
 		relevantSegments = append(relevantSegments, p.kbSegments...)
 	}
@@ -251,7 +250,7 @@ func (p *pipeline) assembleEngineeredContext(ctx context.Context) ([]llm.Message
 	// that were retrieved count as observation retrieval hits, boosting
 	// importance scores.
 	var ragHitIDs []int64
-	for _, seg := range p.historySegments {
+	for _, seg := range relevantSegments {
 		if seg.Source == comprehendTypes.SourceChatHistory && seg.MessageID > 0 {
 			ragHitIDs = append(ragHitIDs, seg.MessageID)
 		}

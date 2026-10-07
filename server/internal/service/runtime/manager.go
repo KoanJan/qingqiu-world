@@ -158,6 +158,7 @@ func Start(publisher notification.Publisher) {
 		notificationPublisher = publisher
 	}
 	globalRuntimeManager = newRuntimeManager()
+	recoverInterruptedActions()
 
 	// Reset any stale working statuses left from a previous crash.
 	// Each agent's recoverActiveWorks handles the normal case (work record + status),
@@ -212,6 +213,7 @@ func SendNewMessageEvent(agentConfigID, sessionID, messageID, personID int64, co
 	if err != nil {
 		applogger.Error("failed to record memory event for user message",
 			"message_id", messageID, "error", err)
+		return
 	}
 
 	// Distribution: notify agent runtime.

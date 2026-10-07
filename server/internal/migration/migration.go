@@ -163,6 +163,7 @@ func recordVersion(version, description string) {
 		Description: description,
 	}).Error; err != nil {
 		applogger.Error("failed to record DB version", "version", version, "error", err)
+		panic(fmt.Sprintf("failed to record DB version %s: %v", version, err))
 	}
 }
 

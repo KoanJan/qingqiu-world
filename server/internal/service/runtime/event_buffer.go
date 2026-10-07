@@ -93,6 +93,12 @@ func serializeEventPayload(event *eventqueue.AgentEvent) (string, error) {
 			return "", fmt.Errorf("invalid owned space inspected payload")
 		}
 		payloadJSON, err = json.Marshal(payload)
+	case eventqueue.EventTypePSCompleted:
+		payload, ok := event.Payload.(*eventqueue.PSCompletedPayload)
+		if !ok || payload == nil {
+			return "", fmt.Errorf("invalid private space completed payload")
+		}
+		payloadJSON, err = json.Marshal(payload)
 	default:
 		return "", fmt.Errorf("unsupported event type %d", event.Type)
 	}
@@ -198,6 +204,12 @@ func unmarshalEventPayload(event *eventqueue.AgentEvent, raw json.RawMessage) er
 			return err
 		}
 		event.Payload = payload
+	case eventqueue.EventTypePSCompleted:
+		payload := &eventqueue.PSCompletedPayload{}
+		if err := json.Unmarshal(raw, payload); err != nil {
+			return err
+		}
+		event.Payload = payload
 	default:
 		return fmt.Errorf("unsupported event type %d", event.Type)
 	}
@@ -205,6 +217,42 @@ func unmarshalEventPayload(event *eventqueue.AgentEvent, raw json.RawMessage) er
 }
 
 func (r *agentRuntime) bufferEvent(event *eventqueue.AgentEvent) error {
+	if err := r.persistBufferedEvent(event); err != nil {
+		return err
+	}
+	applogger.Info("buffered agent event due to insufficient energy",
+		"person_id", r.agentPersonID,
+		"event_type", event.Type,
+		"session_id", event.SessionID,
+		"event_id", event.EventID,
+	)
+	return dops.SetAgentSleepSinceIfEmpty(r.agentPersonID, time.Now())
+}
+
+// bufferInterruptedEvent retains an event removed from the runtime channel but
+// not accepted before shutdown. Unlike energy buffering, it does not put the
+// agent to sleep; replayBufferedEvents will process it on the next startup.
+func (r *agentRuntime) bufferInterruptedEvent(event *eventqueue.AgentEvent) error {
+	if event == nil || event.EventID <= 0 {
+		return nil
+	}
+	accepted, err := hasAcceptedDecision(r.agentPersonID, event.EventID)
+	if err != nil || accepted {
+		return err
+	}
+	if err := r.persistBufferedEvent(event); err != nil {
+		return err
+	}
+	applogger.Info("buffered shutdown-interrupted agent event", "person_id", r.agentPersonID, "event_id", event.EventID)
+	return nil
+}
+
+// persistBufferedEvent writes one replayable copy of a durable event.
+func (r *agentRuntime) persistBufferedEvent(event *eventqueue.AgentEvent) error {
+	buffered, err := dops.HasAgentEventBuffer(r.agentPersonID, event.EventID)
+	if err != nil || buffered {
+		return err
+	}
 	payloadJSON, err := serializeEventPayload(event)
 	if err != nil {
 		return err
@@ -218,13 +266,7 @@ func (r *agentRuntime) bufferEvent(event *eventqueue.AgentEvent) error {
 	}); err != nil {
 		return err
 	}
-	applogger.Info("buffered agent event due to insufficient energy",
-		"person_id", r.agentPersonID,
-		"event_type", event.Type,
-		"session_id", event.SessionID,
-		"event_id", event.EventID,
-	)
-	return dops.SetAgentSleepSinceIfEmpty(r.agentPersonID, time.Now())
+	return nil
 }
 
 func (r *agentRuntime) replayBufferedEvents(ctx context.Context) {
@@ -258,7 +300,12 @@ func (r *agentRuntime) replayBufferedEvents(ctx context.Context) {
 			"session_id", event.SessionID,
 			"event_id", event.EventID,
 		)
-		if !r.handleEvent(ctx, event, true) {
+		processed := r.handleEvent(ctx, event, true)
+		if ctx.Err() != nil {
+			// The row must remain durable if shutdown interrupted its replay.
+			return
+		}
+		if !processed {
 			applogger.Info("paused buffered event replay due to insufficient energy",
 				"person_id", r.agentPersonID,
 				"buffer_id", buffer.ID,

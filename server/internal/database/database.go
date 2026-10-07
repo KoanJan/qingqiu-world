@@ -78,10 +78,41 @@ func Init() {
 			panic(fmt.Sprintf("Failed to auto-migrate %T: %v", m, err))
 		}
 	}
+	// Heartbeats use event_id=0 repeatedly; external events have one accepted
+	// decision per person and durable event, including zero-action decisions.
+	if err := DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_external_event ON decisions(person_id, event_id) WHERE event_id > 0").Error; err != nil {
+		panic(fmt.Sprintf("Failed to create decision event index: %v", err))
+	}
+	if err := EnsureRecallIndexes(); err != nil {
+		panic(fmt.Sprintf("Failed to create recall indexes: %v", err))
+	}
 
 	ensureSearchConfig()
 
 	applogger.Info("Database schema migration completed")
+}
+
+// EnsureRecallIndexes creates the source-specific access paths used by bounded
+// memory recall. It is idempotent and also used by isolated database tests.
+func EnsureRecallIndexes() error {
+	for _, indexSQL := range []string{
+		"CREATE INDEX IF NOT EXISTS idx_recall_events_type_ref ON events(event_type, ref_id)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_events_self_held_time ON events(ref_id, created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_messages_time ON messages(created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_messages_session_time ON messages(session_id, created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_participants_session_person ON participant_sessions(session_id, participant_id)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_actions_time ON actions(created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_action_effect_source ON action_effects(action_id, effect_type, effect_id)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_works_person_time ON works(person_id, created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_handoffs_person_time ON focus_handoffs(person_id, created_at DESC, id DESC)",
+		"CREATE INDEX IF NOT EXISTS idx_recall_handoffs_work_person_time ON focus_handoffs(work_id, person_id, created_at DESC, id DESC)",
+		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_recall_action_work_target ON actions(CASE WHEN json_valid(plan_json) THEN CAST(json_extract(plan_json, '$.target_work_id') AS INTEGER) ELSE 0 END, created_at DESC, id DESC) WHERE type IN (%d, %d)", model.ActionTypeRouteFocusedWork, model.ActionTypeCancelFocusedWork),
+	} {
+		if err := DB.Exec(indexSQL).Error; err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // clearAndInit truncates all data and re-seeds defaults.
@@ -136,8 +167,12 @@ func allModels() []any {
 		&model.ParticipantSession{},
 		&model.ScheduledEvent{},
 		&model.Event{},
+		&model.Decision{},
+		&model.Action{},
+		&model.ActionEffect{},
 		&model.AgentObservation{},
 		&model.EventVector{},
+		&model.MemoryTerm{},
 		&model.EntityProfile{},
 		&model.ModelCapability{},
 		&model.AgentExperience{},
