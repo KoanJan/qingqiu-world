@@ -1,7 +1,7 @@
 import React from 'react';
 import AgentAvatar from './AgentAvatar';
 import type { SessionAgentStatus } from '../types';
-import { PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING } from '../types';
+import { PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING, PERSON_STATUS_DECEASED } from '../types';
 import { logger } from '../logger';
 
 /**
@@ -34,12 +34,13 @@ const AgentStatusBar: React.FC<AgentStatusBarProps> = ({ agents }) => {
       <div className="agent-status-bar">
         {agents.map((agent) => {
           const config = STATUS_DOT_CONFIG[agent.status];
-          if (!config) {
+          const deceased = agent.life_status === PERSON_STATUS_DECEASED;
+          if (!config && !deceased) {
             logger.warn('Unknown agent status, using default', 'status', agent.status, 'agent_id', agent.agent_id);
           }
-          const dotConfig = config ?? DEFAULT_DOT_CONFIG;
+          const dotConfig = deceased ? { color: '#9ca3af', animate: false, label: '已逝去' } : (config ?? DEFAULT_DOT_CONFIG);
           return (
-            <div key={agent.agent_id} className="agent-status-item">
+            <div key={agent.agent_id} className={`agent-status-item${deceased ? ' agent-status-deceased' : ''}`} aria-label={`${agent.name}，${dotConfig.label}`}>
               <div className="agent-avatar-wrapper">
                 <AgentAvatar avatar={agent.avatar} size={28} iconSize={14} borderRadius="50%" />
                 <span
@@ -47,7 +48,7 @@ const AgentStatusBar: React.FC<AgentStatusBarProps> = ({ agents }) => {
                   style={{ backgroundColor: dotConfig.color }}
                 />
               </div>
-              <span className="agent-status-name">{agent.name}</span>
+              <span className="agent-status-name">{agent.name}{deceased ? ' · 已逝去' : ''}</span>
             </div>
           );
         })}

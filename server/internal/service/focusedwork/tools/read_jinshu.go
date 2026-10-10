@@ -37,7 +37,7 @@ func (r *ReadJinshuTool) Schema() llm.FunctionDefinition {
 		Description: "Read one jinshu (锦书) you have received by its id. " +
 			"Returns the sender, receiver, topic, description, read status, created time, " +
 			"and the list of delivered files. Use copy_from_jinshu to copy those files " +
-			"into your output directory.",
+			"into your selected Workspace or another owned directory.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{

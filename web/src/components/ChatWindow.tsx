@@ -6,7 +6,6 @@ import { useTranslation } from 'react-i18next';
 import { formatMessageTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar';
 import AgentStatusBar from './AgentStatusBar';
-import ActivityList from './ActivityList';
 import { MarkdownRenderer } from 'pd-markdown/web';
 import { useMessages } from '../hooks/useMessages';
 import { subscribeClientNotifications, CLIENT_NOTIFICATION_TYPES } from '../services/clientNotifications';
@@ -26,11 +25,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const [inputValue, setInputValue] = useState('');
   const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
   const [sessionAgents, setSessionAgents] = useState<SessionAgentStatus[]>([]);
-  const [viewMode, setViewMode] = useState<'chat' | 'activity'>('chat');
   const [currentUserPersonId, setCurrentUserPersonId] = useState<number>(0);
   const [speechLoadingMessageID, setSpeechLoadingMessageID] = useState<number | null>(null);
-  const tabContainerRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const isInitialLoadRef = useRef<boolean>(true);
@@ -40,10 +36,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const speechAudioRef = useRef<HTMLAudioElement | null>(null);
   const speechRequestIDRef = useRef(0);
 
-  // Reset initial-load flag and view mode when the session changes.
+  // Reset the initial-load flag when the session changes.
   useEffect(() => {
     isInitialLoadRef.current = true;
-    setViewMode('chat');
   }, [session?.id]);
 
   const isTempSession = session?.id === TEMP_SESSION_ID;
@@ -158,7 +153,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
         logger.error('Failed to load session agents', error, 'session_id', session.id);
         if (currentAgent) {
           setSessionAgents([
-            { agent_id: currentAgent.id, name: currentAgent.name, avatar: currentAgent.avatar, status: PARTICIPANT_STATUS_IDLE },
+            { agent_id: currentAgent.id, name: currentAgent.name, avatar: currentAgent.avatar, status: PARTICIPANT_STATUS_IDLE, life_status: currentAgent.status },
           ]);
         }
       }
@@ -210,24 +205,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
       scrollToBottom(true);
     }
   }, [messages, scrollToBottom]);
-
-  // Tab indicator position
-  useEffect(() => {
-    const container = tabContainerRef.current;
-    const activeTab = tabRefs.current[viewMode];
-    if (!container || !activeTab) return;
-    const containerRect = container.getBoundingClientRect();
-    const tabRect = activeTab.getBoundingClientRect();
-    container.style.setProperty('--indicator-left', `${tabRect.left - containerRect.left}px`);
-    container.style.setProperty('--indicator-width', `${tabRect.width}px`);
-  }, [viewMode]);
-
-  // Scroll to bottom when switching to chat view — use instant jump since
-  // the chat-messages div is freshly mounted and starts at scrollTop=0.
-  useEffect(() => {
-    if (viewMode !== 'chat') return;
-    scrollToBottom(false);
-  }, [viewMode, scrollToBottom]);
 
   // ---- Handlers ----
 
@@ -349,31 +326,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
     <>
       <div className="chat-header-row">
         <AgentStatusBar agents={sessionAgents} />
-        {!isTempSession && (
-          <div className="chat-view-tabs" ref={tabContainerRef}>
-            <div className="chat-tab-indicator" />
-            <button
-              ref={el => { tabRefs.current.chat = el; }}
-              className={`chat-tab ${viewMode === 'chat' ? 'active' : ''}`}
-              onClick={() => setViewMode('chat')}
-            >
-              {t('viewTabs.chat')}
-            </button>
-            <button
-              ref={el => { tabRefs.current.activity = el; }}
-              className={`chat-tab ${viewMode === 'activity' ? 'active' : ''}`}
-              onClick={() => setViewMode('activity')}
-            >
-              {t('viewTabs.activities')}
-            </button>
-          </div>
-        )}
       </div>
 
-      {viewMode === 'activity' ? (
-        <ActivityList sessionId={session.id} agents={sessionAgents} />
-      ) : (
-        <>
           <div className="chat-messages" ref={chatMessagesRef}>
             {messagesLoading ? (
               <div style={{ textAlign: 'center', padding: '40px' }}>
@@ -526,8 +480,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
               </div>
             </div>
           )}
-        </>
-      )}
     </>
   );
 };

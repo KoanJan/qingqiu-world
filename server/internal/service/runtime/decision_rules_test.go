@@ -21,7 +21,6 @@ func TestRuleDecideKeepsEventBranchesIndependentOfTheModel(t *testing.T) {
 	}{
 		{"group joined", eventqueue.AgentEvent{Type: eventqueue.EventTypeGroupChatJoined}, true, 0, ""},
 		{"group left", eventqueue.AgentEvent{Type: eventqueue.EventTypeGroupChatLeft}, true, 0, ""},
-		{"system notice", eventqueue.AgentEvent{Type: eventqueue.EventTypeSystemNotification}, true, 0, ""},
 		{"alarm created", eventqueue.AgentEvent{Type: eventqueue.EventTypeAlarmCreated}, true, 0, ""},
 		{"private space completed", eventqueue.AgentEvent{Type: eventqueue.EventTypePSCompleted}, true, 0, ""},
 		{"cancelled work completed", eventqueue.AgentEvent{Type: eventqueue.EventTypeWorkCompleted, Payload: &eventqueue.WorkCompletedPayload{
@@ -51,5 +50,32 @@ func TestRuleDecideKeepsEventBranchesIndependentOfTheModel(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestWorkControlValidationUsesAgentActiveRoster covers a session message
+// controlling a Work that began from a sessionless event. The Work is active
+// for this agent even though its originating SessionID is zero.
+func TestWorkControlValidationUsesAgentActiveRoster(t *testing.T) {
+	situation := &Situation{
+		Source: SituationSourceExternal,
+		Matter: SituationMatter{Event: &eventqueue.AgentEvent{
+			Type: eventqueue.EventTypeNewPrivateChatMessage, SessionID: 23,
+		}},
+	}
+	activeWorks := []*work{{ID: 34, sessionID: 0}}
+	for _, actionType := range []action.ActionType{action.RouteFocusedWork, action.CancelFocusedWork} {
+		candidate := action.Action{
+			Type:         actionType,
+			WorkGuidance: &action.WorkGuidance{TargetWorkID: 34, Guidance: "Send the static files"},
+		}
+		accepted := filterValidActions([]action.Action{candidate}, activeWorks, situation)
+		if len(accepted) != 1 || accepted[0].Type != actionType {
+			t.Fatalf("active Work control %d was rejected: %+v", actionType, accepted)
+		}
+	}
+	missing := action.Action{Type: action.RouteFocusedWork, WorkGuidance: &action.WorkGuidance{TargetWorkID: 35, Guidance: "Send the static files"}}
+	if accepted := filterValidActions([]action.Action{missing}, activeWorks, situation); len(accepted) != 0 {
+		t.Fatalf("inactive Work control was accepted: %+v", accepted)
 	}
 }

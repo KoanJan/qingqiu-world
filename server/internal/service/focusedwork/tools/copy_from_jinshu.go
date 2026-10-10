@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // CopyFromJinshuTool copies the files delivered by a received jinshu into the
@@ -14,15 +14,17 @@ import (
 type CopyFromJinshuTool struct {
 	personID      int64
 	sessionID     int64
+	workspaceDir  string
 	CycleDetector // Embedded: cycle detection on (args, result) pairs
 }
 
-// NewCopyFromJinshuTool creates a CopyFromJinshuTool for the given person and
-// session. sessionID locates the output/ directory that receives the copies.
-func NewCopyFromJinshuTool(personID, sessionID int64) *CopyFromJinshuTool {
+// NewCopyFromJinshuTool resolves bare targets from the selected Workspace.
+// sessionID carries only the optional originating conversation.
+func NewCopyFromJinshuTool(personID, sessionID int64, workspaceDir string) *CopyFromJinshuTool {
 	return &CopyFromJinshuTool{
-		personID:  personID,
-		sessionID: sessionID,
+		personID:     personID,
+		sessionID:    sessionID,
+		workspaceDir: workspaceDir,
 	}
 }
 
@@ -39,7 +41,7 @@ func (c *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: c.Name().String(),
 		Description: "Copy the files delivered by a received jinshu into an Agent Owned Space directory. " +
-			"Use work/<session_id>/... or private/...; bare paths remain relative to output/. The target directory is created if it does not exist, and existing " +
+			"Use work/<directory_id>/... or private/...; bare paths use this Focus's Workspace directory. The target directory is created if it does not exist, and existing " +
 			"files with the same name are overwritten.",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -75,7 +77,7 @@ func (c *CopyFromJinshuTool) Execute(args map[string]interface{}) (string, error
 		return "", err
 	}
 
-	targetDir, _, err := workspace.ResolveAOSLocator(c.personID, c.sessionID, targetRel)
+	targetDir, _, err := aos.ResolveAOSLocatorFromDefault(c.personID, c.workspaceDir, targetRel)
 	if err != nil {
 		return "", fmt.Errorf("invalid target_relative_dir %q: %w", targetRel, err)
 	}

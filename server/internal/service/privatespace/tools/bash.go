@@ -1,10 +1,7 @@
 package tools
 
 import (
-	"fmt"
-	"path/filepath"
-
-	"qingqiu-world-server/internal/config"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
@@ -19,8 +16,7 @@ type BashTool struct {
 // rootDir is the sandbox boundary; workDir is the bash working directory.
 // Sandbox policy files are stored in {DATA_ROOT}/aac/{personID}/private/.
 func NewBashTool(personID int64, rootDir, workDir string) *BashTool {
-	policyDir := filepath.Join(config.Get().GetDataRoot(), "aac",
-		fmt.Sprintf("%d", personID), "private")
+	policyDir := aos.GetPrivateSandboxPolicyDir(personID)
 	return &BashTool{
 		core: servicetools.NewBashTool(rootDir, workDir, true, policyDir),
 	}

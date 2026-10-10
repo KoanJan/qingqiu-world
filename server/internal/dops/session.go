@@ -3,7 +3,6 @@ package dops
 import (
 	"fmt"
 	"qingqiu-world-server/internal/database"
-	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 
 	"gorm.io/gorm"
@@ -16,17 +15,6 @@ func GetSession(sessionID int64) (*model.Session, error) {
 		return nil, err
 	}
 	return &session, nil
-}
-
-// HasInteractions checks whether any focused-work interaction records exist for the given session.
-func HasInteractions(sessionID int64) (bool, error) {
-	var count int64
-	if err := database.DB.Model(&model.Interaction{}).
-		Where("session_id = ?", sessionID).
-		Count(&count).Error; err != nil {
-		return false, err
-	}
-	return count > 0, nil
 }
 
 // GetSessionParticipantsByPersonType returns participant_sessions joined with persons filtered by type.
@@ -56,7 +44,7 @@ func GetSessionParticipantsByPersonTypeMulti(sessionIDs []int64, personType int)
 func GetSessionAIParticipantIDs(sessionID int64) ([]int64, error) {
 	var ids []int64
 	err := database.DB.Model(&model.ParticipantSession{}).
-		Where("session_id = ? AND participant_id IN (SELECT id FROM persons WHERE type = ?)", sessionID, model.PersonTypeAI).
+		Where("session_id = ? AND participant_id IN (SELECT id FROM persons WHERE type = ? AND status = ?)", sessionID, model.PersonTypeAI, model.PersonStatusActive).
 		Pluck("participant_id", &ids).Error
 	return ids, err
 }
@@ -68,16 +56,21 @@ func GetSessionAIParticipantIDsMulti(sessionIDs []int64) ([]int64, error) {
 	}
 	var ids []int64
 	err := database.DB.Model(&model.ParticipantSession{}).
-		Where("session_id IN ? AND participant_id IN (SELECT id FROM persons WHERE type = ?)", sessionIDs, model.PersonTypeAI).
+		Where("session_id IN ? AND participant_id IN (SELECT id FROM persons WHERE type = ? AND status = ?)", sessionIDs, model.PersonTypeAI, model.PersonStatusActive).
 		Pluck("participant_id", &ids).Error
 	return ids, err
 }
 
 // UpdateLastReadMessageID records the id of last read message in the session for the person
 func UpdateLastReadMessageID(sessionID, personID, messageID int64) error {
-	return database.DB.Model(&model.ParticipantSession{}).
-		Where("session_id = ? AND participant_id = ?", sessionID, personID).
-		Update("last_read_message_id", messageID).Error
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActiveSessionTx(tx, sessionID); err != nil {
+			return err
+		}
+		return tx.Model(&model.ParticipantSession{}).
+			Where("session_id = ? AND participant_id = ?", sessionID, personID).
+			Update("last_read_message_id", messageID).Error
+	})
 }
 
 // GetParticipantSession returns a person's participation record for a session.
@@ -92,9 +85,14 @@ func GetParticipantSession(sessionID, personID int64) (*model.ParticipantSession
 
 // AdvanceLastReadMessageID advances the read marker without moving it backward.
 func AdvanceLastReadMessageID(sessionID, personID, messageID int64) error {
-	return database.DB.Model(&model.ParticipantSession{}).
-		Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?", sessionID, personID, messageID).
-		Update("last_read_message_id", messageID).Error
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActiveSessionTx(tx, sessionID); err != nil {
+			return err
+		}
+		return tx.Model(&model.ParticipantSession{}).
+			Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?", sessionID, personID, messageID).
+			Update("last_read_message_id", messageID).Error
+	})
 }
 
 // ListAIParticipants returns all AIParticipants in the session
@@ -110,6 +108,12 @@ func ListAIParticipants(sessionID int64) (participants []model.ParticipantSessio
 func CreateSession(session *model.Session, firstMessage *model.Message, fromPersonID, toPersonID int64) error {
 	// Create all session resources in a single transaction
 	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActivePersonTx(tx, fromPersonID); err != nil {
+			return err
+		}
+		if err := RequireActivePersonTx(tx, toPersonID); err != nil {
+			return err
+		}
 		if err := tx.Create(session).Error; err != nil {
 			return err
 		}
@@ -167,6 +171,12 @@ func CreateSession(session *model.Session, firstMessage *model.Message, fromPers
 func CreateDirectSession(initiatorPersonID, recipientPersonID int64) (int64, error) {
 	var sessionID int64
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActivePersonTx(tx, initiatorPersonID); err != nil {
+			return err
+		}
+		if err := RequireActivePersonTx(tx, recipientPersonID); err != nil {
+			return err
+		}
 		session := model.Session{
 			Title: "",
 		}
@@ -199,55 +209,6 @@ func CreateDirectSession(initiatorPersonID, recipientPersonID int64) (int64, err
 		return 0, err
 	}
 	return sessionID, nil
-}
-
-// DeleteSessionCascade deletes a session and all associated data in a transaction.
-// Returns the first AI agent's PersonID for caller's workspace cleanup, and 0 for
-// the legacy agentConfigID (caller ignores it).
-func DeleteSessionCascade(sessionID int64) (personID int64, agentConfigID int64, err error) {
-	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		var sess model.Session
-		if err := tx.First(&sess, sessionID).Error; err != nil {
-			return fmt.Errorf("session %d not found: %w", sessionID, err)
-		}
-
-		// Resolve the first AI agent's PersonID from participant_sessions
-		// for workspace cleanup.
-		var aiPersonID int64
-		if err := tx.Raw(`SELECT ac.person_id FROM participant_sessions ps
-			JOIN persons p ON p.id = ps.participant_id AND p.type = 1
-			JOIN agent_configs ac ON ac.person_id = p.id
-			WHERE ps.session_id = ?
-			LIMIT 1`, sessionID).Scan(&aiPersonID).Error; err != nil {
-			applogger.Error("failed to find agent person for session during cleanup",
-				"session_id", sessionID, "error", err)
-		}
-		personID = aiPersonID
-		if err := deleteSessionReferencesTx(tx, []int64{sessionID}); err != nil {
-			return fmt.Errorf("delete session references: %w", err)
-		}
-
-		tables := []interface{}{
-			&model.Work{}, &model.Interaction{},
-			&model.AgentNarrative{}, &model.Summary{}, &model.FocusHandoff{},
-			&model.ParticipantSession{}, &model.Message{},
-		}
-		for _, table := range tables {
-			if err := tx.Where("session_id = ?", sessionID).Delete(table).Error; err != nil {
-				return err
-			}
-		}
-		if err := tx.Where("session_id = ?", sessionID).Delete(&model.ScheduledEvent{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&sess).Error; err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return personID, agentConfigID, err
 }
 
 // GetFirstAIParticipantID returns the first AI participant's person ID in a session.

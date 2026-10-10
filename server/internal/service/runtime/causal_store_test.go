@@ -21,11 +21,14 @@ func TestPersistDecisionCoordinatesReplayAndReadBoundary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Event{}, &model.Decision{}, &model.Action{}, &model.ParticipantSession{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Event{}, &model.Decision{}, &model.Action{}, &model.ParticipantSession{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = old })
+	if err := db.Create(&model.Person{ID: 1, Name: "Decision owner", Type: model.PersonTypeAI}).Error; err != nil {
+		t.Fatal(err)
+	}
 	participant := model.ParticipantSession{SessionID: 7, ParticipantID: 1, LastReadMessageID: 2}
 	if err := db.Create(&participant).Error; err != nil {
 		t.Fatal(err)
@@ -76,11 +79,14 @@ func TestSiblingActionStatusesRemainIndependent(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Event{}, &model.Decision{}, &model.Action{}, &model.ActionEffect{}, &model.MemoryTerm{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Event{}, &model.Decision{}, &model.Action{}, &model.ActionEffect{}, &model.MemoryTerm{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = old })
+	if err := db.Create(&model.Person{ID: 1, Name: "Sibling owner", Type: model.PersonTypeAI}).Error; err != nil {
+		t.Fatal(err)
+	}
 	source := model.Event{EventType: model.EventTypeBiography, PayloadJSON: `{"test":true}`}
 	if err := db.Create(&source).Error; err != nil {
 		t.Fatal(err)

@@ -97,7 +97,7 @@ func TestCancelDuringToolStopsFollowingCalls(t *testing.T) {
 	tool := &blockingFocusedTool{started: make(chan struct{}), release: make(chan struct{})}
 	loop := NewFocusedLoop(
 		llm.NewChatModel(server.URL, "test", "test-model"), nil, []tools.Tool{tool},
-		focusedworkcontext.NewContextManager("test", 10, 20, "", "", "", ""),
+		focusedworkcontext.NewContextManager("test", 10, 20, "", "", ""),
 		3, 0, 0, 0, nil, nil,
 	)
 	ctx, cancel := context.WithCancel(context.Background())

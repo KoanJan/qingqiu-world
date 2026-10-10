@@ -23,10 +23,10 @@ func TestListActivityInteractions(t *testing.T) {
 		t.Fatalf("create work: %v", err)
 	}
 	interactions := []model.Interaction{
-		{SessionID: 1, WorkID: work.ID, Iteration: 1, Type: model.InteractionTypeRequest, Data: "large prompt that must not reach Activity"},
-		{SessionID: 1, WorkID: work.ID, Iteration: 1, Type: model.InteractionTypeResponse, Data: `{"content":"first"}`},
-		{SessionID: 1, WorkID: work.ID, Iteration: 2, Type: model.InteractionTypeGuidance, Data: `{"guidance":"second"}`},
-		{SessionID: 1, WorkID: work.ID, Iteration: 2, Type: model.InteractionTypeResponse, Data: `{"content":"third"}`},
+		{WorkID: work.ID, Iteration: 1, Type: model.InteractionTypeRequest, Data: "large prompt that must not reach Activity"},
+		{WorkID: work.ID, Iteration: 1, Type: model.InteractionTypeResponse, Data: `{"content":"first"}`},
+		{WorkID: work.ID, Iteration: 2, Type: model.InteractionTypeGuidance, Data: `{"guidance":"second"}`},
+		{WorkID: work.ID, Iteration: 2, Type: model.InteractionTypeResponse, Data: `{"content":"third"}`},
 	}
 	for _, interaction := range interactions {
 		if err := database.DB.Create(&interaction).Error; err != nil {
@@ -34,7 +34,7 @@ func TestListActivityInteractions(t *testing.T) {
 		}
 	}
 
-	firstPage, hasMore, err := ListSessionActivityInteractions(1, 0, 2)
+	firstPage, hasMore, err := ListActivityInteractions([]int64{work.ID}, 0, 0, 2)
 	if err != nil {
 		t.Fatalf("read first activity page: %v", err)
 	}
@@ -45,7 +45,7 @@ func TestListActivityInteractions(t *testing.T) {
 		t.Errorf("first page types = %d, %d; want guidance then response in chronological order", firstPage[0].Type, firstPage[1].Type)
 	}
 
-	secondPage, hasMore, err := ListSessionActivityInteractions(1, firstPage[0].ID, 2)
+	secondPage, hasMore, err := ListActivityInteractions([]int64{work.ID}, firstPage[0].ID, 0, 2)
 	if err != nil {
 		t.Fatalf("read second activity page: %v", err)
 	}
@@ -54,5 +54,10 @@ func TestListActivityInteractions(t *testing.T) {
 	}
 	if secondPage[0].Type != model.InteractionTypeResponse || secondPage[0].Data != `{"content":"first"}` {
 		t.Errorf("second page unexpectedly included request data: %+v", secondPage[0])
+	}
+
+	newerPage, hasMore, err := ListActivityInteractions([]int64{work.ID}, 0, secondPage[0].ID, 1)
+	if err != nil || !hasMore || len(newerPage) != 1 || newerPage[0].Type != model.InteractionTypeGuidance {
+		t.Fatalf("newer page = %+v, hasMore=%t, err=%v", newerPage, hasMore, err)
 	}
 }

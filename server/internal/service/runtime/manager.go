@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/notification"
@@ -25,6 +26,8 @@ import (
 type runtimeManager struct {
 	mu       sync.RWMutex
 	runtimes map[int64]*agentRuntime // agentConfigID -> runtime
+	cancels  map[int64]context.CancelFunc
+	done     map[int64]chan struct{}
 
 	// rootCtx is the root context for all agent runtimes.
 	// Cancelling it propagates to every runtime, stopping all goroutines at once.
@@ -41,6 +44,8 @@ func newRuntimeManager() *runtimeManager {
 	rootCtx, cancelAll := context.WithCancel(context.Background())
 	return &runtimeManager{
 		runtimes:  make(map[int64]*agentRuntime),
+		cancels:   make(map[int64]context.CancelFunc),
+		done:      make(map[int64]chan struct{}),
 		rootCtx:   rootCtx,
 		cancelAll: cancelAll,
 	}
@@ -61,12 +66,38 @@ func (rm *runtimeManager) StartRuntime(agentConfigID int64) {
 		applogger.Error("StartRuntime: failed to create agent runtime", "agent_config_id", agentConfigID, "error", err)
 		return
 	}
+	ctx, cancel := context.WithCancel(rm.rootCtx)
+	done := make(chan struct{})
 	rm.wg.Add(1)
 	go func() {
 		defer rm.wg.Done()
-		rt.Run(rm.rootCtx)
+		defer close(done)
+		rt.Run(ctx)
 	}()
 	rm.runtimes[agentConfigID] = rt
+	rm.cancels[agentConfigID] = cancel
+	rm.done[agentConfigID] = done
+}
+
+// StopRuntime cancels one person's runtime and waits for its execution to exit.
+func (rm *runtimeManager) StopRuntime(agentConfigID int64) {
+	rm.mu.RLock()
+	cancel := rm.cancels[agentConfigID]
+	done := rm.done[agentConfigID]
+	rm.mu.RUnlock()
+	if cancel == nil {
+		return
+	}
+	cancel()
+	<-done
+	rm.mu.Lock()
+	if rm.done[agentConfigID] == done {
+		eventqueue.Unsubscribe(agentConfigID)
+		delete(rm.runtimes, agentConfigID)
+		delete(rm.cancels, agentConfigID)
+		delete(rm.done, agentConfigID)
+	}
+	rm.mu.Unlock()
 }
 
 // StopAll signals all agent runtimes to stop but does NOT wait for them to finish.
@@ -122,6 +153,8 @@ func (rm *runtimeManager) Shutdown(timeout time.Duration) {
 		eventqueue.Unsubscribe(agentConfigID)
 	}
 	rm.runtimes = make(map[int64]*agentRuntime)
+	rm.cancels = make(map[int64]context.CancelFunc)
+	rm.done = make(map[int64]chan struct{})
 	rm.mu.Unlock()
 }
 
@@ -145,6 +178,13 @@ func StartRuntime(agentConfigID int64) {
 	}
 }
 
+// StopRuntime stops only the selected agent; other agents continue running.
+func StopRuntime(agentConfigID int64) {
+	if globalRuntimeManager != nil {
+		globalRuntimeManager.StopRuntime(agentConfigID)
+	}
+}
+
 // Start initializes the global runtime system and its event publisher. It must
 // be called once during application startup, after database.Init() and before
 // any handler traffic.
@@ -159,6 +199,7 @@ func Start(publisher notification.Publisher) {
 	}
 	globalRuntimeManager = newRuntimeManager()
 	recoverInterruptedActions()
+	recoverDeceasedWorks()
 
 	// Reset any stale working statuses left from a previous crash.
 	// Each agent's recoverActiveWorks handles the normal case (work record + status),
@@ -172,7 +213,7 @@ func Start(publisher notification.Publisher) {
 
 	// Eagerly start runtimes for all agent configs
 	var configs []model.AgentConfig
-	if err := database.DB.Find(&configs).Error; err != nil {
+	if err := database.DB.Where("person_id IN (SELECT id FROM persons WHERE status = ?)", model.PersonStatusActive).Find(&configs).Error; err != nil {
 		applogger.Error("Failed to load agent configs for runtime initialization", "error", err)
 	} else {
 		for _, ac := range configs {
@@ -197,7 +238,7 @@ func Start(publisher notification.Publisher) {
 //
 // The agent runtime event loop is the consumer — it receives the event and
 // calls memory.CreateObservation using the EventID carried in the payload.
-func SendNewMessageEvent(agentConfigID, sessionID, messageID, personID int64, content, speakerName string) {
+func SendNewMessageEvent(sessionID, messageID, personID int64, content, speakerName string) {
 	// The record was committed by the caller before this entry point is called.
 	// Publishing here keeps all chat-message facts on the same user event stream,
 	// including messages sent from another browser tab.
@@ -227,5 +268,20 @@ func SendNewMessageEvent(agentConfigID, sessionID, messageID, personID int64, co
 			SpeakerName:    speakerName,
 		},
 	}
-	eventqueue.SendEvent(agentConfigID, event)
+	recipients, err := dops.GetSessionAIParticipantIDs(sessionID)
+	if err != nil {
+		applogger.Error("failed to resolve active recipients for message", "session_id", sessionID, "event_id", eventID, "error", err)
+		return
+	}
+	for _, recipientID := range recipients {
+		if recipientID == personID {
+			continue
+		}
+		ac, err := dops.GetAgentConfigByPersonID(recipientID)
+		if err != nil {
+			applogger.Error("failed to resolve recipient agent config", "person_id", recipientID, "event_id", eventID, "error", err)
+			continue
+		}
+		eventqueue.SendEvent(ac.ID, event)
+	}
 }

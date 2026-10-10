@@ -12,11 +12,11 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
+	"qingqiu-world-server/internal/service/aos"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -32,7 +32,7 @@ func energyCost(src SituationSource) energy.Cost {
 }
 
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, character_settings, bio, message_content, trigger_context, comprehension_context, activeWorksContext, completedWorksContext, sessionsContext, personsContext, energyDynamicSuffix
+// Parameters: agent_name, character_settings, bio, message_content, trigger_context, comprehension_context, activeWorksContext, sessionsContext, personsContext, energyDynamicSuffix
 //
 // The world rules are described in world.WorldDescriptions (stable prefix).
 // This template only adds the decision-specific instructions and concrete
@@ -75,10 +75,10 @@ Action types (use the integer value for the "type" field):
      * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
 
 2. 1 (start_focused_work) — Start a FocusedWork that runs through a FocusedLoop.
-   - MUST include a "work_plan" object with "guidance".
+   - MUST include a "work_plan" object with "guidance" and exactly one Workspace choice: "workspace_id" for an owned Workspace shown below or found through recall_workspace, OR "new_workspace" with "name" and "purpose". Do not invent a filesystem path.
    - guidance: Your internal intention: what you plan to do, written in first-person.
    - Start a FocusedWork when fulfilling the goal requires a continuing course of work: later observations or tool results determine the next step, several dependent actions must be coordinated, an investigation or artifact needs deliberate completion, or progress must survive beyond one response through notes and a final handoff.
-   - Do NOT start a FocusedWork merely to acknowledge, explain, answer from the context already present, or make a simple decision. Those belong in chat or silence. If a bounded directory listing alone resolves the uncertainty, use inspect_owned_space instead.
+   - Do NOT start a FocusedWork merely to acknowledge, explain, answer from the context already present, or make a simple decision. Those belong in chat or silence. If a bounded directory listing alone resolves the uncertainty, use inspect_owned_space instead; use Focus when finding or verifying a file requires deeper inspection of a Workspace or its contents.
    - A FocusedWork is sustained, concentrated execution, not a label for every user request or every possible tool call.
 
 3. 2 (route_focused_work) — Route the event to an existing active work listed above. Route when the event carries a new instruction or constraint that changes an active work's direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
@@ -106,36 +106,36 @@ Action types (use the integer value for the "type" field):
    - Your private space is yours alone. You are NOT obliged to do work for anyone there, and you are NOT obliged to reveal or tell anyone about anything in it — you have every right to keep it private, with no duty to share.
    - Use this only to refresh your own memory or verify your own past output, not to be directed into performing work for someone else.
 
-8. 7 (inspect_jinshu) — Read the contents of a received jinshu through a dedicated read loop.
-   - MUST include a "jinshu_plan" object with "jinshu_id" and "guidance".
-   - jinshu_id: The ID of the received jinshu (from the event or from a prior list_received_jinshu result).
-   - guidance: Your internal intention — what you want to understand from this jinshu, written in first-person.
-   - Use this when you actually want to know the jinshu's file contents before reacting (e.g., before replying to the sender).
+To inspect large Jinshu attachments, start a FocusedWork; its tools can scan and read received files across iterations. Choose a Workspace even when the Jinshu event has no Session.
 
-9. 8 (list_received_jinshu) — Search your received jinshu by keyword with pagination.
+8. 7 (list_received_jinshu) — Search your received jinshu by keyword with pagination.
    - MUST include a "list_received_jinshu_params" object with "page" and "limit"; "query" is optional.
    - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
    - page: 1-based page number. limit: results per page (1-50).
    - Use this when the current event references a jinshu but does not give its jinshu_id, so you need to find it first.
 
-10. 9 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
+9. 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from the contactable persons list). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
-   - paths: AOS locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.
-   - Use this to share a deliverable you already made (e.g., a game or a file) without entering a FocusedLoop.
+   - paths: Exact, verified AOS locators. Use work/<directory_id>/... or private/...; bare paths remain relative to private/. Do not infer a file path from a Work or Workspace ID.
+   - Use this to share an existing deliverable when its exact path is known. If its location or contents need deeper inspection, start Focus in the relevant Workspace and send it there after verification.
 
-11. 10 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
+10. 9 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
    - MUST include a "list_sent_jinshu_params" object with "page" and "limit"; "query" is optional.
    - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
    - page: 1-based page number. limit: results per page (1-50).
    - Use this to recall what you have already sent to someone, e.g., to verify whether you actually delivered something before.
 
-12. 11 (inspect_owned_space) — Inspect a bounded, metadata-only listing of your own resources when the Focus Context is insufficient to decide whether to reply directly or begin focused work.
+11. 10 (inspect_owned_space) — Inspect a bounded, metadata-only listing of your own resources when the Focus Context is insufficient to decide whether to reply directly or begin focused work.
    - MUST include an "owned_space_inspection_plan" object with "scope" and "limit"; "query" is optional.
-   - scope: "root", "work", "private", or "work/<session_id>". The default is root. It never reads file contents.
+   - scope: "root", "work", "private", or "work/<directory_id>". The default is root. It never reads file contents.
    - limit: result count from 1 to 50. query: an optional plain substring filter for entry names.
    - The result is a new observation event. Do not use this action after an inspect result; create focused work when deeper inspection, reading, or changes are needed.
+
+12. 11 (wait_for_execution_slot) — Preserve an intention when your single Focus/Private Space execution slot is occupied.
+   - MUST include "wait_for_execution_slot_plan" with "intention". Availability later causes a new decision, not automatic execution.
+   - Choose at most one of start_focused_work, enter_private_space, or wait_for_execution_slot in one decision. Actions in one decision have no execution order.
 
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request. Start a new FocusedWork only if the new request meets the FocusedWork criteria above; otherwise reply directly or inspect bounded metadata first.
 
@@ -149,7 +149,7 @@ You can return multiple actions. Examples (note: IDs in examples are placeholder
 Decision rules (apply in order):
 1. First check Active works. If the event changes the goal, method, scope, or constraints of an active work, route it (type=2). If it explicitly asks to stop an active work, request cancellation (type=3). Do not create a competing FocusedWork for the same continuing work.
 2. If the current event and supplied context already support a complete, honest response or a simple social action, use chat (type=0), or remain silent when no response is needed. Do not start a FocusedWork just to make the outer loop look busy.
-3. If the only missing fact is whether an AOS resource exists or where it is, use inspect_owned_space (type=11). Its result is an observation; after it, reply directly if sufficient, otherwise reassess whether a FocusedWork is needed.
+3. If a bounded, single-level AOS listing can establish whether a resource exists or where it is, use inspect_owned_space (type=10). Its result is an observation. If the exact path or contents still need deeper inspection, start Focus in the relevant Workspace.
 4. Start a FocusedWork (type=1) only when the FocusedWork criteria above are met: the work needs an iterative, causally connected sequence of observations/actions and deliberate completion or recovery. Tool use, file access, and real-time data are signals to assess, not automatic reasons by themselves. If a direct acknowledgement is also expected, create chat (type=0) and a FocusedWork in parallel.
 5. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
 6. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
@@ -157,14 +157,14 @@ Decision rules (apply in order):
 
 Before asking for clarification, identify the next action that is actually blocked and the specific missing fact. Use the current message, conversation, and available context first. Casual talk, emotion, jokes, and playful language usually call for a natural response rather than task-parameter questions; ask briefly about a specific reference only when you cannot otherwise continue the conversation. You may still take independent actions while waiting for an answer. If you need to ask, choose an ordinary chat action addressed to the right person and session, and state the question's purpose in its guidance.
 
-Choose the delivery medium by how the recipient will use the result. Chat is a conversational turn: speak naturally and make it easy to read or hear. A document meant for repeated reading, exact characters, sections, tables, or sharing should be made as an AOS file and delivered by jinshu. Send an existing file with send_jinshu; if the file must be made first, start focused work and let its existing delivery flow finish that task. Actions in one decision have no execution order: do not send_jinshu for a file that a simultaneous focused work has not yet created. You may chat to say you will prepare it, but do not claim delivery before it is confirmed.
+Choose the delivery medium by how the recipient will use the result. Chat is a conversational turn: speak naturally and make it easy to read or hear. A document meant for repeated reading, exact characters, sections, tables, or sharing should be made as an AOS file and delivered by jinshu. Send an existing file with send_jinshu only when its exact path is verified; if the file must be made or located through deeper inspection, start focused work and let its existing delivery flow finish that task. Actions in one decision have no execution order: do not send_jinshu for a file that a simultaneous focused work has not yet created. You may chat to say you will prepare it, but do not claim delivery before it is confirmed.
 
 ---
 
 Event: %s
 
 %s
-%s%s%s
+%s%s
 %s
 %s
 %s
@@ -174,7 +174,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 // heartbeatPromptTemplate is the LLM prompt template for the autonomous
 // heartbeat-triggered Decide path. Unlike decidePromptTemplate (which handles
 // an incoming event), this template presents the agent with the world fact
-// "time has passed, you are idle" and asks whether it wants to form an
+// "time has passed" and asks whether it wants to form an
 // intention.
 //
 // Parameters: agent_name, character_settings, bio, description, focusContext, energyDynamicSuffix
@@ -185,7 +185,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 //   - action.UpdateBio (type=5): update your self-introduction bio.
 //   - action.EnterPrivateSpace (type=6): enter your private space.
 //   - action.SendJinshu: send an existing deliverable.
-//   - action.InspectOwnedSpace (type=11): observe a bounded AOS directory listing.
+//   - action.InspectOwnedSpace (type=10): observe a bounded AOS directory listing.
 //   - action.StartFocusedWork / action.RouteFocusedWork / action.CancelFocusedWork: not allowed — there is no event
 //     to route and no active work context to cancel against in this path.
 //
@@ -201,7 +201,7 @@ Your internal character (how you think of yourself — never revealed to others)
 Your public Bio (what you choose to present to others — this is what they see):
 %s
 
-Time has passed. You are idle — no event is happening to you right now. The world is offering you a moment to form an intention of your own.
+Time has passed. No new external event is happening to you right now. The world is offering you a moment to form an intention of your own.
 
 Energy parameters in this world:
 - You receive 100 energy points per day. Unused points carry over, up to a maximum of 200.
@@ -220,6 +220,8 @@ Every action MUST include "background" and "reason" at the action level:
 IMPORTANT: Everything you state in background, reason, and guidance must be grounded in facts from what you have observed. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.
 
 If you decide to act, you have these kinds of action available:
+
+11 (wait_for_execution_slot) preserves an intention while Focus or Private Space occupies your one sustained execution slot. Include "wait_for_execution_slot_plan" with "intention". Availability prompts a new decision; it does not execute the old intention. Do not combine it with enter_private_space in one decision.
 
 1. 0 (chat) — Chat: compose and send a message to another Person.
    - MUST include a "chat_plan" object with "guidance".
@@ -248,17 +250,17 @@ If you decide to act, you have these kinds of action available:
    - You have access to a bash tool to run shell commands within this directory, so you can do anything you want here.
    - The space is persistent — files and records you create now will still be there next time.
    - You have a budget of steps; when you're done, simply stop.
-   - If you only need to hand off files you already made, prefer type=9 (send_jinshu) directly; a send_jinshu tool is also available once inside.
+   - If you know the exact path of a file you already made, you can use type=8 (send_jinshu) directly; a send_jinshu tool is also available once inside.
 
-5. 9 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
+5. 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from contactable persons). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
-   - paths: AOS locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.
-   - Use this to share a deliverable you already made without entering a FocusedLoop.
+   - paths: Exact, verified AOS locators. Use work/<directory_id>/... or private/...; bare paths remain relative to private/. Do not guess a path from a Work or Workspace ID.
+   - Use this to share an existing deliverable only when its exact path is known.
 
-6. 11 (inspect_owned_space) — Inspect a bounded metadata-only listing of your own AOS resources.
-   - MUST include an "owned_space_inspection_plan" with scope (root, work, private, or work/<session_id>) and limit (1-50).
+6. 10 (inspect_owned_space) — Inspect a bounded metadata-only listing of your own AOS resources.
+   - MUST include an "owned_space_inspection_plan" with scope (root, work, private, or work/<directory_id>) and limit (1-50).
    - This action cannot read file contents and does not permit writes. Use it only when the focus context does not tell you whether a resource still exists or where to resume.
 
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
@@ -312,7 +314,7 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 	case eventqueue.EventTypeGroupChatJoined:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "session_joined event")
 		return DecisionResult{Accepted: true}
-	case eventqueue.EventTypeGroupChatLeft, eventqueue.EventTypeSystemNotification:
+	case eventqueue.EventTypeGroupChatLeft:
 		applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "non-message event")
 		return DecisionResult{Accepted: true}
 	case eventqueue.EventTypeScheduled:
@@ -396,12 +398,12 @@ func Decide(ctx context.Context, situation *Situation, personID int64, activeWor
 			applogger.Info("Decision made (rule-based)", "person_id", personID, "reason", "cancelled work terminal event", "work_id", payload.WorkID)
 			return DecisionResult{Accepted: true}
 		}
-		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
-		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
-	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuReadCompleted, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed, eventqueue.EventTypeOwnedSpaceInspected:
+		// Work control is agent-wide: the prompt and executor both use this
+		// active roster, including Works created from sessionless events.
+		return decideWithLLM(ctx, situation, personID, activeWorks)
+	case eventqueue.EventTypeBiography, eventqueue.EventTypeNewPrivateChatMessage, eventqueue.EventTypeNewJinshuReceived, eventqueue.EventTypeJinshuListed, eventqueue.EventTypeJinshuSent, eventqueue.EventTypeJinshuSentListed, eventqueue.EventTypeOwnedSpaceInspected, eventqueue.EventTypeExecutionSlotAvailable, eventqueue.EventTypeSystemNotification:
 		// Proceed to LLM-based decision
-		sameSessionWorks := filterWorksBySession(activeWorks, event.SessionID)
-		return decideWithLLM(ctx, situation, personID, sameSessionWorks)
+		return decideWithLLM(ctx, situation, personID, activeWorks)
 	}
 
 	// Unreachable: Comprehend rejects unsupported event types before Decide is
@@ -460,7 +462,7 @@ func buildTriggerContext(event *eventqueue.AgentEvent) string {
 // shared by all event types whose decision is LLM-based (private chat messages
 // and biography events); each event type contributes its own comprehension
 // context via buildComprehensionContext.
-func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sameSessionWorks []*work) DecisionResult {
+func decideWithLLM(ctx context.Context, situation *Situation, personID int64, activeWorks []*work) DecisionResult {
 	if !situation.generalReady {
 		populateGeneralSituation(personID, situation)
 	}
@@ -491,19 +493,17 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	comprehensionContext := buildComprehensionContext(comprehension)
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		comprehensionContext += buildWorkCompletedReplyAnchor(event.SessionID)
+		if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil {
+			if controls := buildWorkControlContext(personID, payload.WorkID); controls != "" {
+				comprehensionContext += "\n" + controls
+			}
+		}
 	}
 	triggerContext := buildTriggerContext(event)
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && event.SessionID > 0 {
 		triggerContext += fmt.Sprintf("\nThis message batch is in session_id=%d. Use that ID to reply in this conversation.\n", event.SessionID)
 	}
 	activeWorksContext := formatGeneralSubject(situation.Subject)
-	completedWorksContext := ""
-	if event.SessionID > 0 {
-		if note := readLastNotesEntry(personID, event.SessionID); note != "" {
-			completedWorksContext = "Current shared session notes:\n" + note + "\n"
-		}
-	}
-
 	agentDescription := a.Config.CharacterSettings
 	bio := a.Person.Bio
 
@@ -518,7 +518,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 
 	prompt := fmt.Sprintf(decidePromptTemplate,
 		a.Person.Name, agentDescription, bio,
-		eventDescription, triggerContext, comprehensionContext, activeWorksContext, completedWorksContext,
+		eventDescription, triggerContext, comprehensionContext, activeWorksContext,
 		sessionsContext, personsContext,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
@@ -544,7 +544,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, sa
 	)
 
 	// Validate the LLM's decision — invalid actions are removed.
-	validActions := filterValidActions(decision.Actions, sameSessionWorks, situation)
+	validActions := filterValidActions(decision.Actions, activeWorks, situation)
 
 	// Distinguish a legitimate empty decision from an invalidated one:
 	//   - The LLM returning zero actions is a valid "do nothing" choice
@@ -639,6 +639,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 
 // filterValidActions filters out invalid actions from the LLM decision.
 // Pure validation — no modifications, only checks and logging.
+// activeWorks is the agent-wide runtime roster shown in the Decide prompt.
 //
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks).
@@ -650,7 +651,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 // indistinguishable from a missing field in the LLM's JSON output.
 // The LLM must always provide a positive session_id (existing session)
 // or -1 (new 1v1 session).
-func filterValidActions(actions []action.Action, sameSessionWorks []*work, situation *Situation) []action.Action {
+func filterValidActions(actions []action.Action, activeWorks []*work, situation *Situation) []action.Action {
 	var valid []action.Action
 	for _, act := range actions {
 		switch act.Type {
@@ -659,7 +660,7 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 				applogger.Error("Decision route_focused_work: rejected in heartbeat path")
 				continue
 			}
-			if isValidRouteFocusedWorkAction(act, sameSessionWorks) {
+			if isValidRouteFocusedWorkAction(act, activeWorks) {
 				valid = append(valid, act)
 			}
 		case action.Chat:
@@ -679,7 +680,7 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 				applogger.Error("Decision cancel_focused_work: rejected in heartbeat path")
 				continue
 			}
-			if isValidCancelFocusedWorkAction(act, sameSessionWorks) {
+			if isValidCancelFocusedWorkAction(act, activeWorks) {
 				valid = append(valid, act)
 			}
 		case action.CreateAlarm:
@@ -697,14 +698,12 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 			if isValidEnterPrivateSpaceAction(act) {
 				valid = append(valid, act)
 			}
-		case action.InspectJinshu:
-			if situation.Source == SituationSourceInternal {
-				applogger.Error("Decision inspect_jinshu: rejected in heartbeat path")
+		case action.WaitForExecutionSlot:
+			if act.WaitForExecutionSlotPlan == nil || strings.TrimSpace(act.WaitForExecutionSlotPlan.Intention) == "" {
+				applogger.Error("Decision wait_for_execution_slot: missing intention")
 				continue
 			}
-			if isValidInspectJinshuAction(act) {
-				valid = append(valid, act)
-			}
+			valid = append(valid, act)
 		case action.ListReceivedJinshu:
 			if situation.Source == SituationSourceInternal {
 				applogger.Error("Decision list_received_jinshu: rejected in heartbeat path")
@@ -741,7 +740,20 @@ func filterValidActions(actions []action.Action, sameSessionWorks []*work, situa
 			)
 		}
 	}
-	return valid
+	// A Decision's siblings have no order, so it may request only one sustained slot operation.
+	slotRequests := 0
+	filtered := valid[:0]
+	for _, act := range valid {
+		if act.Type == action.StartFocusedWork || act.Type == action.EnterPrivateSpace || act.Type == action.WaitForExecutionSlot {
+			slotRequests++
+			if slotRequests > 1 {
+				applogger.Error("Decision: multiple sustained slot requests, rejecting later action", "action_type", act.Type)
+				continue
+			}
+		}
+		filtered = append(filtered, act)
+	}
+	return filtered
 }
 
 func isValidInspectOwnedSpaceAction(dec action.Action) bool {
@@ -750,16 +762,16 @@ func isValidInspectOwnedSpaceAction(dec action.Action) bool {
 		applogger.Error("Decision inspect_owned_space: invalid or missing plan")
 		return false
 	}
-	if _, err := workspace.NormalizeInspectionScope(p.Scope); err != nil {
+	if _, err := aos.NormalizeInspectionScope(p.Scope); err != nil {
 		applogger.Error("Decision inspect_owned_space: invalid scope", "scope", p.Scope, "error", err)
 		return false
 	}
 	return true
 }
 
-// isValidRouteFocusedWorkAction checks whether a route_focused_work action has a valid WorkGuidance
-// and its target work exists.
-func isValidRouteFocusedWorkAction(dec action.Action, sameSessionWorks []*work) bool {
+// isValidRouteFocusedWorkAction checks whether a route_focused_work action has
+// valid guidance and names one of this agent's active Works.
+func isValidRouteFocusedWorkAction(dec action.Action, activeWorks []*work) bool {
 	if dec.WorkGuidance == nil {
 		applogger.Error("Decision route_focused_work: missing work_guidance, skipping")
 		return false
@@ -768,7 +780,7 @@ func isValidRouteFocusedWorkAction(dec action.Action, sameSessionWorks []*work) 
 		applogger.Error("Decision route_focused_work: missing guidance, skipping")
 		return false
 	}
-	for _, w := range sameSessionWorks {
+	for _, w := range activeWorks {
 		if w.ID == dec.WorkGuidance.TargetWorkID {
 			return true
 		}
@@ -818,6 +830,14 @@ func isValidStartFocusedWorkAction(dec action.Action) bool {
 		applogger.Error("Decision start_focused_work: missing guidance, skipping")
 		return false
 	}
+	if (dec.WorkPlan.WorkspaceID > 0) == (dec.WorkPlan.NewWorkspace != nil) {
+		applogger.Error("Decision start_focused_work: choose exactly one Workspace", "workspace_id", dec.WorkPlan.WorkspaceID)
+		return false
+	}
+	if dec.WorkPlan.NewWorkspace != nil && strings.TrimSpace(dec.WorkPlan.NewWorkspace.Name) == "" {
+		applogger.Error("Decision start_focused_work: new Workspace has no name")
+		return false
+	}
 	return true
 }
 
@@ -850,11 +870,11 @@ func isValidCreateAlarmAction(dec action.Action) bool {
 	return true
 }
 
-// isValidCancelFocusedWorkAction checks whether a cancel_focused_work action has a valid WorkGuidance
-// and its target work exists.
+// isValidCancelFocusedWorkAction checks whether a cancel_focused_work action
+// has valid guidance and names one of this agent's active Works.
 // Cancel is a directive sent to the work (not a forceful kill), so it
 // must carry guidance (what to do). Reason has been lifted to Action level.
-func isValidCancelFocusedWorkAction(dec action.Action, sameSessionWorks []*work) bool {
+func isValidCancelFocusedWorkAction(dec action.Action, activeWorks []*work) bool {
 	if dec.WorkGuidance == nil {
 		applogger.Error("Decision cancel_focused_work: missing work_guidance, skipping")
 		return false
@@ -863,7 +883,7 @@ func isValidCancelFocusedWorkAction(dec action.Action, sameSessionWorks []*work)
 		applogger.Error("Decision cancel_focused_work: missing guidance, skipping")
 		return false
 	}
-	for _, w := range sameSessionWorks {
+	for _, w := range activeWorks {
 		if w.ID == dec.WorkGuidance.TargetWorkID {
 			return true
 		}
@@ -893,25 +913,6 @@ func isValidUpdateBioAction(dec action.Action) bool {
 func isValidEnterPrivateSpaceAction(dec action.Action) bool {
 	if dec.Background == "" && dec.Reason == "" {
 		applogger.Error("Decision enter_private_space: missing background and reason, skipping")
-		return false
-	}
-	return true
-}
-
-// isValidInspectJinshuAction checks whether an inspect_jinshu action has a
-// valid JinshuPlan with a jinshu ID and reading guidance.
-func isValidInspectJinshuAction(dec action.Action) bool {
-	if dec.JinshuPlan == nil {
-		applogger.Error("Decision inspect_jinshu: missing jinshu_plan, skipping")
-		return false
-	}
-	if dec.JinshuPlan.JinshuID <= 0 {
-		applogger.Error("Decision inspect_jinshu: missing or invalid jinshu_id, skipping",
-			"jinshu_id", dec.JinshuPlan.JinshuID)
-		return false
-	}
-	if dec.JinshuPlan.Guidance == "" {
-		applogger.Error("Decision inspect_jinshu: missing guidance, skipping")
 		return false
 	}
 	return true
@@ -1007,9 +1008,8 @@ func buildActiveWorksContext(works []*work) string {
 	return fmt.Sprintf("Active works:\n%s\n\n", strings.Join(parts, "\n"))
 }
 
-// buildCompletedWorksContext formats recent runtime-owned handoffs plus one
-// shared session-notes source. Shared notes are deliberately not attributed to
-// any individual Work because several active Works may use the same session.
+// buildCompletedWorksContext formats recent runtime-owned handoffs from a
+// Session without assuming that the Session owns a Workspace or its notes.
 func buildCompletedWorksContext(personID, sessionID int64, relevanceHints ...string) string {
 	var records []model.FocusHandoff
 	if err := database.DB.Where("person_id = ? AND session_id = ?", personID, sessionID).
@@ -1039,15 +1039,11 @@ func buildCompletedWorksContext(personID, sessionID int64, relevanceHints ...str
 	if len(parts) > 0 {
 		result += fmt.Sprintf("Recent Focus handoffs in this session:\n%s\n\n", strings.Join(parts, "\n"))
 	}
-	if note := readLastNotesEntry(personID, sessionID); note != "" {
-		result += "Shared session notes (source material; not a Work checkpoint):\n" + note + "\n\n"
-	}
 	return result
 }
 
 // buildSessionFocusContext combines the session's running Focus roster with
-// compact handoffs. Shared notes remain one source section, never a Work's
-// private progress record.
+// compact handoffs. Workspace notes are read only after a Work selects one.
 func buildSessionFocusContext(personID, sessionID int64, activeWorks []*work, relevanceHint string) string {
 	active := buildActiveWorksContext(filterWorksBySession(activeWorks, sessionID))
 	completed := buildCompletedWorksContext(personID, sessionID, relevanceHint)
@@ -1185,19 +1181,6 @@ func truncateWorkDescription(s string) string {
 	return string(r[:maxRunes]) + "..."
 }
 
-// readLastNotesEntry reads the most recent note entry and formats it as
-// a progress summary for the Decide LLM. A single notes entry is naturally
-// bounded in size, so no truncation is applied.
-func readLastNotesEntry(personID, sessionID int64) string {
-	entry := workspace.ReadLastNote(personID, sessionID)
-	if entry == nil {
-		return ""
-	}
-
-	ts := entry.DisplayTimestamp()
-	return fmt.Sprintf("## [%s] %s\n\n%s", ts, entry.Type.String(), entry.Content)
-}
-
 // buildComprehensionContext formats the comprehension result for the Decide
 // prompt based on its type. It dispatches by Comprehension.Type so the Decide
 // phase stays decoupled from any single event-type-specific comprehension;
@@ -1313,7 +1296,7 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 // roster. It carries no message history or inferred profile content.
 func buildContactablePersonsContext(selfPersonID int64) string {
 	var persons []model.Person
-	if err := database.DB.Where("id != ?", selfPersonID).Order("id").Limit(20).Find(&persons).Error; err != nil {
+	if err := database.DB.Where("id != ? AND status = ?", selfPersonID, model.PersonStatusActive).Order("id").Limit(20).Find(&persons).Error; err != nil {
 		applogger.Error("buildContactablePersonsContext: failed to load persons",
 			"self_person_id", selfPersonID, "error", err)
 		return ""
@@ -1331,7 +1314,7 @@ func buildContactablePersonsContext(selfPersonID int64) string {
 		}
 	}
 	var total int64
-	if err := database.DB.Model(&model.Person{}).Where("id != ?", selfPersonID).Count(&total).Error; err != nil {
+	if err := database.DB.Model(&model.Person{}).Where("id != ? AND status = ?", selfPersonID, model.PersonStatusActive).Count(&total).Error; err != nil {
 		applogger.Error("buildContactablePersonsContext: failed to count persons", "self_person_id", selfPersonID, "error", err)
 	} else if total > int64(len(persons)) {
 		fmt.Fprintf(&sb, "- %d further contactable persons are not shown\n", total-int64(len(persons)))

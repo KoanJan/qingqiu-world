@@ -18,4 +18,7 @@ type ActivityPage struct {
 	Events                  []ActivityEvent `json:"events"`
 	HasMore                 bool            `json:"has_more"`
 	NextBeforeInteractionID int64           `json:"next_before_interaction_id,omitempty"`
+	// NextAfterInteractionID is the latest returned row, even if it produced no
+	// visible ActivityEvent. It lets a mounted list read new rows without gaps.
+	NextAfterInteractionID int64 `json:"next_after_interaction_id,omitempty"`
 }

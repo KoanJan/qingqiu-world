@@ -4,11 +4,15 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
+	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
@@ -16,7 +20,7 @@ import (
 
 const recallPromptInstruction = `Use tool calls only; submit the final DecisionResult with decide (an empty action list is valid).
 Recall when a relevant past fact is missing. Choose the source for that fact: messages show what was said; actions record what you intended, not proof of the result; Works identify past or ongoing tasks; Focus handoffs record the results, findings, artifacts, and unresolved points reported when Focus ended. Completed Works remain searchable even when no active work is listed. Jinshu lists show delivery metadata; a detail adds its description, not how the delivery was produced or what its attachments contain.
-Inspect a known ID directly; otherwise search the relevant source by content words or time. recall_message searches across sessions when session_id is omitted; recall_history discovers across source types with query or from_time. Follow returned IDs when more detail is needed. A limited page or lexical miss does not prove absence. Decide once the evidence is sufficient, or state the remaining uncertainty.`
+Workspaces are owned file environments. Use recall_workspace to browse their names, purposes, and declared Work/PS uses before choosing an existing workspace_id. Recall queries search records, not AOS file paths or contents; locating a nested file or checking its contents belongs inside Focus. Inspect a known ID directly; otherwise search the relevant source by content words or time. recall_message searches across sessions when session_id is omitted; recall_history discovers across source types with query or from_time. Follow returned IDs when more detail is needed. A limited page or lexical miss does not prove absence. Decide once the evidence is sufficient, or state the remaining uncertainty.`
 
 const maxDecideRequests = 5
 const maxRecallResultBytes = 8000
@@ -27,6 +31,9 @@ const maxRecallContextBytes = 24000
 func formatGeneralSubject(s SituationSubject) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Your energy: %d\n", s.Energy)
+	if s.ExecutionSlotSummary != "" {
+		b.WriteString("Sustained execution slot: " + s.ExecutionSlotSummary + "\n")
+	}
 	if s.ActiveWorksSummary == "" {
 		b.WriteString("Active works: none\n")
 	} else {
@@ -37,11 +44,15 @@ func formatGeneralSubject(s SituationSubject) string {
 	} else {
 		b.WriteString("Ongoing actions:\n" + s.ActiveActionsSummary + "\n")
 	}
+	if s.RecentExperienceSummary != "" {
+		b.WriteString("Recent experience (earlier observations, choices, and recorded effects; an intention alone is not a result):\n")
+		b.WriteString(s.RecentExperienceSummary + "\n")
+	}
 	return b.String()
 }
 
 // runDecideLoop gives one decision opportunity a bounded, temporary recall
-// workspace. Only the terminal decide call is eligible for persistence.
+// aos. Only the terminal decide call is eligible for persistence.
 func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID int64, prompt string) (DecisionResult, bool) {
 	messages := []llm.Message{{Role: "user", Content: prompt}}
 	definitions := append(recallToolDefinitions(), jinshuToolDefinitions()...)
@@ -122,7 +133,7 @@ func decisionToolDefinition() llm.FunctionDefinition {
 // available while forming one decision.
 func recallToolDefinitions() []llm.FunctionDefinition {
 	common := map[string]interface{}{
-		"query":     map[string]interface{}{"type": "string", "description": "Optional lexical words from source content; omit to browse recent records."},
+		"query":     map[string]interface{}{"type": "string", "description": "Optional terms from record text or Workspace name/purpose; not a search of AOS file paths or contents. Omit to browse recent records."},
 		"from_time": map[string]interface{}{"type": "string", "description": "Optional inclusive timestamp. RFC3339 with timezone, or local YYYY-MM-DD HH:MM:SS / YYYY-MM-DDTHH:MM:SS in the project timezone."},
 		"to_time":   map[string]interface{}{"type": "string", "description": "Optional exclusive timestamp. RFC3339 with timezone, or local YYYY-MM-DD HH:MM:SS / YYYY-MM-DDTHH:MM:SS in the project timezone."},
 		"page_size": map[string]interface{}{"type": "integer", "description": "Optional page size, default 5, maximum 20."},
@@ -144,6 +155,7 @@ func recallToolDefinitions() []llm.FunctionDefinition {
 		makeTool("recall_message", "Search or browse observed messages across accessible sessions. Omit session_id to discover conversations; provide it to narrow the search, or use message_id to read one message.", map[string]interface{}{"session_id": map[string]interface{}{"type": "integer"}, "message_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_action", "Read your recorded action by action_id, one decision's actions, or actions related to a work_id. For observed effects, use recall_event.", map[string]interface{}{"action_id": map[string]interface{}{"type": "integer"}, "decision_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_work", "Find your past or ongoing Works by query or time without a work_id, or inspect one by ID. Returns its goal and current status; use recall_focus_handoff for its recorded outcome.", map[string]interface{}{"work_id": map[string]interface{}{"type": "integer"}}),
+		makeTool("recall_workspace", "Browse your registered Workspace names and purposes, or inspect one by workspace_id to see its origin and declared Work or private-space uses. Does not read files.", map[string]interface{}{"workspace_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_focus_handoff", "Search past Focus handoffs by query or time without an ID, or read one by handoff_id or work_id. Returns the task's reported outcome, findings, artifacts and unresolved points, not a step-by-step tool log.", map[string]interface{}{"handoff_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
 		{Name: "recall_entity_profile", Description: "Read your current impression of one known person or session by identity.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"entity_type": map[string]interface{}{"type": "integer", "description": "1 for person, 2 for session"}, "entity_id": map[string]interface{}{"type": "integer"}}, "required": []string{"entity_type", "entity_id"}}},
 	}
@@ -161,8 +173,9 @@ type recallArguments struct {
 	ActionID   int64 `json:"action_id"`
 	DecisionID int64 `json:"decision_id"`
 	// WorkID and HandoffID select continuing work or its recorded handoff.
-	WorkID    int64 `json:"work_id"`
-	HandoffID int64 `json:"handoff_id"`
+	WorkID      int64 `json:"work_id"`
+	WorkspaceID int64 `json:"workspace_id"`
+	HandoffID   int64 `json:"handoff_id"`
 	// EntityType and EntityID select a current, owner-specific impression.
 	EntityType model.EntityType `json:"entity_type"`
 	EntityID   int64            `json:"entity_id"`
@@ -188,6 +201,9 @@ func executeRecallTool(personID, eventID int64, name, arguments string) (string,
 	}
 	if name == "recall_entity_profile" {
 		return memory.RecallEntityProfile(personID, args.EntityType, args.EntityID)
+	}
+	if name == "recall_workspace" {
+		return executeWorkspaceRecall(personID, args)
 	}
 	req := memory.RecallRequest{PersonID: personID, Query: args.Query, PageSize: args.PageSize, Cursor: args.Cursor}
 	switch name {
@@ -235,6 +251,9 @@ func executeRecallTool(personID, eventID int64, name, arguments string) (string,
 	page, err := memory.Recall(req)
 	if err != nil {
 		return "", err
+	}
+	if name == "recall_work" {
+		return encodeWorkRecallWithWorkspace(personID, page)
 	}
 	encoded, err := json.Marshal(page)
 	return string(encoded), err
@@ -290,6 +309,10 @@ func validateRecallArguments(name string, a recallArguments) error {
 		if other(a.EventID, a.SessionID, a.MessageID, a.ActionID, a.DecisionID, a.HandoffID, int64(a.EntityType), a.EntityID) {
 			return fmt.Errorf("recall_work received unrelated IDs")
 		}
+	case "recall_workspace":
+		if other(a.EventID, a.SessionID, a.MessageID, a.ActionID, a.DecisionID, a.WorkID, a.HandoffID, int64(a.EntityType), a.EntityID) {
+			return fmt.Errorf("recall_workspace received unrelated IDs")
+		}
 	case "recall_focus_handoff":
 		if other(a.EventID, a.SessionID, a.MessageID, a.ActionID, a.DecisionID, int64(a.EntityType), a.EntityID) {
 			return fmt.Errorf("recall_focus_handoff received unrelated IDs")
@@ -302,4 +325,130 @@ func validateRecallArguments(name string, a recallArguments) error {
 		return fmt.Errorf("unknown recall tool %q", name)
 	}
 	return nil
+}
+
+// executeWorkspaceRecall exposes only owned Workspace metadata and declared
+// uses. The cursor is a bounded page number, not a claim of exhaustive access
+// to files or actual filesystem operations.
+func executeWorkspaceRecall(personID int64, args recallArguments) (string, error) {
+	if args.WorkspaceID < 0 || args.PageSize < 0 || args.PageSize > 20 || len([]rune(args.Query)) > 200 {
+		return "", fmt.Errorf("invalid Workspace recall range")
+	}
+	page := 1
+	if args.Cursor != "" {
+		parsed, err := strconv.Atoi(args.Cursor)
+		if err != nil || parsed < 1 || parsed > 10000 {
+			return "", fmt.Errorf("invalid Workspace cursor")
+		}
+		page = parsed
+	}
+	limit := args.PageSize
+	if limit == 0 {
+		limit = 5
+	}
+	from, to := time.Time{}, time.Time{}
+	var err error
+	if args.FromTime != "" {
+		from, err = parseRecallTime(args.FromTime, energy.Timezone())
+		if err != nil {
+			return "", err
+		}
+	}
+	if args.ToTime != "" {
+		to, err = parseRecallTime(args.ToTime, energy.Timezone())
+		if err != nil {
+			return "", err
+		}
+	}
+	if !from.IsZero() && !to.IsZero() && !from.Before(to) {
+		return "", fmt.Errorf("from_time must precede to_time")
+	}
+	if args.WorkspaceID == 0 {
+		records, err := dops.SearchWorkspaces(personID, 0, strings.TrimSpace(args.Query), from, to, page, limit+1)
+		if err != nil {
+			return "", err
+		}
+		hasMore := len(records) > limit
+		if hasMore {
+			records = records[:limit]
+		}
+		result := map[string]any{"workspaces": records, "has_more": hasMore}
+		if hasMore {
+			result["next_cursor"] = strconv.Itoa(page + 1)
+		}
+		encoded, err := json.Marshal(result)
+		return string(encoded), err
+	}
+	record, err := dops.GetOwnedWorkspace(personID, args.WorkspaceID)
+	if err != nil {
+		return "", err
+	}
+	_, pathErr := aos.ResolveRegisteredPath(*record)
+	uses, err := dops.ListWorkspaceUses(personID, record.ID, page, limit+1)
+	if err != nil {
+		return "", err
+	}
+	hasMore := len(uses) > limit
+	if hasMore {
+		uses = uses[:limit]
+	}
+	type activity struct {
+		SourceType  model.WorkspaceUseSource `json:"source_type"`
+		SourceID    int64                    `json:"source_id"`
+		Role        model.WorkspaceUseRole   `json:"role"`
+		Description string                   `json:"description"`
+		Status      model.WorkStatus         `json:"work_status,omitempty"`
+		At          time.Time                `json:"at"`
+	}
+	activities := make([]activity, 0, len(uses))
+	for _, use := range uses {
+		item := activity{SourceType: use.SourceType, SourceID: use.SourceID, Role: use.Role, At: use.CreatedAt}
+		if use.SourceType == model.WorkspaceUseWork {
+			var work model.Work
+			if err := database.DB.Where("id = ? AND person_id = ?", use.SourceID, personID).Take(&work).Error; err != nil {
+				return "", fmt.Errorf("Workspace use points to unavailable Work %d: %w", use.SourceID, err)
+			}
+			item.Description, item.Status = work.Description, work.Status
+		} else {
+			item.Description = "Private-space activity"
+		}
+		activities = append(activities, item)
+	}
+	var source struct {
+		ActionID int64 `json:"action_id"`
+		EventID  int64 `json:"event_id"`
+	}
+	if err := database.DB.Table("action_effects AS ae").Select("ae.action_id, d.event_id").Joins("JOIN actions AS a ON a.id = ae.action_id").Joins("JOIN decisions AS d ON d.id = a.decision_id").Where("ae.effect_type = ? AND ae.effect_id = ? AND d.person_id = ?", model.ActionEffectWorkspace, record.ID, personID).Limit(1).Scan(&source).Error; err != nil {
+		return "", err
+	}
+	result := map[string]any{"workspace": record, "directory_available": pathErr == nil, "creation_source": source, "declared_uses": activities, "has_more": hasMore}
+	if hasMore {
+		result["next_cursor"] = strconv.Itoa(page + 1)
+	}
+	if pathErr != nil {
+		result["directory_error"] = pathErr.Error()
+	}
+	encoded, err := json.Marshal(result)
+	return string(encoded), err
+}
+
+// encodeWorkRecallWithWorkspace adds the Work's registered file environment
+// without changing the general memory retrieval or its observation rules.
+func encodeWorkRecallWithWorkspace(personID int64, page memory.RecallPage) (string, error) {
+	if !database.DB.Migrator().HasTable(&model.WorkspaceUse{}) {
+		encoded, err := json.Marshal(page)
+		return string(encoded), err
+	}
+	workspaces := make(map[int64]*model.Workspace)
+	for _, item := range page.Items {
+		if item.SourceKind != model.MemorySourceWork {
+			continue
+		}
+		record, err := dops.GetDefaultWorkWorkspace(personID, item.SourceID)
+		if err == nil {
+			workspaces[item.SourceID] = record
+		}
+	}
+	encoded, err := json.Marshal(map[string]any{"page": page, "default_workspaces_by_work_id": workspaces})
+	return string(encoded), err
 }

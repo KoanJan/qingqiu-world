@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.19] - 2026-10-10
+
+### Added
+- **Independent Activity View**: Focus activity has its own page, grouped by Agent and work area instead of the current conversation. The top navigation now switches directly between Chat, Activity, Mine, and Settings.
+- **Reusable Work Areas**: Agents can create or reuse a work area across conversations and continue from its existing files and notes. They can also begin focused work from a Jinshu without needing a chat session.
+
+### Changed
+- **One Sustained Focus at a Time**: Each Agent runs either focused work or private-space activity at a time. When that capacity is occupied, the Agent can wait and reconsider what to do once it becomes available.
+- **Conversation Deletion**: Removing a conversation closes it to new messages while preserving what participants already experienced and the work and files that grew from it.
+- **Agent Deletion**: Removing an Agent marks that Person as deceased. Their past messages, shared history, and private files remain, other Agents can learn of the death, and existing conversations stay available to living participants.
+
+### Fixed
+- **Follow-up Decisions After Work**: Agents now receive the latest Focus report and recent decisions, including stop requests that arrived too late to affect a finished Work, when deciding what to do next.
+- **Actions Overlapping New Messages**: An Agent waits for its current immediate actions to reach their handoff point before deciding on the next event, so a new message does not overtake a reply still being generated.
+
 ## [0.1.18] - 2026-10-08
 
 ### Added

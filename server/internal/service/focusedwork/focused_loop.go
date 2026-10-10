@@ -808,18 +808,20 @@ func truncateRunes(value string, limit int) string {
 	return string(runes[:limit])
 }
 
-// weakWriteInteraction writes an interaction record to the database.
-// Silently skips if session is not configured.
-// Records are grouped by (session_id, work_id, iteration)
-// to support both frontend display and debugging.
+// weakWriteInteraction writes an interaction record for every Work, including
+// Works started by an event without a conversation. WorkID is the durable
+// owner; a Work's optional source Session is resolved through the Work row.
 func (tl *FocusedLoop) weakWriteInteraction(iteration, interactionType int, data map[string]interface{}) {
-	if tl.sessionID == 0 {
+	if database.DB == nil {
+		applogger.Error("Cannot persist Work interaction without a database", "work_id", tl.workID, "iteration", iteration)
 		return
 	}
-
-	dataJSON, _ := json.Marshal(data)
+	dataJSON, err := json.Marshal(data)
+	if err != nil {
+		applogger.Error("Failed to encode Work interaction", "work_id", tl.workID, "iteration", iteration, "error", err)
+		return
+	}
 	record := model.Interaction{
-		SessionID: tl.sessionID,
 		WorkID:    tl.workID,
 		Iteration: iteration,
 		Type:      interactionType,

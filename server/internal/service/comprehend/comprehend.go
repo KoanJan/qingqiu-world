@@ -41,20 +41,15 @@ func Comprehend(
 	case eventqueue.EventTypeWorkCompleted:
 		// Work completion is the agent's own execution result, not a message
 		// from another party. Its comprehension is the event description
-		// itself (guidance plus status) — no LLM pass is needed.
+		// itself (guidance, execution status, and reported result) — no LLM
+		// pass is needed.
 		c.Type = types.ComprehensionTypeWorkCompleted
 		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeNewJinshuReceived:
 		// A jinshu is a delivery from another person, but it is not a chat
 		// message inside a session. Its comprehension is the event description
 		// itself (sender, topic, description) — no LLM pass is needed here.
-		// The agent can decide to inspect it via the dedicated read loop.
-		c.Type = types.ComprehensionTypeNone
-		c.EventDescription = event.FormatDescription()
-	case eventqueue.EventTypeJinshuReadCompleted:
-		// The agent's own summary after reading a jinshu. There is no other
-		// party to interpret, so the event description (the summary) is used
-		// as-is; no LLM pass is needed.
+		// The agent can start Focus when its attachments need sustained reading.
 		c.Type = types.ComprehensionTypeNone
 		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeJinshuListed:
@@ -81,6 +76,9 @@ func Comprehend(
 		c.Type = types.ComprehensionTypeNone
 		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeOwnedSpaceInspected:
+		c.Type = types.ComprehensionTypeNone
+		c.EventDescription = event.FormatDescription()
+	case eventqueue.EventTypeExecutionSlotAvailable:
 		c.Type = types.ComprehensionTypeNone
 		c.EventDescription = event.FormatDescription()
 	case eventqueue.EventTypeScheduled,

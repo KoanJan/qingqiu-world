@@ -1,6 +1,6 @@
 import axios from 'axios';
 import { logger } from '../logger';
-import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityPage, Jinshu, KBAccessPerson, TTSProviderDefinition, TTSRenderer, TTSRendererDetail, AgentVoice } from '../types';
+import type { Session, Message, LLMConfig, EmbeddingConfig, Agent, AgentBrief, SearchConfig, KnowledgeBase, Document, SearchResult, SessionAgentStatus, UserProfile, SystemLLMConfig, PublicExperience, UploadedSkill, ActivityPage, ActivityAgent, ActivityWorkspacePage, ActivityWorkPage, Jinshu, KBAccessPerson, TTSProviderDefinition, TTSRenderer, TTSRendererDetail, AgentVoice } from '../types';
 
 declare global {
   interface Window {
@@ -145,9 +145,21 @@ export const sessionApi = {
   create: (data: Partial<Session>) => api.post<Session>('/sessions', data),
   update: (id: number, data: Partial<Session>) => api.put<Session>(`/sessions/${id}`, data),
   delete: (id: number) => api.delete(`/sessions/${id}`),
-  getActivities: (id: number, beforeInteractionId?: number) =>
-    api.get<ActivityPage>(`/sessions/${id}/activities`, {
-      params: beforeInteractionId ? { before_interaction_id: beforeInteractionId } : undefined,
+};
+
+/** Read-only Focus activity browser, independent of conversation state. */
+export const activityApi = {
+  listAgents: () => api.get<ActivityAgent[]>('/activity/agents'),
+  listWorkspaces: (agentId: number, page = 1) =>
+    api.get<ActivityWorkspacePage>(`/activity/agents/${agentId}/workspaces`, { params: { page } }),
+  listWorks: (agentId: number, workspaceId: number, beforeWorkId?: number) =>
+    api.get<ActivityWorkPage>(`/activity/agents/${agentId}/workspaces/${workspaceId}/works`, {
+      params: beforeWorkId ? { before_work_id: beforeWorkId } : undefined,
+    }),
+  getWorkActivities: (agentId: number, workId: number, beforeInteractionId?: number, afterInteractionId?: number) =>
+    api.get<ActivityPage>(`/activity/agents/${agentId}/works/${workId}/activities`, {
+      params: beforeInteractionId ? { before_interaction_id: beforeInteractionId }
+        : afterInteractionId ? { after_interaction_id: afterInteractionId } : undefined,
     }),
 };
 

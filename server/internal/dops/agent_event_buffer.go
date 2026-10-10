@@ -35,6 +35,12 @@ func DeleteAgentEventBuffer(id int64) error {
 	return database.DB.Delete(&model.AgentEventBuffer{}, id).Error
 }
 
+// DeleteAgentEventBufferForEvent clears a delivered fact after it is processed.
+func DeleteAgentEventBufferForEvent(personID, eventID int64) error {
+	return database.DB.Where("person_id = ? AND event_id = ?", personID, eventID).
+		Delete(&model.AgentEventBuffer{}).Error
+}
+
 // SetAgentSleepSince records when an agent entered its energy-depleted state.
 func SetAgentSleepSince(personID int64, sleepSince string) error {
 	return database.DB.Model(&model.AgentState{}).

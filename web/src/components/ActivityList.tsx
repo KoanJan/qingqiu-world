@@ -1,16 +1,16 @@
-import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Spin } from 'antd';
 import { ClipboardList } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import { sessionApi } from '../services/api';
-import AgentAvatar from './AgentAvatar';
-import type { ActivityEvent, SessionAgentStatus } from '../types';
+import { activityApi } from '../services/api';
+import type { ActivityEvent } from '../types';
 import { logger } from '../logger';
 
 /**
  * Threshold for truncating long activity content.
  */
 const CONTENT_TRUNCATE_LENGTH = 200;
+const ACTIVITY_REFRESH_INTERVAL_MS = 10_000;
 
 /**
  * Maps tool names to display icons. Emoji strings for most tools, lucide icons for special cases.
@@ -29,6 +29,7 @@ const toolIcon: Record<string, React.ReactNode> = {
   scan_jinshu: '📮',
   read_jinshu: '📖',
   copy_from_jinshu: '📋',
+  use_workspace: '↗',
   scan_kb: '📚',
   read_kb_evidence: '📖',
   list_kb_documents: '📑',
@@ -38,18 +39,14 @@ const toolIcon: Record<string, React.ReactNode> = {
  * Props for the ActivityList component.
  */
 interface ActivityListProps {
-  sessionId: number;
-  agents: SessionAgentStatus[];
+  workId: number;
+  agentId: number;
 }
 
 /**
- * ActivityList displays the agent's execution timeline for a session.
- *
- * Each event carries its own agent_id, and the component looks up
- * the corresponding agent info from the agents prop — supporting
- * future multi-agent sessions.
+ * ActivityList displays one Focus Work's interaction timeline.
  */
-const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
+const ActivityList: React.FC<ActivityListProps> = ({ workId, agentId }) => {
   const { t } = useTranslation();
   const [events, setEvents] = useState<ActivityEvent[]>([]);
   const [loading, setLoading] = useState(true);
@@ -60,31 +57,90 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
   const [expandedEventIds, setExpandedEventIds] = useState<Set<string>>(new Set());
   const contentRef = useRef<HTMLDivElement>(null);
   const scrollToLatestRef = useRef(true);
+  const newestInteractionIdRef = useRef(0);
+  const latestLoadRequestRef = useRef(0);
 
   const loadLatestActivities = useCallback(async () => {
+    const requestID = ++latestLoadRequestRef.current;
     setLoading(true);
     setLoadError(false);
     setExpandedEventIds(new Set());
     scrollToLatestRef.current = true;
+    newestInteractionIdRef.current = 0;
     try {
-      const res = await sessionApi.getActivities(sessionId);
+      const res = await activityApi.getWorkActivities(agentId, workId);
+      if (requestID !== latestLoadRequestRef.current) return;
       setEvents(res.data.events);
       setHasMore(res.data.has_more);
       setNextBeforeInteractionId(res.data.next_before_interaction_id);
+      newestInteractionIdRef.current = res.data.next_after_interaction_id ?? 0;
     } catch (error) {
-      logger.error('Failed to load activities, session_id:', sessionId, error);
+      if (requestID !== latestLoadRequestRef.current) return;
+      logger.error('Failed to load activities, work_id:', workId, error);
       setEvents([]);
       setHasMore(false);
       setNextBeforeInteractionId(undefined);
       setLoadError(true);
     } finally {
-      setLoading(false);
+      if (requestID === latestLoadRequestRef.current) setLoading(false);
     }
-  }, [sessionId]);
+  }, [agentId, workId]);
 
   useEffect(() => {
+    const requestTracker = latestLoadRequestRef;
     void loadLatestActivities();
+    return () => { requestTracker.current++; };
   }, [loadLatestActivities]);
+
+  // Activity rows are persisted asynchronously while Focus runs. Read only
+  // newer interactions on each refresh, and keep any older pages already open.
+  useEffect(() => {
+    if (loading) return;
+    let disposed = false;
+    let refreshing = false;
+    const refresh = async () => {
+      if (refreshing) return;
+      refreshing = true;
+      try {
+        let cursor = newestInteractionIdRef.current;
+        do {
+          const res = await activityApi.getWorkActivities(agentId, workId, undefined, cursor || undefined);
+          if (disposed) return;
+          const page = res.data;
+          setLoadError(false);
+          const content = contentRef.current;
+          if (content && content.scrollHeight - content.scrollTop - content.clientHeight <= 40) {
+            scrollToLatestRef.current = true;
+          }
+          if (page.events.length > 0) {
+            setEvents(previous => {
+              const existingIDs = new Set(previous.map(event => event.id));
+              const additions = page.events.filter(event => !existingIDs.has(event.id));
+              return additions.length > 0 ? [...previous, ...additions] : previous;
+            });
+          }
+          if (cursor === 0) {
+            setHasMore(page.has_more);
+            setNextBeforeInteractionId(page.next_before_interaction_id);
+          }
+          const nextCursor = page.next_after_interaction_id ?? cursor;
+          if (nextCursor === cursor) return;
+          newestInteractionIdRef.current = nextCursor;
+          cursor = nextCursor;
+          if (!page.has_more) return;
+        } while (!disposed);
+      } catch (error) {
+        logger.error('Failed to refresh activities, work_id:', workId, error);
+      } finally {
+        refreshing = false;
+      }
+    };
+    const timer = window.setInterval(() => void refresh(), ACTIVITY_REFRESH_INTERVAL_MS);
+    return () => {
+      disposed = true;
+      window.clearInterval(timer);
+    };
+  }, [loading, agentId, workId]);
 
   // Scroll to the latest (bottom) activity record after events are loaded.
   useEffect(() => {
@@ -113,7 +169,7 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
     const previousTop = content?.scrollTop ?? 0;
     setLoadingOlder(true);
     try {
-      const res = await sessionApi.getActivities(sessionId, nextBeforeInteractionId);
+      const res = await activityApi.getWorkActivities(agentId, workId, nextBeforeInteractionId);
       setEvents(previous => {
         const existingIDs = new Set(previous.map(event => event.id));
         const olderEvents = res.data.events.filter(event => !existingIDs.has(event.id));
@@ -129,27 +185,18 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
         }
       });
     } catch (error) {
-      logger.error('Failed to load older activities, session_id:', sessionId, error);
+      logger.error('Failed to load older activities, work_id:', workId, error);
       setLoadError(true);
     } finally {
       setLoadingOlder(false);
     }
-  }, [hasMore, loadingOlder, nextBeforeInteractionId, sessionId]);
+  }, [hasMore, loadingOlder, nextBeforeInteractionId, agentId, workId]);
 
   const handleActivityScroll = useCallback(() => {
     if (contentRef.current && contentRef.current.scrollTop <= 16) {
       void loadOlderActivities();
     }
   }, [loadOlderActivities]);
-
-  // Build a lookup map from agent_id to agent info.
-  const agentMap = useMemo(() => {
-    const map: Record<number, SessionAgentStatus> = {};
-    for (const agent of agents) {
-      map[agent.agent_id] = agent;
-    }
-    return map;
-  }, [agents]);
 
   if (loading) {
     return (
@@ -190,9 +237,6 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
           </button>
         )}
         {events.map(event => {
-          const agent = agentMap[event.agent_id];
-          const displayName = agent?.name || 'AI';
-
           if (event.type === 'tool_call') {
             const icon = toolIcon[event.tool || ''] || '🔧';
             const action = t(`activity.tool.${event.tool}`);
@@ -203,8 +247,6 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
             return (
               <div key={event.id} className="activity-row activity-row-tool_call">
                 <div className="activity-row-header">
-                  <AgentAvatar avatar={agent?.avatar || ''} size={24} iconSize={12} borderRadius="6px" />
-                  <span className="activity-agent-name">{displayName}</span>
                   <span className="activity-time">{event.time}</span>
                 </div>
                 <div className="activity-summary">
@@ -238,8 +280,6 @@ const ActivityList: React.FC<ActivityListProps> = ({ sessionId, agents }) => {
           return (
             <div key={event.id} className={`activity-row activity-row-${event.type}`}>
               <div className="activity-row-header">
-                <AgentAvatar avatar={agent?.avatar || ''} size={24} iconSize={12} borderRadius="6px" />
-                <span className="activity-agent-name">{displayName}</span>
                 <span className="activity-time">{event.time}</span>
               </div>
               <div className="activity-summary">

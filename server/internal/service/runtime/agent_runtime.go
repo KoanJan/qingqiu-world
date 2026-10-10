@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/chat"
 	"qingqiu-world-server/internal/service/comprehend"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
@@ -22,7 +23,6 @@ import (
 	"qingqiu-world-server/internal/service/focusedwork"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/privatespace"
-	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -63,6 +63,8 @@ type agentRuntime struct {
 	idleTicks          int                // Consecutive idle heartbeats (for tickless backoff)
 	heartbeatTick      int                // Total heartbeat ticks (for check scheduling)
 	mu                 sync.Mutex         // Protects activeWrites for external queries
+	slotMu             sync.Mutex         // Protects the sustained execution slot.
+	slot               *executionSlot     // One Focus or PS loop at a time.
 	learningInProgress atomic.Bool        // Guards against concurrent learning checks
 	privateSpaceLoop   *privatespace.Loop // Private-space loop (nil if not initialized)
 }
@@ -112,6 +114,7 @@ func (r *agentRuntime) Run(ctx context.Context) {
 		r.handleMessageCommits(ctx)
 	}()
 	r.replayBufferedEvents(ctx)
+	r.notifyWaitingActions()
 
 	for {
 		select {
@@ -131,6 +134,9 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			r.mu.Unlock()
 			for _, w := range pending {
 				<-w.done
+			}
+			if slot := r.currentExecutionSlot(); slot != nil {
+				<-slot.done
 			}
 
 			// Wait for message commit handler to drain its channel
@@ -152,7 +158,12 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			} else if sleepSince != "" {
 				r.replayBufferedEvents(ctx)
 			}
-			r.handleEvent(ctx, event, false)
+			processed := r.handleEvent(ctx, event, false)
+			if processed && ctx.Err() == nil && event.EventID > 0 {
+				if err := dops.DeleteAgentEventBufferForEvent(r.agentPersonID, event.EventID); err != nil {
+					applogger.Error("failed to clear processed event delivery", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+				}
+			}
 			// A shutdown can cancel Comprehend or Decide after this event was
 			// removed from the channel. Preserve an undecided event for startup
 			// replay instead of losing its only queue delivery.
@@ -174,6 +185,26 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 	if event == nil {
 		applogger.Error("handleEvent: nil event")
 		return true
+	}
+	person, err := dops.GetPerson(r.agentPersonID)
+	if err != nil {
+		applogger.Error("handleEvent: failed to check person status", "person_id", r.agentPersonID, "error", err)
+		return false
+	}
+	if person.Status != model.PersonStatusActive {
+		applogger.Info("handleEvent: deceased person cannot observe event", "person_id", r.agentPersonID, "event_id", event.EventID)
+		return true
+	}
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
+		session, err := dops.GetSession(event.SessionID)
+		if err != nil {
+			applogger.Error("handleEvent: failed to check message session", "session_id", event.SessionID, "error", err)
+			return false
+		}
+		if session.Status != model.SessionStatusActive {
+			applogger.Info("handleEvent: deleted session blocks pending message observation", "session_id", event.SessionID, "event_id", event.EventID)
+			return true
+		}
 	}
 	if event.Type == eventqueue.EventTypeAlarmCreated {
 		// Alarm registration is a control-plane effect, not a Decide opportunity.
@@ -226,10 +257,14 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 			applogger.Error("invalid work completed event payload", "agent_config_id", r.agentConfigID)
 			return true
 		}
+		r.awaitExecutionSlotRelease(ctx, payload.WorkID, false)
 		r.activeWorks = removeWorkByID(r.activeWorks, payload.WorkID)
 		if !r.hasActiveWorkInSession(event.SessionID) {
 			r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
 		}
+	}
+	if event.Type == eventqueue.EventTypePSCompleted {
+		r.awaitExecutionSlotRelease(ctx, 0, true)
 	}
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
 		p, ok := event.Payload.(*eventqueue.NewMessagePayload)
@@ -274,6 +309,7 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 	}
 	situation := buildExternalSituation(event, nil, state.Energy, "")
 	populateGeneralSituation(r.agentPersonID, situation)
+	situation.Subject.ExecutionSlotSummary = r.executionSlotSummary()
 	c, err := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, situation.Subject.ActiveWorksSummary)
 	if err != nil {
 		applogger.Error("handleEvent: comprehension failed", "person_id", r.agentPersonID, "error", err)
@@ -325,6 +361,10 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 // executeActions dispatches Decide output Actions to their handlers.
 // Shared by both external event and internal heartbeat paths.
 func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation, actions []action.Action) {
+	// Finite actions in one Decision may run concurrently, but the next
+	// Comprehend/Decide pass must not overtake their handoff or result boundary.
+	// Focus, PS, and an execution-slot wait deliberately outlive this barrier.
+	var finiteActions sync.WaitGroup
 	for _, act := range actions {
 		switch act.Type {
 		case action.RouteFocusedWork, action.CancelFocusedWork:
@@ -341,6 +381,7 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			}
 			if act.Type == action.CancelFocusedWork {
 				if target.requestCancel(act) {
+					r.recordAcceptedWorkControl(act.ID, target.ID)
 					// A cancelled Work is no longer available for routing or for
 					// the active roster in a Chat from this same Decision.
 					r.activeWorks = removeWorkByID(r.activeWorks, target.ID)
@@ -348,7 +389,9 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				endActionLogged(act.ID, "cancel_work")
 				continue
 			}
-			target.FeedGuidance(focusedwork.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason})
+			if target.FeedGuidance(focusedwork.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason}) {
+				r.recordAcceptedWorkControl(act.ID, target.ID)
+			}
 			endActionLogged(act.ID, "route_work")
 		case action.Chat:
 			if act.ChatPlan == nil {
@@ -357,15 +400,25 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				continue
 			}
 			activeSnapshot := append([]*work(nil), r.activeWorks...)
-			go r.executeChat(ctx, situation, act.ChatPlan, act.ID, activeSnapshot)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.executeChat(ctx, situation, act.ChatPlan, act.ID, activeSnapshot)
+			}()
 		case action.StartFocusedWork:
 			if act.WorkPlan == nil {
 				applogger.Error("start_focused_work action has no work plan", "agent_config_id", r.agentConfigID)
 				endActionLogged(act.ID, "start_work")
 				continue
 			}
+			if !r.acquireExecutionSlot(0, false) {
+				applogger.Error("start_focused_work: execution slot occupied", "person_id", r.agentPersonID, "action_id", act.ID)
+				endActionLogged(act.ID, "start_work_slot_conflict")
+				continue
+			}
 			w, success := r.newWork(situation, act)
 			if !success {
+				r.releaseExecutionSlot(0, false)
 				applogger.Error("failed to create work", "agent_config_id", r.agentConfigID)
 				endActionLogged(act.ID, "start_work")
 				continue
@@ -376,7 +429,13 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				}
 			}
 			r.activeWorks = append(r.activeWorks, w)
-			go w.Run(ctx)
+			r.slotMu.Lock()
+			r.slot.workID = w.ID
+			r.slotMu.Unlock()
+			go func() {
+				w.Run(ctx)
+				r.releaseExecutionSlot(w.ID, false)
+			}()
 		case action.CreateAlarm:
 			if act.AlarmPlan == nil {
 				applogger.Error("create_alarm action has no alarm_plan", "agent_config_id", r.agentConfigID)
@@ -405,36 +464,41 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				}
 				thoughts += act.Reason
 			}
-			r.handleEnterPrivateSpace(thoughts)
+			r.handleEnterPrivateSpace(ctx, thoughts, act.ID)
 			endActionLogged(act.ID, "enter_private_space")
-		case action.InspectJinshu:
-			if act.JinshuPlan == nil {
-				applogger.Error("inspect_jinshu action has no jinshu plan", "agent_config_id", r.agentConfigID)
-				endActionLogged(act.ID, "inspect_jinshu")
-				continue
-			}
-			go r.handleInspectJinshu(act)
 		case action.ListReceivedJinshu:
 			if act.ListReceivedJinshuParams == nil {
 				applogger.Error("list_received_jinshu action has no list_received_jinshu_params", "agent_config_id", r.agentConfigID)
 				endActionLogged(act.ID, "list_received_jinshu")
 				continue
 			}
-			go r.handleListReceivedJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleListReceivedJinshu(act)
+			}()
 		case action.SendJinshu:
 			if act.SendJinshuPlan == nil {
 				applogger.Error("send_jinshu action has no send_jinshu plan", "agent_config_id", r.agentConfigID)
 				endActionLogged(act.ID, "send_jinshu")
 				continue
 			}
-			go r.handleSendJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleSendJinshu(act)
+			}()
 		case action.ListSentJinshu:
 			if act.ListSentJinshuParams == nil {
 				applogger.Error("list_sent_jinshu action has no list_sent_jinshu_params", "agent_config_id", r.agentConfigID)
 				endActionLogged(act.ID, "list_sent_jinshu")
 				continue
 			}
-			go r.handleListSentJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleListSentJinshu(act)
+			}()
 		case action.InspectOwnedSpace:
 			if act.OwnedSpaceInspectionPlan == nil {
 				applogger.Error("inspect_owned_space: missing plan", "agent_config_id", r.agentConfigID)
@@ -442,17 +506,25 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				continue
 			}
 			r.handleInspectOwnedSpace(situation, act)
+		case action.WaitForExecutionSlot:
+			if act.WaitForExecutionSlotPlan == nil {
+				applogger.Error("wait_for_execution_slot: missing plan", "action_id", act.ID)
+				endActionLogged(act.ID, "wait_for_execution_slot")
+				continue
+			}
+			r.registerExecutionWait(act.ID)
 		default:
 			applogger.Error("executeActions: unsupported action type", "action_id", act.ID, "action_type", act.Type)
 			endActionLogged(act.ID, "unsupported_action")
 		}
 	}
+	finiteActions.Wait()
 }
 
 func (r *agentRuntime) handleInspectOwnedSpace(situation *Situation, act action.Action) {
 	plan := act.OwnedSpaceInspectionPlan
 	scope := plan.Scope
-	entries, err := workspace.InspectOwnedSpace(r.agentPersonID, scope, plan.Query, plan.Limit)
+	entries, err := aos.InspectOwnedSpace(r.agentPersonID, scope, plan.Query, plan.Limit)
 	if err != nil {
 		applogger.Error("inspect_owned_space failed", "agent_config_id", r.agentConfigID, "error", err)
 		endActionLogged(act.ID, "inspect_owned_space")
@@ -481,7 +553,7 @@ func (r *agentRuntime) handleInspectOwnedSpace(situation *Situation, act action.
 // If the loop has never been initialized, it lazily creates the directory and loop.
 // If the loop is already running, thoughts are injected via channel.
 // If the loop is idle, a new goroutine is started.
-func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
+func (r *agentRuntime) handleEnterPrivateSpace(ctx context.Context, thoughts string, actionID int64) {
 	// Lazy initialization: create the loop on first use.
 	if r.privateSpaceLoop == nil {
 		a, err := agent.GetAgent(r.agentPersonID)
@@ -491,7 +563,7 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 			)
 			return
 		}
-		rootDir, workDir, err := privatespace.InitDir(r.agentPersonID)
+		rootDir, workDir, _, err := aos.InitPrivateSpace(r.agentPersonID)
 		if err != nil {
 			applogger.Error("private-space: failed to init directory",
 				"person_id", r.agentPersonID, "error", err,
@@ -507,82 +579,37 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 		)
 	}
 
-	if r.privateSpaceLoop.IsRunning() {
-		r.privateSpaceLoop.FeedThoughts(thoughts)
+	if slot := r.currentExecutionSlot(); slot != nil && slot.private {
+		if !r.privateSpaceLoop.FeedThoughts(thoughts) {
+			applogger.Error("private-space: thoughts were not accepted", "person_id", r.agentPersonID)
+			return
+		}
+		r.privateSpaceLoop.AddParticipatingAction(actionID)
 		applogger.Info("private-space: thoughts injected into running loop",
 			"person_id", r.agentPersonID,
 		)
 	} else {
+		if !r.acquireExecutionSlot(0, true) {
+			applogger.Error("private-space: execution slot occupied", "person_id", r.agentPersonID)
+			return
+		}
 		r.privateSpaceLoop.SetFocusContext(buildAgentFocusContext(r.agentPersonID, r.activeWorks))
 		// Feed the initial thoughts, then start the loop in a new goroutine.
-		r.privateSpaceLoop.FeedThoughts(thoughts)
+		if !r.privateSpaceLoop.FeedThoughts(thoughts) {
+			r.releaseExecutionSlot(0, true)
+			return
+		}
+		r.privateSpaceLoop.BeginRun(actionID)
 		go func() {
-			ctx := context.Background()
 			r.privateSpaceLoop.Run(ctx)
+			r.releaseExecutionSlot(0, true)
 		}()
 	}
 }
 
-// handleInspectJinshu runs the dedicated jinshu-read loop and reflows the
-// result back to the agent as a JinshuReadCompleted event, so the agent can
-// decide how to react to the contents it just read.
-func (r *agentRuntime) handleInspectJinshu(act action.Action) {
-	defer endActionLogged(act.ID, "inspect_jinshu")
-	plan := act.JinshuPlan
-	record, err := jinshu.GetReceived(r.agentPersonID, plan.JinshuID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to load received jinshu",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-		r.sendJinshuReadCompleted(act, plan.JinshuID, "", "", "", err)
-		return
-	}
-
-	fromName := ""
-	if from, err := dops.GetPerson(record.FromPersonID); err != nil {
-		applogger.Error("inspect_jinshu: failed to load sender",
-			"person_id", record.FromPersonID, "error", err)
-	} else {
-		fromName = from.Name
-	}
-
-	entries, err := jinshu.ListReceivedFiles(r.agentPersonID, plan.JinshuID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to list received files",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-	}
-
-	a, err := agent.GetAgent(r.agentPersonID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to load agent",
-			"person_id", r.agentPersonID, "error", err)
-		r.sendJinshuReadCompleted(act, plan.JinshuID, fromName, record.Topic, "", err)
-		return
-	}
-
-	loop := jinshu.NewReadLoop(jinshu.ReadConfig{
-		PersonID:      r.agentPersonID,
-		ReceivedDir:   jinshu.ReceivedDirFor(r.agentPersonID, plan.JinshuID),
-		FileList:      formatJinshuFileEntries(entries),
-		LLMConfig:     &a.LLM,
-		JinshuID:      plan.JinshuID,
-		Guidance:      plan.Guidance,
-		MaxIterations: 0, // Use default
-	})
-
-	summary, err := loop.Run(context.Background())
-	if err != nil {
-		applogger.Error("inspect_jinshu: read loop failed",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-		r.sendJinshuReadCompleted(act, plan.JinshuID, fromName, record.Topic, "", err)
-		return
-	}
-
-	r.sendJinshuReadCompleted(act, plan.JinshuID, fromName, record.Topic, summary, nil)
-}
-
 // handleListReceivedJinshu runs the paginated keyword search over the agent's received
 // jinshu and reflows the result back as a JinshuListed event so the agent can
-// pick a jinshu_id to inspect.
+// identify the delivery that needs further reading.
 func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
 	defer endActionLogged(act.ID, "list_received_jinshu")
 	params := act.ListReceivedJinshuParams
@@ -742,8 +769,8 @@ func (r *agentRuntime) handleSendJinshu(act action.Action) {
 		toName = to.Name
 	}
 
-	workDir := privatespace.GetWorkDirPath(r.agentPersonID)
-	files, _, err := workspace.ResolveAOSFiles(r.agentPersonID, workDir, plan.Paths)
+	workDir := aos.GetPrivateSpacePath(r.agentPersonID)
+	files, _, err := aos.ResolveAOSFiles(r.agentPersonID, workDir, plan.Paths)
 	if err != nil {
 		applogger.Error("send_jinshu: failed to resolve paths",
 			"agent_config_id", r.agentConfigID, "error", err)
@@ -782,43 +809,6 @@ func (r *agentRuntime) sendJinshuSent(act action.Action, jinshuID int64, toName,
 	if err != nil {
 		applogger.Error("sendJinshuSent: failed to persist outcome", "action_id", act.ID, "error", err)
 	}
-}
-
-// sendJinshuReadCompleted dispatches the read result back to the agent's own
-// event queue for a fresh Decide pass.
-func (r *agentRuntime) sendJinshuReadCompleted(act action.Action, jinshuID int64, fromName, topic, summary string, readErr error) {
-	payload := &eventqueue.JinshuReadCompletedPayload{
-		JinshuID: jinshuID,
-		FromName: fromName,
-		Topic:    topic,
-		Summary:  summary,
-		Status:   "success",
-	}
-	if readErr != nil {
-		payload.Status = "failure"
-		payload.Error = readErr.Error()
-	}
-
-	if err := r.emitSelfHeldResult(eventqueue.EventTypeJinshuReadCompleted, model.EventTypeJinshuReadCompleted, 0, payload, act.ID, nil); err != nil {
-		applogger.Error("sendJinshuReadCompleted: failed to persist outcome", "action_id", act.ID, "error", err)
-	}
-}
-
-// formatJinshuFileEntries renders the jinshu file listing for the loop's
-// initial prompt so the agent knows which paths it can read.
-func formatJinshuFileEntries(entries []jinshu.FileEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for _, e := range entries {
-		if e.IsDir {
-			fmt.Fprintf(&sb, "%s/\n", e.Path)
-		} else {
-			fmt.Fprintf(&sb, "%s (%d bytes)\n", e.Path, e.Size)
-		}
-	}
-	return sb.String()
 }
 
 // executeChat runs a Chat action asynchronously without creating a Work.
@@ -1016,6 +1006,10 @@ func (r *agentRuntime) findActiveWorkByID(workID int64) *work {
 // database, and returns the work object. Only used for StartFocusedWork actions.
 func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, bool) {
 	plan := dec.WorkPlan
+	if plan == nil || (plan.WorkspaceID > 0) == (plan.NewWorkspace != nil) {
+		applogger.Error("start_work: invalid Workspace selection", "action_id", dec.ID)
+		return nil, false
+	}
 	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
 
@@ -1026,10 +1020,73 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		targetSessionID = event.SessionID
 	}
 
+	var workspaceRecord *model.Workspace
+	if plan.WorkspaceID > 0 {
+		var err error
+		workspaceRecord, err = dops.GetOwnedWorkspace(r.agentPersonID, plan.WorkspaceID)
+		if err != nil {
+			applogger.Error("start_work: selected Workspace unavailable", "person_id", r.agentPersonID, "workspace_id", plan.WorkspaceID, "error", err)
+			return nil, false
+		}
+	}
+
 	tx := database.DB.Begin()
 	if tx.Error != nil {
 		applogger.Error("Failed to begin work transaction", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", tx.Error)
 		return nil, false
+	}
+	if err := dops.RequireActivePersonTx(tx, r.agentPersonID); err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: person no longer active", "person_id", r.agentPersonID, "error", err)
+		return nil, false
+	}
+	createdWorkspace := false
+	committed := false
+	defer func() {
+		if !committed && createdWorkspace {
+			if err := aos.CleanupUncommittedWorkspace(*workspaceRecord); err != nil {
+				applogger.Error("start_work: failed to clean uncommitted Workspace directories", "workspace_id", workspaceRecord.ID, "error", err)
+			}
+		}
+	}()
+	if plan.NewWorkspace != nil {
+		workspaceRecord = &model.Workspace{PersonID: r.agentPersonID, RelativePath: fmt.Sprintf("work/pending-%d", dec.ID), Name: strings.TrimSpace(plan.NewWorkspace.Name), Purpose: strings.TrimSpace(plan.NewWorkspace.Purpose)}
+		if err := tx.Create(workspaceRecord).Error; err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to register Workspace", "action_id", dec.ID, "error", err)
+			return nil, false
+		}
+		// Reserve the database identity first, then skip any matching legacy
+		// Session directory that already occupies work/<id> for this owner.
+		availableID, err := aos.AvailableWorkDirectoryID(r.agentPersonID, workspaceRecord.ID)
+		if err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to allocate Workspace directory", "workspace_id", workspaceRecord.ID, "error", err)
+			return nil, false
+		}
+		path := fmt.Sprintf("work/%d", availableID)
+		updated := tx.Exec("UPDATE workspaces SET id = ?, relative_path = ? WHERE id = ?", availableID, path, workspaceRecord.ID)
+		if updated.Error != nil || updated.RowsAffected != 1 {
+			tx.Rollback()
+			applogger.Error("start_work: failed to set Workspace path", "workspace_id", workspaceRecord.ID, "error", updated.Error, "rows_affected", updated.RowsAffected)
+			return nil, false
+		}
+		workspaceRecord.ID = availableID
+		workspaceRecord.RelativePath = path
+	}
+	_, _, err := aos.PrepareWorkspaceDirectories(*workspaceRecord, plan.NewWorkspace != nil)
+	if err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: failed to prepare Workspace directories", "workspace_id", workspaceRecord.ID, "error", err)
+		return nil, false
+	}
+	createdWorkspace = plan.NewWorkspace != nil
+	if createdWorkspace {
+		if err := recordActionEffect(tx, dec.ID, model.ActionEffectWorkspace, workspaceRecord.ID); err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to record Workspace source", "action_id", dec.ID, "error", err)
+			return nil, false
+		}
 	}
 
 	// The work's Description should reflect what the agent intends to DO
@@ -1058,6 +1115,11 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 		return nil, false
 	}
+	if err := tx.Create(&model.WorkspaceUse{WorkspaceID: workspaceRecord.ID, SourceType: model.WorkspaceUseWork, SourceID: workRecord.ID, Role: model.WorkspaceUseDefault}).Error; err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: failed to link Workspace", "work_id", workRecord.ID, "error", err)
+		return nil, false
+	}
 	if err := recordActionEffect(tx, dec.ID, model.ActionEffectWork, workRecord.ID); err != nil {
 		tx.Rollback()
 		applogger.Error("Failed to record work action source", "action_id", dec.ID, "work_id", workRecord.ID, "error", err)
@@ -1074,6 +1136,7 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		applogger.Error("Failed to commit work transaction", "agent_config_id", r.agentConfigID, "error", err)
 		return nil, false
 	}
+	committed = true
 	refreshMemorySource(model.MemorySourceWork, workRecord.ID)
 	refreshMemorySource(model.MemorySourceAction, dec.ID)
 
@@ -1085,9 +1148,10 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		ID:            workRecord.ID,
 		agent:         r,
 		sessionID:     targetSessionID,
+		workspaceID:   workspaceRecord.ID,
 		plan:          plan,
 		maxIterations: 90,
-		focusContext:  buildSessionFocusContext(r.agentPersonID, targetSessionID, r.activeWorks, plan.Guidance),
+		focusContext:  "",
 		comprehension: comprehension,
 		guidanceCh:    make(chan focusedwork.GuidanceDirective, 8),
 		done:          make(chan struct{}),
@@ -1365,11 +1429,18 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 		return nil, fmt.Errorf("createAgentRuntime: failed to load agent config %d: %w", agentConfigID, err)
 	}
 	runtime.agentPersonID = ac.PersonID
+	person, err := dops.GetPerson(ac.PersonID)
+	if err != nil {
+		return nil, fmt.Errorf("createAgentRuntime: load person %d: %w", ac.PersonID, err)
+	}
+	if person.Status != model.PersonStatusActive {
+		return nil, fmt.Errorf("createAgentRuntime: person %d is deceased", ac.PersonID)
+	}
 
 	// Ensure the agent has the stable AOS skeleton before it can inspect or
 	// enter owned space. This is idempotent and also repairs agents created by
 	// older versions that only had session-specific directories.
-	if err := workspace.InitAgentOwnedSpace(ac.PersonID); err != nil {
+	if err := aos.InitAgentOwnedSpace(ac.PersonID); err != nil {
 		return nil, fmt.Errorf("createAgentRuntime: initialize AOS for person %d: %w", ac.PersonID, err)
 	}
 

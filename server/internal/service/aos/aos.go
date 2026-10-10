@@ -1,15 +1,15 @@
-// Package workspace manages Agent Owned Space paths and their runtime metadata.
+// Package aos owns Agent Owned Space paths and directory lifecycle.
 //
 // Agent resources and runtime metadata are physically separated:
 //
-//	{DATA_ROOT}/aos/{person_id}/work/{session_id}/
+//	{DATA_ROOT}/aos/{person_id}/work/{directory_id}/
+//	{DATA_ROOT}/aosmeta/{person_id}/work/{directory_id}/.meta/
 //	{DATA_ROOT}/aos/{person_id}/private/
-//	{DATA_ROOT}/aosmeta/{person_id}/work/{session_id}/.meta/
 //	{DATA_ROOT}/aosmeta/{person_id}/private/.meta/
-package workspace
+package aos
 
 import (
-	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -28,7 +28,7 @@ func absolutePath(path string) string {
 	if abs, err := filepath.Abs(path); err == nil {
 		return abs
 	} else {
-		applogger.Error("workspace: failed to resolve absolute path", "path", path, "error", err)
+		applogger.Error("aos: failed to resolve absolute path", "path", path, "error", err)
 	}
 	return path
 }
@@ -63,34 +63,150 @@ func GetPrivateMetaDir(personID int64) string {
 	return filepath.Join(GetAgentMetaPath(personID), "private", ".meta")
 }
 
-// GetWorkspacePath returns the AOS work directory for a person/session pair.
-func GetWorkspacePath(personID, sessionID int64) string {
-	return filepath.Join(GetAgentOwnedSpacePath(personID), "work", strconv.FormatInt(sessionID, 10))
+// GetPrivateLogPath returns the runtime-owned private activity log path.
+func GetPrivateLogPath(personID int64) string {
+	return filepath.Join(GetPrivateMetaDir(personID), "log.jsonl")
 }
 
-// GetMetaDir returns the system-managed metadata directory for one session.
-func GetMetaDir(personID, sessionID int64) string {
-	return filepath.Join(GetAgentMetaPath(personID), "work", strconv.FormatInt(sessionID, 10), ".meta")
-}
-
-// GetFocusHandoffPath returns the system-owned append-only handoff projection.
-func GetFocusHandoffPath(personID, sessionID int64) string {
-	if sessionID > 0 {
-		return filepath.Join(GetMetaDir(personID, sessionID), "handoffs.jsonl")
+// ResolveRegisteredPath resolves a persisted Workspace path below its owner's
+// AOS root. Persisted paths are still validated because they are a file access
+// boundary; an absent historical directory is reported, never recreated.
+func ResolveRegisteredPath(record model.Workspace) (string, error) {
+	root := GetAgentOwnedSpacePath(record.PersonID)
+	rel := filepath.Clean(record.RelativePath)
+	if rel == "." || filepath.IsAbs(rel) || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workspace %d has an invalid relative path", record.ID)
 	}
-	return filepath.Join(GetPrivateMetaDir(personID), "handoffs.jsonl")
+	path := filepath.Join(root, rel)
+	if !pathWithin(path, root) {
+		return "", fmt.Errorf("workspace %d escapes its owner root", record.ID)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return "", fmt.Errorf("workspace %d directory unavailable: %w", record.ID, err)
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return "", fmt.Errorf("workspace %d path is not a real directory", record.ID)
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		return "", fmt.Errorf("workspace %d owner root unavailable: %w", record.ID, err)
+	}
+	resolvedPath, err := filepath.EvalSymlinks(path)
+	if err != nil || !pathWithin(resolvedPath, resolvedRoot) {
+		return "", fmt.Errorf("workspace %d resolves outside its owner root or is unavailable: %v", record.ID, err)
+	}
+	return path, nil
 }
 
-// GetOutputDir returns the default working directory inside a session AOS path.
-func GetOutputDir(personID, sessionID int64) string {
-	return filepath.Join(GetWorkspacePath(personID, sessionID), "output")
+// GetWorkspaceMetaDir resolves the runtime-owned metadata paired with a
+// registered Workspace. Historical work/<session_id> paths keep their original
+// metadata, so reuse of that Workspace also preserves its existing notes.
+func GetWorkspaceMetaDir(record model.Workspace) (string, error) {
+	if _, err := ResolveRegisteredPath(record); err != nil {
+		return "", err
+	}
+	return filepath.Join(GetAgentMetaPath(record.PersonID), filepath.Clean(record.RelativePath), ".meta"), nil
 }
 
-// ResolveAOSLocator resolves a user-facing resource locator into AOS. Explicit
-// locators begin with work/ or private/; legacy relative paths remain relative
-// to the current session output directory for compatibility.
-func ResolveAOSLocator(personID, sessionID int64, locator string) (string, string, error) {
-	return ResolveAOSLocatorFromDefault(personID, GetOutputDir(personID, sessionID), locator)
+// AvailableWorkDirectoryID avoids reusing a historical Session-named directory
+// when a new Workspace's database ID happens to have the same number. The
+// metadata side is checked too, because it can survive a missing resource dir.
+func AvailableWorkDirectoryID(personID, firstID int64) (int64, error) {
+	if personID <= 0 || firstID <= 0 {
+		return 0, fmt.Errorf("invalid owner or Workspace ID")
+	}
+	for id := firstID; id > 0; id++ {
+		rel := filepath.Join("work", strconv.FormatInt(id, 10))
+		occupied := false
+		for _, root := range []string{GetAgentOwnedSpacePath(personID), GetAgentMetaPath(personID)} {
+			_, err := os.Lstat(filepath.Join(root, rel))
+			if err == nil {
+				occupied = true
+				break
+			}
+			if !os.IsNotExist(err) {
+				return 0, fmt.Errorf("inspect Workspace directory %s: %w", rel, err)
+			}
+		}
+		if !occupied {
+			return id, nil
+		}
+	}
+	return 0, fmt.Errorf("no available Workspace directory ID")
+}
+
+// PrepareWorkspaceDirectories creates the selected Workspace resource directory
+// and paired metadata. A new Workspace claims its numbered directory exclusively;
+// an existing Workspace must resolve to a real registered directory.
+func PrepareWorkspaceDirectories(record model.Workspace, newWorkspace bool) (directory, metaDir string, err error) {
+	createdMeta := false
+	if newWorkspace {
+		if err = validateNewWorkspacePath(record); err != nil {
+			return "", "", err
+		}
+		directory = filepath.Join(GetAgentOwnedSpacePath(record.PersonID), record.RelativePath)
+		if err = os.MkdirAll(filepath.Dir(directory), 0755); err != nil {
+			return "", "", fmt.Errorf("create Workspace root: %w", err)
+		}
+		if err = os.Mkdir(directory, 0755); err != nil {
+			return "", "", fmt.Errorf("claim Workspace directory: %w", err)
+		}
+		claimedDirectory := directory
+		defer func() {
+			if err == nil {
+				return
+			}
+			if createdMeta {
+				err = errors.Join(err, CleanupUncommittedWorkspace(record))
+			} else {
+				// Another writer may have claimed the metadata path between
+				// allocation and Mkdir; remove only our resource directory.
+				err = errors.Join(err, os.RemoveAll(claimedDirectory))
+			}
+		}()
+	} else {
+		if directory, err = ResolveRegisteredPath(record); err != nil {
+			return "", "", err
+		}
+	}
+	if metaDir, err = GetWorkspaceMetaDir(record); err != nil {
+		return "", "", err
+	}
+	if newWorkspace {
+		if err = os.MkdirAll(filepath.Dir(metaDir), 0755); err == nil {
+			err = os.Mkdir(metaDir, 0755)
+			if err == nil {
+				createdMeta = true
+			}
+		}
+	} else {
+		err = os.MkdirAll(metaDir, 0755)
+	}
+	if err != nil {
+		return "", "", fmt.Errorf("prepare Workspace metadata: %w", err)
+	}
+	return directory, metaDir, nil
+}
+
+// CleanupUncommittedWorkspace removes only a newly claimed numbered directory
+// pair when the transaction that would register it did not commit.
+func CleanupUncommittedWorkspace(record model.Workspace) error {
+	if err := validateNewWorkspacePath(record); err != nil {
+		return err
+	}
+	resourceDir := filepath.Join(GetAgentOwnedSpacePath(record.PersonID), record.RelativePath)
+	metaDir := filepath.Join(GetAgentMetaPath(record.PersonID), record.RelativePath)
+	return errors.Join(os.RemoveAll(metaDir), os.RemoveAll(resourceDir))
+}
+
+// validateNewWorkspacePath prevents cleanup or creation outside the numbered
+// work/ branch, including historical directories with a different identity.
+func validateNewWorkspacePath(record model.Workspace) error {
+	if record.PersonID <= 0 || record.ID <= 0 || record.RelativePath != filepath.Join("work", strconv.FormatInt(record.ID, 10)) {
+		return fmt.Errorf("Workspace %d has no valid new directory path", record.ID)
+	}
+	return nil
 }
 
 // ResolveAOSLocatorFromDefault resolves a locator using defaultDir for legacy
@@ -158,7 +274,8 @@ func ResolveAOSFiles(personID int64, defaultDir string, locators []string) (map[
 		deliveryPath := relPath
 		cleanLocator := filepath.Clean(locator)
 		if !strings.HasPrefix(cleanLocator, "work"+string(filepath.Separator)) && !strings.HasPrefix(cleanLocator, "private"+string(filepath.Separator)) {
-			// Preserve legacy output/private-relative delivery names.
+			// Keep the caller's relative delivery name instead of exposing its
+			// AOS location to the recipient.
 			deliveryPath = filepath.ToSlash(cleanLocator)
 		}
 		if _, exists := files[deliveryPath]; exists {
@@ -238,43 +355,31 @@ func NormalizeInspectionScope(scope string) (string, error) {
 	}
 	parts := strings.Split(filepath.ToSlash(scope), "/")
 	if len(parts) != 2 || parts[0] != "work" {
-		return "", fmt.Errorf("inspection scope must be root, work, private, or work/<session_id>")
+		return "", fmt.Errorf("inspection scope must be root, work, private, or work/<directory_id>")
 	}
-	sessionID, err := strconv.ParseInt(parts[1], 10, 64)
-	if err != nil || sessionID <= 0 {
-		return "", fmt.Errorf("inspection work scope requires a positive session ID")
+	id, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || id <= 0 {
+		return "", fmt.Errorf("inspection scope requires a positive ID")
 	}
-	return filepath.Join("work", strconv.FormatInt(sessionID, 10)), nil
+	return filepath.Join(parts[0], strconv.FormatInt(id, 10)), nil
 }
 
 // pathWithin reports whether path remains beneath root after lexical cleaning.
 func pathWithin(path, root string) bool {
 	rel, err := filepath.Rel(root, path)
 	if err != nil {
-		applogger.Error("workspace: failed to compare paths", "path", path, "root", root, "error", err)
+		applogger.Error("aos: failed to compare paths", "path", path, "root", root, "error", err)
 		return false
 	}
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
-}
-
-// InitWorkspace creates the AOS/AOSMeta pair for a session.
-func InitWorkspace(personID, sessionID int64) string {
-	ws := GetWorkspacePath(personID, sessionID)
-	metaDir := GetMetaDir(personID, sessionID)
-	for _, dir := range []string{ws, metaDir, GetOutputDir(personID, sessionID)} {
-		if err := os.MkdirAll(dir, 0755); err != nil {
-			applogger.Error("workspace: failed to initialize directory", "person_id", personID, "session_id", sessionID, "path", dir, "error", err)
-		}
-	}
-	return ws
 }
 
 // InitAgentOwnedSpace creates the stable per-agent AOS skeleton.
 //
 // The private branch is initialized through InitPrivateSpace instead of a
 // raw MkdirAll so private resources and private metadata stay in lockstep.
-// The work branches are roots for future session workspaces; individual
-// session directories are still created lazily by InitWorkspace.
+// Existing work/ directories are left in place. New Workspace directories
+// use the same work/ branch and are created when a Work selects one.
 func InitAgentOwnedSpace(personID int64) error {
 	if personID <= 0 {
 		return fmt.Errorf("initialize AOS: invalid person ID %d", personID)
@@ -304,59 +409,4 @@ func InitPrivateSpace(personID int64) (rootDir, workDir, metaDir string, err err
 		}
 	}
 	return rootDir, workDir, metaDir, nil
-}
-
-// AppendFocusHandoff writes an immutable metadata projection after the
-// database record receives its ID. It is not an agent-editable resource.
-func AppendFocusHandoff(record *model.FocusHandoff) error {
-	if record == nil || record.PersonID <= 0 {
-		return fmt.Errorf("focus handoff requires a valid person")
-	}
-	if record.SessionID > 0 {
-		InitWorkspace(record.PersonID, record.SessionID)
-	} else {
-		if _, _, _, err := InitPrivateSpace(record.PersonID); err != nil {
-			return err
-		}
-	}
-	path := GetFocusHandoffPath(record.PersonID, record.SessionID)
-	encoded, err := json.Marshal(record)
-	if err != nil {
-		return fmt.Errorf("marshal focus handoff: %w", err)
-	}
-	file, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-	if err != nil {
-		return fmt.Errorf("open focus handoff projection: %w", err)
-	}
-	if _, err := file.Write(append(encoded, '\n')); err != nil {
-		if closeErr := file.Close(); closeErr != nil {
-			applogger.Error("workspace: failed to close incomplete handoff projection", "path", path, "error", closeErr)
-		}
-		return fmt.Errorf("append focus handoff projection: %w", err)
-	}
-	if err := file.Close(); err != nil {
-		return fmt.Errorf("close focus handoff projection: %w", err)
-	}
-	return nil
-}
-
-// RemoveWorkspace removes only the paired AOS and AOSMeta paths of one session.
-func RemoveWorkspace(personID, sessionID int64) {
-	removePath(GetWorkspacePath(personID, sessionID), "workspace resource cleanup", personID, sessionID)
-	removePath(filepath.Join(GetAgentMetaPath(personID), "work", strconv.FormatInt(sessionID, 10)), "workspace metadata cleanup", personID, sessionID)
-}
-
-// RemoveAgentOwnedSpace removes both roots owned by one deleted agent.
-func RemoveAgentOwnedSpace(personID int64) {
-	removePath(GetAgentOwnedSpacePath(personID), "agent AOS cleanup", personID, 0)
-	removePath(GetAgentMetaPath(personID), "agent AOS metadata cleanup", personID, 0)
-}
-
-// removePath removes one explicitly computed AOS path and records the outcome.
-func removePath(path, operation string, personID, sessionID int64) {
-	if err := os.RemoveAll(path); err != nil {
-		applogger.Error("workspace: cleanup failed", "operation", operation, "person_id", personID, "session_id", sessionID, "path", path, "error", err)
-		return
-	}
-	applogger.Info("workspace: cleanup completed", "operation", operation, "person_id", personID, "session_id", sessionID, "path", path)
 }

@@ -63,12 +63,6 @@ func serializeEventPayload(event *eventqueue.AgentEvent) (string, error) {
 			return "", fmt.Errorf("invalid jinshu received payload")
 		}
 		payloadJSON, err = json.Marshal(payload)
-	case eventqueue.EventTypeJinshuReadCompleted:
-		payload, ok := event.Payload.(*eventqueue.JinshuReadCompletedPayload)
-		if !ok || payload == nil {
-			return "", fmt.Errorf("invalid jinshu read completed payload")
-		}
-		payloadJSON, err = json.Marshal(payload)
 	case eventqueue.EventTypeJinshuListed:
 		payload, ok := event.Payload.(*eventqueue.JinshuListedPayload)
 		if !ok || payload == nil {
@@ -97,6 +91,18 @@ func serializeEventPayload(event *eventqueue.AgentEvent) (string, error) {
 		payload, ok := event.Payload.(*eventqueue.PSCompletedPayload)
 		if !ok || payload == nil {
 			return "", fmt.Errorf("invalid private space completed payload")
+		}
+		payloadJSON, err = json.Marshal(payload)
+	case eventqueue.EventTypeExecutionSlotAvailable:
+		payload, ok := event.Payload.(*eventqueue.ExecutionSlotAvailablePayload)
+		if !ok || payload == nil {
+			return "", fmt.Errorf("invalid execution slot payload")
+		}
+		payloadJSON, err = json.Marshal(payload)
+	case eventqueue.EventTypeSystemNotification:
+		payload, ok := event.Payload.(string)
+		if !ok {
+			return "", fmt.Errorf("invalid system notification payload")
 		}
 		payloadJSON, err = json.Marshal(payload)
 	default:
@@ -174,12 +180,6 @@ func unmarshalEventPayload(event *eventqueue.AgentEvent, raw json.RawMessage) er
 			return err
 		}
 		event.Payload = payload
-	case eventqueue.EventTypeJinshuReadCompleted:
-		payload := &eventqueue.JinshuReadCompletedPayload{}
-		if err := json.Unmarshal(raw, payload); err != nil {
-			return err
-		}
-		event.Payload = payload
 	case eventqueue.EventTypeJinshuListed:
 		payload := &eventqueue.JinshuListedPayload{}
 		if err := json.Unmarshal(raw, payload); err != nil {
@@ -207,6 +207,18 @@ func unmarshalEventPayload(event *eventqueue.AgentEvent, raw json.RawMessage) er
 	case eventqueue.EventTypePSCompleted:
 		payload := &eventqueue.PSCompletedPayload{}
 		if err := json.Unmarshal(raw, payload); err != nil {
+			return err
+		}
+		event.Payload = payload
+	case eventqueue.EventTypeExecutionSlotAvailable:
+		payload := &eventqueue.ExecutionSlotAvailablePayload{}
+		if err := json.Unmarshal(raw, payload); err != nil {
+			return err
+		}
+		event.Payload = payload
+	case eventqueue.EventTypeSystemNotification:
+		var payload string
+		if err := json.Unmarshal(raw, &payload); err != nil {
 			return err
 		}
 		event.Payload = payload

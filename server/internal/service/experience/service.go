@@ -52,7 +52,7 @@ func panicIfNotReady() {
 // sourceID identifies the origin resource, interpreted by source:
 //   - source=1 (Reflection): sourceID = session_id
 //   - source=2 (Learn):       sourceID = public_experience_id
-func createExperience(ctx context.Context, personID int64, source int, sourceID int64, title, description, whenToUse, guidelines, pitfalls, procedure string) (*model.AgentExperience, error) {
+func createExperience(ctx context.Context, personID int64, source model.AgentExperienceSource, sourceID int64, title, description, whenToUse, guidelines, pitfalls, procedure string) (*model.AgentExperience, error) {
 	emb, err := embeddingSvc.EmbedSingle(ctx, description)
 	if err != nil {
 		return nil, fmt.Errorf("embed experience description: %w", err)

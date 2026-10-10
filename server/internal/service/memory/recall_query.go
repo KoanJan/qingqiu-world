@@ -208,8 +208,11 @@ func recallWorkActionCandidates(r RecallRequest, cur recallCursor, terms []strin
 	if err != nil {
 		return nil, err
 	}
-	adjustments := database.DB.Table("actions").Joins("JOIN decisions ON decisions.id = actions.decision_id").
-		Where(fmt.Sprintf("decisions.person_id = ? AND actions.type IN (%d, %d) AND CASE WHEN json_valid(actions.plan_json) THEN CAST(json_extract(actions.plan_json, '$.target_work_id') AS INTEGER) ELSE 0 END = ?", model.ActionTypeRouteFocusedWork, model.ActionTypeCancelFocusedWork), r.PersonID, r.WorkID)
+	adjustments := database.DB.Table("action_effects ae").
+		Joins("JOIN actions ON actions.id = ae.action_id").
+		Joins("JOIN decisions ON decisions.id = actions.decision_id").
+		Where("decisions.person_id = ? AND ae.effect_type = ? AND ae.effect_id = ?", r.PersonID, model.ActionEffectWorkControl, r.WorkID).
+		Group("actions.id")
 	if r.DecisionID > 0 {
 		adjustments = adjustments.Where("actions.decision_id = ?", r.DecisionID)
 	}

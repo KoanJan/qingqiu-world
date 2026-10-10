@@ -3,28 +3,25 @@ package tools
 import (
 	"fmt"
 
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
 
-// BashTool executes shell commands within a session workspace with sandbox isolation.
+// BashTool executes shell commands within the selected Work Workspace with sandbox isolation.
 // Wraps service/tools.BashTool with Tool interface + ID-to-path translation.
 type BashTool struct {
 	core *servicetools.BashTool
 }
 
-// NewBashTool creates a BashTool for the given person and session.
-// Workspace paths are derived via the workspace package; sandbox policy
-// directory is built as {DATA_ROOT}/aac/{personID}/{sessionID}.
-func NewBashTool(personID, sessionID int64) *BashTool {
-	sessionRoot := workspace.GetAgentOwnedSpacePath(personID)
-	outputDir := workspace.GetOutputDir(personID, sessionID)
-	policyDir := workspace.GetSandboxPolicyDir(personID, sessionID)
-	return &BashTool{
-		core: servicetools.NewBashTool(sessionRoot, outputDir, true, policyDir),
-	}
+// NewBashToolForWork uses a registered Work's selected Workspace directory and
+// its own sandbox policy directory rather than a Session-derived path.
+func NewBashToolForWork(personID, workID int64, workspaceDir string) *BashTool {
+	return &BashTool{core: servicetools.NewBashTool(
+		aos.GetAgentOwnedSpacePath(personID), workspaceDir, true,
+		aos.GetWorkSandboxPolicyDir(personID, workID),
+	)}
 }
 
 func (b *BashTool) Name() ToolName      { return ToolNameBash }

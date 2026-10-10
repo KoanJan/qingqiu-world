@@ -56,6 +56,14 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 
 	tx := database.DB.Begin()
 	defer tx.Rollback()
+	if err := dops.RequireActivePersonTx(tx, r.agentPersonID); err != nil {
+		applogger.Error("commitMessage: sender unavailable", "person_id", r.agentPersonID, "error", err)
+		return
+	}
+	if err := dops.RequireActiveSessionTx(tx, req.sessionID); err != nil {
+		applogger.Error("commitMessage: session unavailable", "session_id", req.sessionID, "error", err)
+		return
+	}
 
 	msg := &model.Message{
 		SessionID:             req.sessionID,

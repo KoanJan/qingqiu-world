@@ -241,7 +241,7 @@ Each iteration follows this lifecycle: check for cancellation, check for cycle-b
 
 ## Interaction Records
 
-Every iteration is recorded to the `interactions` table for audit and debugging, grouped by `(session_id, work_id, iteration)`:
+Every iteration is recorded to the `interactions` table for audit and debugging, grouped by `(work_id, iteration)`. A Work's optional source Session is resolved through the Work record:
 
 | Type | When recorded | Content |
 |------|-------------|---------|

@@ -89,9 +89,9 @@ func BenchmarkRecallMessageHistory(b *testing.B) {
 	}
 }
 
-// TestRecallHonorsObservationAndCurrentMembership checks that an index hit
-// cannot reveal a message without both an Observation and live membership.
-func TestRecallHonorsObservationAndCurrentMembership(t *testing.T) {
+// TestRecallHonorsObservationAndHistoricalMembership checks that an index hit
+// requires Observation and participation even after a Session is soft-deleted.
+func TestRecallHonorsObservationAndHistoricalMembership(t *testing.T) {
 	db := recallTestDB(t)
 	for _, sessionID := range []int64{10, 20} {
 		if err := db.Create(&model.Session{ID: sessionID}).Error; err != nil {
@@ -139,6 +139,13 @@ func TestRecallHonorsObservationAndCurrentMembership(t *testing.T) {
 	}
 	if len(page.Items) != 1 || page.Items[0].SourceID != eventIDs[0] || !strings.Contains(page.Items[0].Text, "委托一") {
 		t.Fatalf("private or unread message leaked, or observed message was lost: %+v", page)
+	}
+	if err := db.Model(&model.Session{}).Where("id = ?", 10).Update("status", model.SessionStatusDeleted).Error; err != nil {
+		t.Fatal(err)
+	}
+	closed, err := Recall(RecallRequest{Scope: RecallMessages, PersonID: 1, Query: "青丘"})
+	if err != nil || len(closed.Items) != 1 || closed.Items[0].SourceID != eventIDs[0] {
+		t.Fatalf("soft deletion lost observed history or exposed unread history: %+v err=%v", closed, err)
 	}
 	rows, err := SearchObservedMessages(1, 10, 0, []string{"青丘"}, 5)
 	if err != nil || len(rows) != 1 || rows[0].Content != "青丘委托一" {
@@ -264,6 +271,11 @@ func TestWorkAdjustmentAndIndexRefresh(t *testing.T) {
 	}
 	if err := db.Create(&model.ActionEffect{ActionID: origin.ID, EffectType: model.ActionEffectWork, EffectID: work.ID}).Error; err != nil {
 		t.Fatal(err)
+	}
+	for _, accepted := range []int64{action.ID, cancel.ID} {
+		if err := db.Create(&model.ActionEffect{ActionID: accepted, EffectType: model.ActionEffectWorkControl, EffectID: work.ID}).Error; err != nil {
+			t.Fatal(err)
+		}
 	}
 	if err := RebuildTermIndex(context.Background()); err != nil {
 		t.Fatal(err)
@@ -710,6 +722,9 @@ func TestRecallWorkAndHandoffKeepDistinctTimesAndClaims(t *testing.T) {
 			if !strings.Contains(page.Items[0].Text, phrase) {
 				t.Fatalf("source %d omitted %q: %+v", spec.scope, phrase, page.Items[0])
 			}
+		}
+		if spec.scope == RecallEvents && strings.Contains(page.Items[0].Text, handoff.Summary) {
+			t.Fatalf("later handoff rewrote the earlier completion Event: %+v", page.Items[0])
 		}
 		outside, err := Recall(RecallRequest{Scope: spec.scope, PersonID: 1, SourceID: spec.id, FromTime: spec.at.Add(time.Second)})
 		if err != nil || len(outside.Items) != 0 {

@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/api/response"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/focusedwork"
 )
@@ -22,16 +23,18 @@ const (
 // activity timeline for a session's focused works.
 //
 // GET /api/sessions/:id/activities?before_interaction_id=<id>&limit=<n>
+// An after_interaction_id cursor instead reads newly recorded interactions.
 func (h *Handler) GetSessionActivities(c *gin.Context) {
 	sessionID := getPathID(c)
-	beforeInteractionID, limit, err := activityPageParams(c)
+	beforeInteractionID, afterInteractionID, limit, err := activityPageParams(c)
 	if err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
 
 	// Verify session exists before querying its related work records.
-	if _, err := dops.GetSession(sessionID); err != nil {
+	session, err := dops.GetSession(sessionID)
+	if err != nil || session.Status != model.SessionStatusActive {
 		response.NotFound(c, "Session not found")
 		return
 	}
@@ -51,7 +54,7 @@ func (h *Handler) GetSessionActivities(c *gin.Context) {
 	}
 
 	workPersonIDs := make(map[int64]int64, len(works))
-	validWorkCount := 0
+	workIDs := make([]int64, 0, len(works))
 	for _, work := range works {
 		if work.PersonID <= 0 {
 			applogger.Error("GetSessionActivities: work has invalid owner",
@@ -59,17 +62,18 @@ func (h *Handler) GetSessionActivities(c *gin.Context) {
 			continue
 		}
 		workPersonIDs[work.ID] = work.PersonID
-		validWorkCount++
+		workIDs = append(workIDs, work.ID)
 	}
-	if validWorkCount == 0 {
+	if len(workIDs) == 0 {
 		response.Success(c, schema.ActivityPage{Events: []schema.ActivityEvent{}})
 		return
 	}
 
-	interactions, hasMore, err := dops.ListSessionActivityInteractions(sessionID, beforeInteractionID, limit)
+	interactions, hasMore, err := dops.ListActivityInteractions(workIDs, beforeInteractionID, afterInteractionID, limit)
 	if err != nil {
 		applogger.Error("GetSessionActivities: failed to query interactions",
-			"session_id", sessionID, "before_interaction_id", beforeInteractionID, "limit", limit, "error", err)
+			"session_id", sessionID, "before_interaction_id", beforeInteractionID,
+			"after_interaction_id", afterInteractionID, "limit", limit, "error", err)
 		response.InternalError(c, "Failed to query activities")
 		return
 	}
@@ -78,7 +82,10 @@ func (h *Handler) GetSessionActivities(c *gin.Context) {
 		Events:  focusedwork.BuildActivityEvents(interactions, workPersonIDs),
 		HasMore: hasMore,
 	}
-	if hasMore && len(interactions) > 0 {
+	if len(interactions) > 0 {
+		page.NextAfterInteractionID = interactions[len(interactions)-1].ID
+	}
+	if hasMore && afterInteractionID == 0 && len(interactions) > 0 {
 		page.NextBeforeInteractionID = interactions[0].ID
 	}
 	response.Success(c, page)
@@ -87,23 +94,34 @@ func (h *Handler) GetSessionActivities(c *gin.Context) {
 // activityPageParams validates the interaction cursor and page size. The
 // limit is deliberately bounded so one Activity request cannot monopolize the
 // application's single SQLite connection.
-func activityPageParams(c *gin.Context) (int64, int, error) {
+func activityPageParams(c *gin.Context) (int64, int64, int, error) {
 	beforeInteractionID := int64(0)
 	if rawBefore := c.Query("before_interaction_id"); rawBefore != "" {
 		parsed, err := strconv.ParseInt(rawBefore, 10, 64)
 		if err != nil || parsed <= 0 {
-			return 0, 0, fmt.Errorf("before_interaction_id must be a positive integer")
+			return 0, 0, 0, fmt.Errorf("before_interaction_id must be a positive integer")
 		}
 		beforeInteractionID = parsed
+	}
+	afterInteractionID := int64(0)
+	if rawAfter := c.Query("after_interaction_id"); rawAfter != "" {
+		parsed, err := strconv.ParseInt(rawAfter, 10, 64)
+		if err != nil || parsed <= 0 {
+			return 0, 0, 0, fmt.Errorf("after_interaction_id must be a positive integer")
+		}
+		afterInteractionID = parsed
+	}
+	if beforeInteractionID > 0 && afterInteractionID > 0 {
+		return 0, 0, 0, fmt.Errorf("before_interaction_id and after_interaction_id cannot be combined")
 	}
 
 	limit := activityDefaultPageSize
 	if rawLimit := c.Query("limit"); rawLimit != "" {
 		parsed, err := strconv.Atoi(rawLimit)
 		if err != nil || parsed < 1 || parsed > activityMaxPageSize {
-			return 0, 0, fmt.Errorf("limit must be between 1 and %d", activityMaxPageSize)
+			return 0, 0, 0, fmt.Errorf("limit must be between 1 and %d", activityMaxPageSize)
 		}
 		limit = parsed
 	}
-	return beforeInteractionID, limit, nil
+	return beforeInteractionID, afterInteractionID, limit, nil
 }

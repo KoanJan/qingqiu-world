@@ -42,7 +42,21 @@ func eventSourceContent(event model.Event) (string, time.Time, error) {
 		if err := database.DB.First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
-		return fmt.Sprintf("Work %d completion event for %s; current status %d. The original completion summary is not persisted in this Event.", row.ID, row.Description, row.Status), event.CreatedAt, nil
+		content := fmt.Sprintf("Work %d completion event for %s; current status %d", row.ID, row.Description, row.Status)
+		var handoff model.FocusHandoff
+		// Only a handoff already recorded when the Event occurred can describe
+		// that observation. A later handoff must remain a separate source.
+		result := database.DB.Where("work_id = ? AND person_id = ? AND created_at <= ?", row.ID, row.PersonID, event.CreatedAt).
+			Order("created_at DESC, id DESC").Limit(1).Find(&handoff)
+		if result.Error != nil {
+			return "", time.Time{}, result.Error
+		}
+		if result.RowsAffected > 0 {
+			content += "; Focus reported: " + handoff.Summary
+		} else {
+			content += "; no Focus result was recorded by this Event"
+		}
+		return content, event.CreatedAt, nil
 	case model.EventTypePSDigest:
 		var row model.PSDigest
 		if err := database.DB.First(&row, event.RefID).Error; err != nil {
@@ -58,6 +72,28 @@ func eventSourceContent(event model.Event) (string, time.Time, error) {
 	default:
 		return "", time.Time{}, fmt.Errorf("unsupported referenced event type %d", event.EventType)
 	}
+}
+
+// DescribeObservedEvent reads one authoritative event for a short-lived
+// cognitive context. It applies the same observation and source permissions as
+// recall, and keeps reported outcomes attributed to their source.
+func DescribeObservedEvent(personID, eventID int64) (string, error) {
+	var event model.Event
+	if err := database.DB.First(&event, eventID).Error; err != nil {
+		return "", err
+	}
+	allowed, err := canReadEvent(personID, event)
+	if err != nil {
+		return "", err
+	}
+	if !allowed {
+		return "", fmt.Errorf("person %d cannot read event %d", personID, eventID)
+	}
+	content, _, err := eventSourceContent(event)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("%s: %s", eventTypeName(event.EventType), content), nil
 }
 
 // canReadEvent checks both observation and the current domain authorization.
@@ -266,8 +302,6 @@ func eventTypeName(t model.EventType) string {
 		return "private-space digest"
 	case model.EventTypeScheduled:
 		return "scheduled alarm"
-	case model.EventTypeJinshuReadCompleted:
-		return "jinshu reading result"
 	case model.EventTypeJinshuListed:
 		return "received-jinshu list"
 	case model.EventTypeJinshuSent:
@@ -276,6 +310,10 @@ func eventTypeName(t model.EventType) string {
 		return "sent-jinshu list"
 	case model.EventTypeOwnedSpaceInspected:
 		return "owned-space inspection"
+	case model.EventTypeExecutionSlotAvailable:
+		return "execution slot available"
+	case model.EventTypeSystemNotification:
+		return "system notification"
 	default:
 		return "event"
 	}
@@ -294,6 +332,12 @@ func effectTypeName(t model.ActionEffectType) string {
 		return "jinshu"
 	case model.ActionEffectSelfHeldEvent:
 		return "result event"
+	case model.ActionEffectWorkspace:
+		return "workspace"
+	case model.ActionEffectWorkControl:
+		return "accepted work control"
+	case model.ActionEffectPSDigest:
+		return "private-space digest"
 	default:
 		return "unknown"
 	}

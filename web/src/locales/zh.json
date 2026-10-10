@@ -1,6 +1,7 @@
 {
   "app": {
     "title": "Qingqiu World",
+    "navigation": "主导航",
     "startNewChat": "开始新对话",
     "selectOrCreate": "选择一个会话或创建新对话开始聊天",
     "askAnything": "终于想起我啦？Shift+Enter换行",
@@ -351,6 +352,21 @@
   },
   "activity": {
     "title": "Agent 活动日志",
+    "agents": "Agent",
+    "previousAgent": "向左浏览 Agent",
+    "nextAgent": "向右浏览 Agent",
+    "workspaces": "工作区",
+    "noWorkspaces": "暂无工作区",
+    "selectWorkspace": "选择工作区查看活动",
+    "running": "进行中",
+    "deceased": "已逝去",
+    "completed": "已完成",
+    "failed": "失败",
+    "stopped": "已停止",
+    "unknownStatus": "状态未知",
+    "loadMore": "加载更多工作区",
+    "alsoUsedWorkspace": "这项工作也使用了此工作区。完整活动记录位于默认工作区：",
+    "viewPrimaryWorkspace": "查看 {{name}}",
     "noRecords": "暂无 Agent 活动记录",
     "loadError": "加载活动记录失败",
     "retry": "重试",
@@ -371,6 +387,7 @@
       "scan_jinshu": "浏览锦书",
       "read_jinshu": "阅读锦书",
       "copy_from_jinshu": "提取锦书文件",
+      "use_workspace": "使用工作区",
       "scan_kb": "检索知识库",
       "read_kb_evidence": "读取知识库证据",
       "list_kb_documents": "查看知识库文档"

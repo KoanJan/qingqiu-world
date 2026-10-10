@@ -3,8 +3,8 @@ package tools
 import (
 	"fmt"
 
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
@@ -15,12 +15,12 @@ type ReadTextFileTool struct {
 	core *servicetools.ReadFileTool
 }
 
-// NewReadTextFileTool creates a ReadTextFileTool for the given person and session.
-func NewReadTextFileTool(personID, sessionID int64) *ReadTextFileTool {
+// NewReadTextFileTool uses the selected Workspace directory.
+func NewReadTextFileTool(personID int64, workspaceDir string) *ReadTextFileTool {
 	return &ReadTextFileTool{
 		core: servicetools.NewReadFileTool(
-			workspace.GetAgentOwnedSpacePath(personID),
-			workspace.GetOutputDir(personID, sessionID),
+			aos.GetAgentOwnedSpacePath(personID),
+			workspaceDir,
 		),
 	}
 }
@@ -58,7 +58,7 @@ func (r *ReadTextFileTool) Schema() llm.FunctionDefinition {
 }
 
 func (r *ReadTextFileTool) Execute(args map[string]interface{}) (string, error) {
-	return r.core.Execute(normalizedTaskFileArgs(args))
+	return r.core.Execute(args)
 }
 
 func (r *ReadTextFileTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {

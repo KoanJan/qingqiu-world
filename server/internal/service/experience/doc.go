@@ -7,14 +7,15 @@
 //
 // Private Experience (agent's own):
 //   - Created via Reflection: the agent notes down structured lessons from
-//     session notes (CheckReflection, reflection.go). Uses SHA-256 fingerprinting
+//     Workspace notes (CheckReflection, reflection.go). Uses SHA-256 fingerprinting
 //     on notes.jsonl to detect changes and avoids redundant re-reflection.
 //   - Created via Learning: the agent discovers public experiences worth adopting
 //     (CheckLearning, learning.go). Uses semantic search against the agent's
 //     session-level entity profiles to find relevant public experiences, then asks
 //     the LLM to judge which ones are worth mechanically copying.
 //   - All private experiences are stored as AgentExperience + AgentExperienceVector,
-//     with Source/SourceID tracking the origin (1=Reflection/session_id, 2=Learn/public_experience_id).
+//     with Source/SourceID tracking the origin (1=historical session notes,
+//     2=Learn/public_experience_id, 4=Workspace notes).
 //
 // Public Experience (shared across agents):
 //   - Created via Ingestion: raw SKILL.md content is distilled by the system LLM

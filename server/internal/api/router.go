@@ -101,6 +101,14 @@ func SetupRouter(hub realtime.Hub) *gin.Engine {
 			agents.DELETE("/:id", h.DeleteAgent)
 		}
 
+		activity := api.Group("/activity")
+		{
+			activity.GET("/agents", h.ListActivityAgents)
+			activity.GET("/agents/:id/workspaces", h.ListActivityWorkspaces)
+			activity.GET("/agents/:id/workspaces/:workspace_id/works", h.ListActivityWorks)
+			activity.GET("/agents/:id/works/:work_id/activities", h.GetWorkActivities)
+		}
+
 		sessions := api.Group("/sessions")
 		{
 			sessions.GET("", h.ListSessions)

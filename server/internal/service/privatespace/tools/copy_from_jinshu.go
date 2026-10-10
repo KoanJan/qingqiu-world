@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"strings"
 
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // CopyFromJinshuTool copies the files delivered by a received jinshu into the
@@ -34,7 +34,7 @@ func (t *CopyFromJinshuTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name: "copy_from_jinshu",
 		Description: "Copy the files delivered by a received jinshu into an Agent Owned Space directory. " +
-			"Use work/<session_id>/... or private/...; bare paths remain relative to private/. The target directory is created if it does not exist, " +
+			"Use work/<directory_id>/... or private/...; bare paths remain relative to private/. The target directory is created if it does not exist, " +
 			"and existing files with the same name are overwritten.",
 		Parameters: map[string]interface{}{
 			"type": "object",
@@ -70,7 +70,7 @@ func (t *CopyFromJinshuTool) Execute(args map[string]interface{}) (string, error
 		return "", err
 	}
 
-	targetDir, _, err := workspace.ResolveAOSLocatorFromDefault(t.personID, t.workDir, targetRel)
+	targetDir, _, err := aos.ResolveAOSLocatorFromDefault(t.personID, t.workDir, targetRel)
 	if err != nil {
 		return "", fmt.Errorf("invalid target_relative_dir %q: %w", targetRel, err)
 	}

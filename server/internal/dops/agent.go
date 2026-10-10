@@ -49,14 +49,3 @@ func ListAgentConfigsByLLMConfigID(llmConfigID int64) ([]model.AgentConfig, erro
 	}
 	return referencingAgents, nil
 }
-
-// GetAgentConfigIDBySessionID returns the id of AgentConfig of the AIPerson participated in the session
-func GetFirstAgentConfigIDBySessionID(sessionID int64) int64 {
-	var agentConfigID int64
-	database.DB.Raw(`SELECT ac.id FROM participant_sessions ps
-		JOIN persons p ON p.id = ps.participant_id AND p.type = 1
-		JOIN agent_configs ac ON ac.person_id = p.id
-		WHERE ps.session_id = ?
-		LIMIT 1`, sessionID).Scan(&agentConfigID)
-	return agentConfigID
-}

@@ -1,4 +1,4 @@
-package workspace
+package aos
 
 import (
 	"crypto/sha256"
@@ -69,7 +69,8 @@ func ParseNoteType(s string) (NoteType, error) {
 
 // NoteEntry represents a single structured note entry stored as one JSONL line.
 //
-// Notes are stored in .meta/notes.jsonl within the session workspace.
+// Focus notes describe the selected Workspace across successive Works.
+// Historical session Workspaces retain their original metadata location.
 // Each entry is a self-contained JSON object, append-only.
 type NoteEntry struct {
 	Timestamp     string   `json:"ts"`
@@ -96,9 +97,9 @@ func (e NoteEntry) DisplayTimestamp() string {
 	return t.Format("2006-01-02 15:04:05")
 }
 
-// AppendNote writes a new note entry as a single JSONL line to the session's
-// notes.jsonl. The file is created if it doesn't exist.
-func AppendNote(personID, sessionID int64, entry NoteEntry) error {
+// AppendNote writes one entry to the selected Workspace's notes.jsonl.
+// The file is created if it does not exist.
+func AppendNote(metaDir string, entry NoteEntry) error {
 	if entry.Timestamp == "" {
 		entry.Timestamp = time.Now().Format(time.RFC3339)
 	}
@@ -108,7 +109,7 @@ func AppendNote(personID, sessionID int64, entry NoteEntry) error {
 	}
 	data = append(data, '\n')
 
-	f, err := os.OpenFile(notesPath(personID, sessionID), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
+	f, err := os.OpenFile(notesPath(metaDir), os.O_APPEND|os.O_WRONLY|os.O_CREATE, 0644)
 	if err != nil {
 		return fmt.Errorf("open notes file: %w", err)
 	}
@@ -118,17 +119,16 @@ func AppendNote(personID, sessionID int64, entry NoteEntry) error {
 	return err
 }
 
-// ReadAllNotes reads all note entries from the session's notes.jsonl.
+// ReadAllNotes reads the selected Workspace's notes.jsonl.
 // Returns nil if the file doesn't exist (work just started); other read
 // errors are logged — silent skipping violates the no-silent-handling rule.
-func ReadAllNotes(personID, sessionID int64) []NoteEntry {
-	data, err := os.ReadFile(notesPath(personID, sessionID))
+func ReadAllNotes(metaDir string) []NoteEntry {
+	data, err := os.ReadFile(notesPath(metaDir))
 	if err != nil {
 		// File-not-exist is legitimate: work just started, no notes yet.
 		if !os.IsNotExist(err) {
 			applogger.Error("ReadAllNotes: failed to read notes file",
-				"person_id", personID,
-				"session_id", sessionID,
+				"meta_dir", metaDir,
 				"error", err,
 			)
 		}
@@ -144,8 +144,7 @@ func ReadAllNotes(personID, sessionID int64) []NoteEntry {
 		var entry NoteEntry
 		if err := json.Unmarshal([]byte(line), &entry); err != nil {
 			applogger.Warn("ReadAllNotes: skipping malformed JSONL line",
-				"person_id", personID,
-				"session_id", sessionID,
+				"meta_dir", metaDir,
 				"line", line,
 				"error", err,
 			)
@@ -156,20 +155,20 @@ func ReadAllNotes(personID, sessionID int64) []NoteEntry {
 	return entries
 }
 
-// ReadLastNote returns the most recent note entry, or nil if no notes exist.
-func ReadLastNote(personID, sessionID int64) *NoteEntry {
-	entries := ReadAllNotes(personID, sessionID)
+// ReadLastNote returns the most recent note in the selected Workspace, or nil.
+func ReadLastNote(metaDir string) *NoteEntry {
+	entries := ReadAllNotes(metaDir)
 	if len(entries) == 0 {
 		return nil
 	}
 	return &entries[len(entries)-1]
 }
 
-// RewriteNotes replaces the entire notes file with the given entries.
+// RewriteNotes replaces the selected Workspace's notes file with the given entries.
 // Used by callers that need to trim old entries — the caller decides
 // which entries to keep based on their own size/format requirements.
-func RewriteNotes(personID, sessionID int64, entries []NoteEntry) error {
-	f, err := os.Create(notesPath(personID, sessionID))
+func RewriteNotes(metaDir string, entries []NoteEntry) error {
+	f, err := os.Create(notesPath(metaDir))
 	if err != nil {
 		return fmt.Errorf("create notes file: %w", err)
 	}
@@ -182,8 +181,7 @@ func RewriteNotes(personID, sessionID int64, entries []NoteEntry) error {
 			// its current field types, but if it happens we log and skip
 			// the entry rather than silently dropping it.
 			applogger.Error("RewriteNotes: failed to marshal note entry, skipping",
-				"person_id", personID,
-				"session_id", sessionID,
+				"meta_dir", metaDir,
 				"entry_ts", e.Timestamp,
 				"entry_type", e.Type.String(),
 				"error", err,
@@ -203,8 +201,8 @@ func RewriteNotes(personID, sessionID int64, entries []NoteEntry) error {
 // NotesFingerprint returns a SHA256 hash of the raw notes.jsonl file content.
 // Used by the reflection pipeline to detect whether notes have changed
 // since the last reflection. Returns empty string if the file doesn't exist.
-func NotesFingerprint(personID, sessionID int64) (string, error) {
-	data, err := os.ReadFile(notesPath(personID, sessionID))
+func NotesFingerprint(metaDir string) (string, error) {
+	data, err := os.ReadFile(notesPath(metaDir))
 	if err != nil {
 		if os.IsNotExist(err) {
 			return "", nil
@@ -214,9 +212,9 @@ func NotesFingerprint(personID, sessionID int64) (string, error) {
 	return sha256Hex(string(data)), nil
 }
 
-// notesPath returns the full path to notes.jsonl for the given session.
-func notesPath(personID, sessionID int64) string {
-	return filepath.Join(GetMetaDir(personID, sessionID), "notes.jsonl")
+// notesPath keeps Workspace notes in their paired, runtime-owned metadata.
+func notesPath(metaDir string) string {
+	return filepath.Join(metaDir, "notes.jsonl")
 }
 
 // sha256Hex computes a SHA256 hex digest of the input string.

@@ -23,7 +23,7 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Person{}, &model.ParticipantSession{}, &model.Decision{}, &model.Action{}, &model.Work{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{}, &model.AgentObservation{}, &model.Decision{}, &model.Action{}, &model.Work{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
@@ -45,6 +45,9 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 			t.Fatal(err)
 		}
 		if err := db.Create(&model.ParticipantSession{SessionID: int64(993000 + i), ParticipantID: self}).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&model.Session{ID: int64(993000 + i), Title: "History"}).Error; err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -84,5 +87,21 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	resources, err := readDirSummary(dir)
 	if err != nil || !strings.Contains(resources, "2 more entries not shown") {
 		t.Fatalf("resource overview did not report omitted entries: %q err=%v", resources, err)
+	}
+}
+
+// TestOngoingActionSummaryUsesPlanMeaning checks that storage JSON does not
+// become raw prompt material when an asynchronous Chat is still in progress.
+func TestOngoingActionSummaryUsesPlanMeaning(t *testing.T) {
+	record := model.Action{Type: model.ActionTypeChat, Background: "A asked about dinner", Reason: "I will reply",
+		PlanJSON: `{"guidance":"Tell A I can meet tomorrow","session_id":42}`}
+	summary := formatOngoingAction(record)
+	for _, part := range []string{"Tell A I can meet tomorrow", "Session #42"} {
+		if !strings.Contains(summary, part) {
+			t.Fatalf("missing %q in %q", part, summary)
+		}
+	}
+	if strings.Contains(summary, "guidance\"") || strings.Contains(summary, "session_id") {
+		t.Fatalf("storage JSON entered the Situation: %q", summary)
 	}
 }

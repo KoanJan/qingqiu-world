@@ -75,7 +75,7 @@ func GetUserName() string {
 // GetAIPersons returns all persons with type=AI (agent identities).
 func GetAIPersons() ([]model.Person, error) {
 	var persons []model.Person
-	if err := database.DB.Where("type = ?", model.PersonTypeAI).Find(&persons).Error; err != nil {
+	if err := database.DB.Where("type = ? AND status = ?", model.PersonTypeAI, model.PersonStatusActive).Find(&persons).Error; err != nil {
 		return nil, fmt.Errorf("query ai persons: %w", err)
 	}
 	return persons, nil
@@ -115,120 +115,6 @@ func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int6
 	})
 
 	return agent, person, err
-}
-
-// DeleteAIPersonCascade deletes an agent config and all associated data in a single transaction.
-// Workspace cleanup (filesystem) remains the caller's responsibility.
-func DeleteAIPersonCascade(personID int64) (sessionIDs []int64, err error) {
-	err = database.DB.Transaction(func(tx *gorm.DB) error {
-		// Collect session IDs via participant_sessions.
-		if err := tx.Raw(`SELECT ps.session_id FROM participant_sessions ps
-			WHERE ps.participant_id = ?`, personID).Pluck("session_id", &sessionIDs).Error; err != nil {
-			return fmt.Errorf("pluck sessions via participant_sessions: %w", err)
-		}
-		if err := deleteSessionReferencesTx(tx, sessionIDs); err != nil {
-			return fmt.Errorf("delete session references: %w", err)
-		}
-		for _, source := range []struct {
-			eventType model.EventType
-			table     string
-		}{
-			{model.EventTypeBiography, "agent_biographies"},
-			{model.EventTypePSDigest, "ps_digests"},
-			{model.EventTypeScheduled, "scheduled_events"},
-			{model.EventTypeWorkCompleted, "works"},
-		} {
-			if err := deleteSourceEventsTx(tx, source.eventType, source.table, "person_id = ?", personID); err != nil {
-				return fmt.Errorf("delete agent event references: %w", err)
-			}
-		}
-		if err := deleteDecisionsTx(tx, "person_id = ?", personID); err != nil {
-			return fmt.Errorf("delete agent decisions: %w", err)
-		}
-
-		if len(sessionIDs) > 0 {
-			var messageIDs []int64
-			if err := tx.Model(&model.Message{}).Where("session_id IN ?", sessionIDs).Pluck("id", &messageIDs).Error; err != nil {
-				return fmt.Errorf("pluck messages for speech history cleanup: %w", err)
-			}
-			if len(messageIDs) > 0 {
-				if err := tx.Where("message_id IN ?", messageIDs).Delete(&model.SpeechRenderHistory{}).Error; err != nil {
-					return fmt.Errorf("delete speech render histories: %w", err)
-				}
-			}
-			// NOTE: This logic assumes 1v1 (one agent per session).
-			// In multi-agent/group chat, deleting one agent should NOT cascade delete the entire session.
-			tables := []interface{}{
-				&model.Work{}, &model.Interaction{},
-				&model.AgentNarrative{}, &model.Summary{}, &model.FocusHandoff{},
-				&model.ParticipantSession{}, &model.Message{},
-			}
-			for _, table := range tables {
-				if err := tx.Where("session_id IN ?", sessionIDs).Delete(table).Error; err != nil {
-					return err
-				}
-			}
-			if err := tx.Where("id IN ?", sessionIDs).Delete(&model.Session{}).Error; err != nil {
-				return err
-			}
-			if err := tx.Where("session_id IN ?", sessionIDs).Delete(&model.ScheduledEvent{}).Error; err != nil {
-				return err
-			}
-		}
-
-		// Agent-level memory and cognition — now keyed by person_id.
-		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentObservation{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentEventBuffer{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.PSDigest{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.ScheduledEvent{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.Work{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("owner_person_id = ?", personID).Delete(&model.MemoryTerm{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.EntityProfile{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentBiography{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.FocusHandoff{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentVoice{}).Error; err != nil {
-			return fmt.Errorf("delete Agent voice versions: %w", err)
-		}
-
-		// Delete KB access grants (application-level cascade, no FK)
-		removed, err := DeleteAccessByPerson(tx, personID)
-		if err != nil {
-			return err
-		}
-		if removed > 0 {
-			applogger.Info("Removed KB access grants on AI person deletion", "person_id", personID, "count", removed)
-		}
-
-		// Delete agent config and person
-		if err := tx.Where("person_id = ?", personID).Delete(&model.AgentConfig{}).Error; err != nil {
-			return err
-		}
-		if err := tx.Delete(&model.Person{}, personID).Error; err != nil {
-			return err
-		}
-
-		return nil
-	})
-
-	return sessionIDs, err
 }
 
 // UpdateHumanPerson update Person of hunman type
@@ -290,6 +176,9 @@ func (m *AIPersonUpdates) getPersonUpdates() map[string]any {
 // UpdateAIPerson updates a Person of AI type
 func UpdateAIPerson(aiPersonUpdates *AIPersonUpdates) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActivePersonTx(tx, aiPersonUpdates.PersonID); err != nil {
+			return err
+		}
 		// Update agent-level fields
 		acUpdates := aiPersonUpdates.getAgentConfigUpdates()
 		if len(acUpdates) > 0 {

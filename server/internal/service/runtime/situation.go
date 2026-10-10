@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
@@ -9,9 +10,10 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
+	"qingqiu-world-server/internal/service/aos"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
-	"qingqiu-world-server/internal/service/privatespace"
 )
 
 // Situation is a runtime-only DTO that serves as the unified input to
@@ -48,7 +50,8 @@ const (
 	SituationSourceInternal
 )
 
-// SituationSubject is the agent's present capacity and commitments.
+// SituationSubject is the agent's present capacity, commitments, and bounded
+// recent cognitive continuity across otherwise independent decision calls.
 type SituationSubject struct {
 	// Energy is the agent's currently available energy.
 	Energy int
@@ -56,6 +59,11 @@ type SituationSubject struct {
 	ActiveWorksSummary string
 	// ActiveActionsSummary lists ongoing top-level actions, including chats.
 	ActiveActionsSummary string
+	// ExecutionSlotSummary names the sustained loop currently holding the slot.
+	ExecutionSlotSummary string
+	// RecentExperienceSummary groups previously observed facts with the
+	// agent's subsequent choices and recorded effects, regardless of Session.
+	RecentExperienceSummary string
 }
 
 // SituationEnvironment contains the bounded, generally available world
@@ -141,7 +149,7 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 	}
 	var actionLines []string
 	for _, a := range actions {
-		actionLines = append(actionLines, fmt.Sprintf("- ongoing %s action: %s; reason: %s; plan: %s", a.Type.Label(), truncateWorkDescription(a.Background), truncateWorkDescription(a.Reason), truncateWorkDescription(a.PlanJSON)))
+		actionLines = append(actionLines, formatOngoingAction(a))
 	}
 	if activeCount > int64(len(actions)) {
 		actionLines = append(actionLines, fmt.Sprintf("- %d further ongoing actions can be recalled", activeCount-int64(len(actions))))
@@ -157,7 +165,15 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 	}
 	var workLines []string
 	for _, w := range works {
-		workLines = append(workLines, fmt.Sprintf("- Work #%d, session_id=%d, running: %s", w.ID, w.SessionID, truncateWorkDescription(w.Description)))
+		line := fmt.Sprintf("- Work #%d, running: %s", w.ID, truncateWorkDescription(w.Description))
+		if database.DB.Migrator().HasTable(&model.WorkspaceUse{}) {
+			if selected, err := dops.GetDefaultWorkWorkspace(personID, w.ID); err == nil {
+				line += fmt.Sprintf("; default Workspace #%d %s (%s)", selected.ID, selected.Name, selected.RelativePath)
+			} else {
+				applogger.Error("populateGeneralSituation: running Work has no default Workspace", "person_id", personID, "work_id", w.ID, "error", err)
+			}
+		}
+		workLines = append(workLines, line)
 	}
 	if workCount > int64(len(works)) {
 		workLines = append(workLines, fmt.Sprintf("- %d further active works can be recalled", workCount-int64(len(works))))
@@ -166,30 +182,86 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 	situation.Environment.Sessions = buildSessionsRoster(personID)
 	situation.Environment.Persons = buildContactablePersonsContext(personID)
 	situation.Environment.Resources = buildOwnedResourceOverview(personID)
+	currentEventID := int64(0)
+	if situation.Matter.Event != nil {
+		currentEventID = situation.Matter.Event.EventID
+	}
+	situation.Subject.RecentExperienceSummary = buildRecentExperienceSummary(personID, currentEventID)
 	situation.generalReady = true
+}
+
+// formatOngoingAction presents only the plan facts that help with the next
+// choice. Persisted PlanJSON is a storage format, not agent-facing language.
+func formatOngoingAction(record model.Action) string {
+	line := fmt.Sprintf("- ongoing %s action: %s; reason: %s", record.Type.Label(),
+		truncateWorkDescription(record.Background), truncateWorkDescription(record.Reason))
+	switch record.Type {
+	case model.ActionTypeChat:
+		var plan action.ChatPlan
+		if record.PlanJSON != "" {
+			if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
+				applogger.Error("formatOngoingAction: invalid Chat plan", "action_id", record.ID, "error", err)
+			}
+		}
+		if plan.Guidance != "" {
+			line += "; intended message: " + truncateWorkDescription(plan.Guidance)
+		}
+		if plan.SessionID > 0 {
+			line += fmt.Sprintf("; destination Session #%d", plan.SessionID)
+		} else if plan.SessionID < 0 && plan.RecipientPersonID > 0 {
+			line += fmt.Sprintf("; new conversation with Person #%d", plan.RecipientPersonID)
+		}
+	case model.ActionTypeWaitForExecutionSlot:
+		var plan action.WaitForExecutionSlotPlan
+		if record.PlanJSON != "" {
+			if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
+				applogger.Error("formatOngoingAction: invalid wait plan", "action_id", record.ID, "error", err)
+			}
+		}
+		if plan.Intention != "" {
+			line += "; awaiting room to reconsider: " + truncateWorkDescription(plan.Intention)
+		}
+	}
+	return line
 }
 
 // buildOwnedResourceOverview describes current resource availability only.
 // Private-space logs are historical material and do not belong in Environment.
 func buildOwnedResourceOverview(personID int64) string {
-	entries, err := readDirSummary(privatespace.GetWorkDirPath(personID))
+	entries, err := readDirSummary(aos.GetPrivateSpacePath(personID))
 	if err != nil {
 		applogger.Error("buildOwnedResourceOverview: listing failed", "person_id", personID, "error", err)
 		return "Owned resource overview unavailable."
 	}
-	return "Owned resource overview: " + entries
+	result := "Owned resource overview: " + entries
+	if database.DB.Migrator().HasTable(&model.Workspace{}) {
+		workspaces, count, err := dops.ListRecentWorkspaces(personID, 5)
+		if err != nil {
+			applogger.Error("buildOwnedResourceOverview: Workspaces unavailable", "person_id", personID, "error", err)
+		} else {
+			var lines []string
+			for _, item := range workspaces {
+				lines = append(lines, fmt.Sprintf("#%d %s (%s): %s", item.ID, item.Name, item.RelativePath, truncateWorkDescription(item.Purpose)))
+			}
+			result += fmt.Sprintf("\nRegistered Workspaces: %d", count)
+			if len(lines) > 0 {
+				result += "\n" + strings.Join(lines, "\n")
+			}
+		}
+	}
+	return result
 }
 
 // buildSessionsRoster exposes routing choices without loading message history
 // or mutable impressions into the general environment.
 func buildSessionsRoster(personID int64) string {
 	var rows []model.ParticipantSession
-	if err := database.DB.Where("participant_id = ?", personID).Order("last_active_at DESC").Limit(20).Find(&rows).Error; err != nil {
+	if err := database.DB.Where("participant_id = ? AND session_id IN (SELECT id FROM sessions WHERE status = ?)", personID, model.SessionStatusActive).Order("last_active_at DESC").Limit(20).Find(&rows).Error; err != nil {
 		applogger.Error("buildSessionsRoster: list failed", "person_id", personID, "error", err)
 		return "Sessions unavailable."
 	}
 	var count int64
-	if err := database.DB.Model(&model.ParticipantSession{}).Where("participant_id = ?", personID).Count(&count).Error; err != nil {
+	if err := database.DB.Model(&model.ParticipantSession{}).Where("participant_id = ? AND session_id IN (SELECT id FROM sessions WHERE status = ?)", personID, model.SessionStatusActive).Count(&count).Error; err != nil {
 		applogger.Error("buildSessionsRoster: count failed", "person_id", personID, "error", err)
 	}
 	var lines []string

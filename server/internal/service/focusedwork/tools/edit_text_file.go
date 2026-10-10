@@ -1,8 +1,8 @@
 package tools
 
 import (
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
@@ -13,12 +13,12 @@ type EditTextFileTool struct {
 	core *servicetools.EditFileTool
 }
 
-// NewEditTextFileTool creates an EditTextFileTool for the given person and session.
-func NewEditTextFileTool(personID, sessionID int64) *EditTextFileTool {
+// NewEditTextFileTool uses the selected Workspace directory.
+func NewEditTextFileTool(personID int64, workspaceDir string) *EditTextFileTool {
 	return &EditTextFileTool{
 		core: servicetools.NewEditFileTool(
-			workspace.GetAgentOwnedSpacePath(personID),
-			workspace.GetOutputDir(personID, sessionID),
+			aos.GetAgentOwnedSpacePath(personID),
+			workspaceDir,
 		),
 	}
 }
@@ -59,7 +59,7 @@ func (e *EditTextFileTool) Schema() llm.FunctionDefinition {
 }
 
 func (e *EditTextFileTool) Execute(args map[string]interface{}) (string, error) {
-	return e.core.Execute(normalizedTaskFileArgs(args))
+	return e.core.Execute(args)
 }
 
 func (e *EditTextFileTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {

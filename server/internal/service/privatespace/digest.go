@@ -12,7 +12,6 @@ import (
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/tools"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // digestTimeout bounds the digest LLM call so a stalled provider cannot
@@ -68,7 +67,7 @@ func (l *Loop) generateDigest() {
 		return
 	}
 
-	record, err := dops.CreatePSDigest(l.personID, digest)
+	record, err := dops.CreatePSDigest(l.personID, digest, l.participatingActionIDs()...)
 	if err != nil {
 		applogger.Error("PrivateSpace failed to persist digest",
 			"person_id", l.personID, "error", err,
@@ -93,9 +92,6 @@ func (l *Loop) generateDigest() {
 	} else {
 		if err := memory.RefreshSource(model.MemorySourceFocusHandoff, handoff.ID); err != nil {
 			applogger.Error("PrivateSpace failed to index focus handoff", "handoff_id", handoff.ID, "error", err)
-		}
-		if err := workspace.AppendFocusHandoff(handoff); err != nil {
-			applogger.Error("PrivateSpace failed to project focus handoff to AOSMeta", "person_id", l.personID, "digest_id", record.ID, "handoff_id", handoff.ID, "error", err)
 		}
 	}
 

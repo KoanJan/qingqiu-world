@@ -57,19 +57,17 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 
 	agentIDStr := c.Query("agent_id")
 	var agentPersonID int64
-	var agentConfigID int64
 	if agentIDStr != "" {
 		agentPersonID, _ = strconv.ParseInt(agentIDStr, 10, 64)
 	}
 	applogger.Info("CreateAndSend received agent_id param", "raw", agentIDStr, "parsed", agentPersonID)
 	if agentPersonID == 0 {
 		var defaultAgentConfig model.AgentConfig
-		if err := database.DB.First(&defaultAgentConfig).Error; err != nil {
+		if err := database.DB.Where("person_id IN (SELECT id FROM persons WHERE status = ?)", model.PersonStatusActive).First(&defaultAgentConfig).Error; err != nil {
 			response.InternalError(c, "No default agent found")
 			return
 		}
 		agentPersonID = defaultAgentConfig.PersonID
-		agentConfigID = defaultAgentConfig.ID
 	} else {
 		// Resolve agent config by person ID for event routing
 		var ac model.AgentConfig
@@ -77,7 +75,11 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 			response.InternalError(c, "No agent config found for person")
 			return
 		}
-		agentConfigID = ac.ID
+	}
+	agentPerson, err := dops.GetPerson(agentPersonID)
+	if err != nil || agentPerson.Status != model.PersonStatusActive {
+		response.BadRequest(c, "Agent is unavailable")
+		return
 	}
 
 	userPersonID, err := dops.GetCurrentUserPersonID()
@@ -112,7 +114,7 @@ func (h *Handler) CreateAndSend(c *gin.Context) {
 	}
 
 	// Produce memory event + dispatch to agent runtime
-	runtime.SendNewMessageEvent(agentConfigID, session.ID, userMsg.ID, userPersonID, message, dops.GetUserName())
+	runtime.SendNewMessageEvent(session.ID, userMsg.ID, userPersonID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
 		"session_id": session.ID,
@@ -137,6 +139,10 @@ func (h *Handler) SendMessage(c *gin.Context) {
 
 	var session model.Session
 	if err := database.DB.First(&session, sessionID).Error; err != nil {
+		response.NotFound(c, "Session not found")
+		return
+	}
+	if session.Status != model.SessionStatusActive {
 		response.NotFound(c, "Session not found")
 		return
 	}
@@ -169,8 +175,7 @@ func (h *Handler) SendMessage(c *gin.Context) {
 	}
 
 	// Produce memory event + dispatch to agent runtime
-	agentConfigID := dops.GetFirstAgentConfigIDBySessionID(sessionID)
-	runtime.SendNewMessageEvent(agentConfigID, sessionID, userMsg.ID, userPersonID, message, dops.GetUserName())
+	runtime.SendNewMessageEvent(sessionID, userMsg.ID, userPersonID, message, dops.GetUserName())
 
 	response.Success(c, gin.H{
 		"message_id": userMsg.ID,
@@ -197,10 +202,11 @@ func (h *Handler) StreamNotifications(c *gin.Context) {
 
 // sessionAgentStatus represents an agent's status within a session.
 type sessionAgentStatus struct {
-	AgentID int64  `json:"agent_id"`
-	Name    string `json:"name"`
-	Avatar  string `json:"avatar"`
-	Status  int    `json:"status"` // 0=idle, 1=working
+	AgentID    int64              `json:"agent_id"`
+	Name       string             `json:"name"`
+	Avatar     string             `json:"avatar"`
+	Status     int                `json:"status"` // 0=idle, 1=working
+	LifeStatus model.PersonStatus `json:"life_status"`
 }
 
 // GetSessionAgents returns all agents in a session with their current status.
@@ -210,6 +216,11 @@ func (h *Handler) GetSessionAgents(c *gin.Context) {
 	sessionID, err := strconv.ParseInt(sessionIDStr, 10, 64)
 	if err != nil {
 		response.BadRequest(c, "invalid session_id")
+		return
+	}
+	session, err := dops.GetSession(sessionID)
+	if err != nil || session.Status != model.SessionStatusActive {
+		response.NotFound(c, "Session not found")
 		return
 	}
 
@@ -230,10 +241,11 @@ func (h *Handler) GetSessionAgents(c *gin.Context) {
 		}
 
 		result = append(result, sessionAgentStatus{
-			AgentID: p.ParticipantID,
-			Name:    person.Name,
-			Avatar:  person.Avatar,
-			Status:  p.Status, // Read directly from ParticipantSession.Status
+			AgentID:    p.ParticipantID,
+			Name:       person.Name,
+			Avatar:     person.Avatar,
+			Status:     p.Status, // Read directly from ParticipantSession.Status
+			LifeStatus: person.Status,
 		})
 	}
 

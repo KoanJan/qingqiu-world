@@ -1,6 +1,7 @@
 {
   "app": {
     "title": "Qingqiu World",
+    "navigation": "Main navigation",
     "startNewChat": "Start New Chat",
     "selectOrCreate": "Select a session or create a new one to start chatting",
     "askAnything": "Finally remembered me? Shift+Enter for new line",
@@ -351,6 +352,21 @@
   },
   "activity": {
     "title": "Agent Activity Log",
+    "agents": "Agents",
+    "previousAgent": "Browse previous agents",
+    "nextAgent": "Browse next agents",
+    "workspaces": "Workspaces",
+    "noWorkspaces": "No workspaces yet",
+    "selectWorkspace": "Select a workspace to view activity",
+    "running": "In progress",
+    "deceased": "Deceased",
+    "completed": "Completed",
+    "failed": "Failed",
+    "stopped": "Stopped",
+    "unknownStatus": "Unknown status",
+    "loadMore": "Load more workspaces",
+    "alsoUsedWorkspace": "This work also used this workspace. Its full activity is in the default workspace:",
+    "viewPrimaryWorkspace": "View {{name}}",
     "noRecords": "No activity records",
     "loadError": "Failed to load activities",
     "retry": "Retry",
@@ -371,6 +387,7 @@
       "scan_jinshu": "Browse Jinshu",
       "read_jinshu": "Read Jinshu",
       "copy_from_jinshu": "Extract Jinshu files",
+      "use_workspace": "Use workspace",
       "scan_kb": "Search knowledge base",
       "read_kb_evidence": "Read KB evidence",
       "list_kb_documents": "List KB documents"

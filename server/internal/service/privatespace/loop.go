@@ -1,9 +1,13 @@
+// Package privatespace runs the agent's persistent, self-directed private loop.
+// AOS path and directory lifecycle are owned by the aos package.
 package privatespace
 
 import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sync"
+	"sync/atomic"
 	"time"
 
 	"qingqiu-world-server/internal/config"
@@ -27,7 +31,7 @@ const privateSpaceSystemPrompt = `You are in your private space — the private/
 
 WHAT THIS SPACE IS:
 - A persistent directory that belongs to you. Everything here stays between sessions — files you create now will be here when you return.
-- You may read and work with all of your Agent Owned Space, including work/<session_id>/ resources. private/ is your default place to begin, not a boundary between separate selves.
+- You may read and work with all of your Agent Owned Space, including registered work/<directory_id>/ resources. private/ is your default place to begin, not a boundary between separate selves.
 - No external goals or deadlines — you decide what to do here.
 
 TOOLS AVAILABLE:
@@ -38,6 +42,7 @@ TOOLS AVAILABLE:
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
 - send_jinshu: Send selected Agent Owned Space files to another person as a jinshu (锦书).
 - copy_from_jinshu: Copy files from a jinshu you received into a selected Agent Owned Space directory.
+- use_workspace: Record an explicit association with another registered Workspace.
 - scan_kb: Non-exhaustive semantic search over your authorized knowledge bases.
 - read_kb_evidence: Read full evidence content by chunk ID returned by scan_kb.
 - list_kb_documents: List the documents of one of your authorized knowledge bases.
@@ -55,17 +60,20 @@ GUIDELINES:
 // a configurable maximum and then pauses naturally. New thoughts can be
 // injected mid-session via the thoughtsCh channel.
 type Loop struct {
-	personID      int64
-	llmClient     *llm.ChatModel
-	llmConfig     *model.LLMConfig
-	maxIterations int
-	rootDir       string                         // private-space root directory (security boundary, log lives here)
-	workDir       string                         // agent's working directory (space/ subdirectory)
-	thoughtsCh    chan string                    // receives thoughts from heartbeat
-	toolRegistry  map[string]privspacetools.Tool // tool name -> tool
-	messages      []llm.Message                  // accumulated conversation
-	focusContext  string                         // Runtime-selected cross-session focus summary for the next run
-	running       bool                           // true while the loop goroutine is active
+	personID       int64
+	llmClient      *llm.ChatModel
+	llmConfig      *model.LLMConfig
+	maxIterations  int
+	rootDir        string                         // private-space root directory (security boundary, log lives here)
+	workDir        string                         // agent's working directory (space/ subdirectory)
+	thoughtsCh     chan string                    // receives thoughts from heartbeat
+	toolRegistry   map[string]privspacetools.Tool // tool name -> tool
+	messages       []llm.Message                  // accumulated conversation
+	focusContext   string                         // Runtime-selected cross-session focus summary for the next run
+	running        atomic.Bool                    // true while the loop goroutine is active
+	yieldRequested atomic.Bool                    // stop at the next iteration boundary
+	actionsMu      sync.Mutex                     // Protects accepted EnterPrivateSpace Action IDs for this run.
+	actionIDs      []int64
 }
 
 // NewLoop creates a new PrivateSpace Loop for the given person.
@@ -112,8 +120,39 @@ func NewLoop(
 	l.registerTool(privspacetools.NewScanKBTool(personID))
 	l.registerTool(privspacetools.NewReadKBEvidenceTool(personID))
 	l.registerTool(privspacetools.NewListKBDocumentsTool(personID))
+	l.registerTool(privspacetools.NewUseWorkspaceTool(personID, l.initiatingActionID))
 
 	return l
+}
+
+// BeginRun identifies the Action that starts this PS run before its goroutine
+// begins. Later accepted EnterPrivateSpace Actions join this same run.
+func (l *Loop) BeginRun(actionID int64) {
+	l.actionsMu.Lock()
+	l.actionIDs = []int64{actionID}
+	l.actionsMu.Unlock()
+}
+
+// AddParticipatingAction records an additional accepted intention.
+func (l *Loop) AddParticipatingAction(actionID int64) {
+	l.actionsMu.Lock()
+	l.actionIDs = append(l.actionIDs, actionID)
+	l.actionsMu.Unlock()
+}
+
+func (l *Loop) initiatingActionID() int64 {
+	l.actionsMu.Lock()
+	defer l.actionsMu.Unlock()
+	if len(l.actionIDs) == 0 {
+		return 0
+	}
+	return l.actionIDs[0]
+}
+
+func (l *Loop) participatingActionIDs() []int64 {
+	l.actionsMu.Lock()
+	defer l.actionsMu.Unlock()
+	return append([]int64(nil), l.actionIDs...)
 }
 
 // registerTool adds a tool to the registry.
@@ -124,14 +163,24 @@ func (l *Loop) registerTool(t privspacetools.Tool) {
 // FeedThoughts sends new thoughts into the loop's thought channel.
 // If the loop is running, the thoughts will be picked up at the next iteration.
 // If the loop is not running, the caller should start it separately.
-func (l *Loop) FeedThoughts(thoughts string) {
+func (l *Loop) FeedThoughts(thoughts string) bool {
+	if l.yieldRequested.Load() {
+		return false
+	}
 	select {
 	case l.thoughtsCh <- thoughts:
+		return true
 	default:
 		applogger.Error("private-space thoughtsCh full, dropping thoughts",
 			"person_id", l.personID,
 		)
+		return false
 	}
+}
+
+// RequestYield asks a running loop to stop before its next LLM or tool cycle.
+func (l *Loop) RequestYield() {
+	l.yieldRequested.Store(true)
 }
 
 // SetFocusContext updates the runtime-owned context used when the next
@@ -142,18 +191,24 @@ func (l *Loop) SetFocusContext(context string) {
 
 // IsRunning reports whether the loop goroutine is currently active.
 func (l *Loop) IsRunning() bool {
-	return l.running
+	return l.running.Load()
 }
 
 // Run executes the private-space ReAct loop.
 // Blocks until the iteration budget is exhausted, the agent stops, or ctx is cancelled.
 func (l *Loop) Run(ctx context.Context) {
-	l.running = true
-	defer func() { l.running = false }()
+	l.running.Store(true)
+	defer func() { l.actionsMu.Lock(); l.actionIDs = nil; l.actionsMu.Unlock() }()
+	defer l.yieldRequested.Store(false)
+	defer l.running.Store(false)
 	// Registered after the running-reset defer, so it executes first (LIFO):
 	// IsRunning() stays true while the digest is being produced, which
 	// prevents an overlapping Run from resetting l.messages mid-digest.
-	defer l.generateDigest()
+	defer func() {
+		if ctx.Err() == nil {
+			l.generateDigest()
+		}
+	}()
 
 	applogger.Info("PrivateSpace loop starting",
 		"person_id", l.personID,
@@ -165,6 +220,10 @@ func (l *Loop) Run(ctx context.Context) {
 	for iteration := 1; iteration <= l.maxIterations; iteration++ {
 		if ctx.Err() != nil {
 			applogger.Info("PrivateSpace loop cancelled", "person_id", l.personID, "iteration", iteration)
+			return
+		}
+		if l.yieldRequested.Load() {
+			applogger.Info("PrivateSpace loop yielded execution slot", "person_id", l.personID, "iteration", iteration)
 			return
 		}
 
@@ -215,7 +274,19 @@ func (l *Loop) Run(ctx context.Context) {
 			}
 			l.messages = append(l.messages, assistantMsg)
 
-			for _, tc := range response.ToolCalls {
+			for i, tc := range response.ToolCalls {
+				if ctx.Err() != nil {
+					return
+				}
+				if l.yieldRequested.Load() {
+					// A tool batch is serial. Record which returned calls were not
+					// executed so the digest sees a complete, truthful transcript.
+					for _, skipped := range response.ToolCalls[i:] {
+						l.messages = append(l.messages, llm.Message{Role: "tool", ToolCallID: skipped.ID,
+							Content: "Not executed because private-space work yielded its execution slot."})
+					}
+					return
+				}
 				toolResult := l.executeToolCall(tc)
 				l.messages = append(l.messages, toolResult)
 			}

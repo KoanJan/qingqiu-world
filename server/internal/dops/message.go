@@ -3,11 +3,21 @@ package dops
 import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // CreateMessage creates a message in a session
 func CreateMessage(message *model.Message) error {
-	return database.DB.Select("SessionID", "PersonID", "Content", "ExpressionInstruction").Create(message).Error
+	return database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActiveSessionTx(tx, message.SessionID); err != nil {
+			return err
+		}
+		if err := RequireActivePersonTx(tx, message.PersonID); err != nil {
+			return err
+		}
+		return tx.Select("SessionID", "PersonID", "Content", "ExpressionInstruction").Create(message).Error
+	})
 }
 
 // ListMessagesBySessionID list messages by session_id

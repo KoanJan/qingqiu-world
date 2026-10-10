@@ -10,8 +10,8 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/jinshu"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // TestSendJinshuTool_Execute tests the Execute method of SendJinshuTool.
@@ -40,19 +40,19 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 	senderID := bobPerson.ID
 	sessionID := int64(100)
 
-	// Initialize the sender's session workspace with output/ directory.
-	workspace.InitWorkspace(senderID, sessionID)
-
-	// Create test files in output/.
-	outputDir := workspace.GetOutputDir(senderID, sessionID)
-	testFile := filepath.Join(outputDir, "report.txt")
+	// Bare paths resolve from the selected Workspace directory.
+	workspaceDir := filepath.Join(aos.GetAgentOwnedSpacePath(senderID), "work", "1")
+	if err := os.MkdirAll(workspaceDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	testFile := filepath.Join(workspaceDir, "report.txt")
 	if err := os.WriteFile(testFile, []byte("hello world"), 0644); err != nil {
 		applogger.Error("failed to create test file", "error", err)
 		t.Fatalf("failed to create test file: %v", err)
 	}
 
 	// Create a subdirectory with files.
-	subDir := filepath.Join(outputDir, "dist")
+	subDir := filepath.Join(workspaceDir, "dist")
 	if err := os.MkdirAll(subDir, 0755); err != nil {
 		applogger.Error("failed to create test subdirectory", "error", err)
 		t.Fatalf("failed to create subdir: %v", err)
@@ -63,7 +63,7 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 		t.Fatalf("failed to create sub file: %v", err)
 	}
 
-	tool := NewSendJinshuTool(senderID, sessionID)
+	tool := NewSendJinshuTool(senderID, sessionID, workspaceDir)
 
 	// findJinshuDir returns the n-th (1-based) jinshu directory name in baseDir.
 	// Directories are sorted alphabetically (id in the name gives chronological order).
@@ -248,11 +248,36 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 			t.Fatal("expected error for empty topic, got nil")
 		}
 	})
+
+	t.Run("send historical output file by its actual path", func(t *testing.T) {
+		legacyFile := filepath.Join(workspaceDir, "output", "old.txt")
+		if err := os.MkdirAll(filepath.Dir(legacyFile), 0755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(legacyFile, []byte("historical"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		readResult, err := NewReadTextFileTool(senderID, workspaceDir).Execute(map[string]interface{}{"file_path": "output/old.txt"})
+		if err != nil || !strings.Contains(readResult, "historical") {
+			t.Fatalf("read historical output path: %q %v", readResult, err)
+		}
+		if _, err := tool.Execute(map[string]interface{}{
+			"receiver": "Alice",
+			"topic":    "Historical file",
+			"paths":    []interface{}{"output/old.txt"},
+		}); err != nil {
+			t.Fatalf("send historical output file: %v", err)
+		}
+		id := findJinshuDir(receivedDir, 3)
+		if content, err := os.ReadFile(filepath.Join(receivedDir, id, "output", "old.txt")); err != nil || string(content) != "historical" {
+			t.Fatalf("historical output path was not preserved: %q %v", content, err)
+		}
+	})
 }
 
 // TestSendJinshuTool_Schema tests the Schema method of SendJinshuTool.
 func TestSendJinshuTool_Schema(t *testing.T) {
-	tool := NewSendJinshuTool(1, 100)
+	tool := NewSendJinshuTool(1, 100, "/tmp/workspace")
 	schema := tool.Schema()
 
 	if schema.Name != "send_jinshu" {

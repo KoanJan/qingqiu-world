@@ -43,11 +43,6 @@ const (
 	// Available during heartbeat. Runs a lightweight ReAct loop.
 	EnterPrivateSpace = model.ActionTypeEnterPrivateSpace
 
-	// InspectJinshu reads the contents of a received jinshu through a dedicated
-	// lightweight loop (read + summarize tools only). It is separate from the
-	// full FocusedLoop — reading one's own delivery is perception, not focused work.
-	InspectJinshu = model.ActionTypeInspectJinshu
-
 	// ListReceivedJinshu lists the agent's received jinshu through a paginated keyword
 	// search, so the agent can locate a jinshu_id before inspecting it.
 	ListReceivedJinshu = model.ActionTypeListReceivedJinshu
@@ -65,23 +60,30 @@ const (
 
 	// InspectOwnedSpace lists bounded filesystem metadata from Agent Owned Space.
 	InspectOwnedSpace = model.ActionTypeInspectOwnedSpace
+	// WaitForExecutionSlot retains an intention for a later Decision.
+	WaitForExecutionSlot = model.ActionTypeWaitForExecutionSlot
 )
+
+// WaitForExecutionSlotPlan records what the agent intends to reconsider later.
+type WaitForExecutionSlotPlan struct {
+	Intention string `json:"intention" jsonschema:"description=What you intend to reconsider when your sustained execution slot is free,required"`
+}
 
 // WorkPlan describes a FocusedWork to be created via StartFocusedWork action.
 // It carries Guidance (the execution intent) so the focused work knows what to do
 // without re-interpreting the event. Background and Reason have been lifted
 // to the Action level.
 type WorkPlan struct {
-	Guidance string                `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
-	Metadata *focusedwork.Metadata `json:"-"` // System-generated traceability info, not written by LLM
+	Guidance     string                `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to execute. Write as if you are thinking to yourself.,required"`
+	WorkspaceID  int64                 `json:"workspace_id,omitempty" jsonschema:"description=Choose an existing owned Workspace by ID; exclusive with new_workspace"`
+	NewWorkspace *NewWorkspacePlan     `json:"new_workspace,omitempty" jsonschema:"description=Name and purpose for a new Workspace; exclusive with workspace_id"`
+	Metadata     *focusedwork.Metadata `json:"-"` // System-generated traceability info, not written by LLM
 }
 
-// JinshuPlan describes a received jinshu the agent wants to read via the
-// InspectJinshu action. The dedicated jinshu-read loop uses Guidance as the
-// reading intent.
-type JinshuPlan struct {
-	JinshuID int64  `json:"jinshu_id" jsonschema:"description=ID of the received jinshu to read,required"`
-	Guidance string `json:"guidance" jsonschema:"description=Your internal intention: what you want to understand from this jinshu. Written in first-person.,required"`
+// NewWorkspacePlan is the agent's semantic description of a new file environment.
+type NewWorkspacePlan struct {
+	Name    string `json:"name" jsonschema:"description=Short name for the new Workspace,required"`
+	Purpose string `json:"purpose" jsonschema:"description=Why this Workspace is being created,required"`
 }
 
 // ListReceivedJinshuParams describes a paginated keyword search over the agent's received
@@ -106,12 +108,12 @@ type SendJinshuPlan struct {
 	ToPersonID  int64    `json:"to_person_id" jsonschema:"description=ID of the recipient person,required"`
 	Topic       string   `json:"topic" jsonschema:"description=Short subject/topic for the jinshu,required"`
 	Description string   `json:"description,omitempty" jsonschema:"description=Optional note describing what is being sent and why"`
-	Paths       []string `json:"paths" jsonschema:"description=List of AOS file or directory locators. Use work/<session_id>/... or private/...; bare paths remain relative to private/.,required"`
+	Paths       []string `json:"paths" jsonschema:"description=Exact verified AOS file or directory locators; do not guess paths. Use work/<directory_id>/... or private/...; bare paths remain relative to private/.,required"`
 }
 
 // OwnedSpaceInspectionPlan is a bounded metadata-only AOS inspection request.
 type OwnedSpaceInspectionPlan struct {
-	Scope string `json:"scope" jsonschema:"description=One of work, private, root, or work/<session_id>. Default is root."`
+	Scope string `json:"scope" jsonschema:"description=One of root, work, private, or work/<directory_id>. Default is root."`
 	Query string `json:"query,omitempty" jsonschema:"description=Optional plain substring filter for path names; shell and glob syntax are not supported."`
 	Limit int    `json:"limit" jsonschema:"description=Maximum result count from 1 to 50,required"`
 }
@@ -184,13 +186,12 @@ type BioUpdate struct {
 //   - CreateAlarm:  uses AlarmPlan (trigger_at + message + action + action_content)
 //   - UpdateBio:    uses BioUpdate (new bio text)
 //   - EnterPrivateSpace: uses Background+Reason as Thoughts (no plan struct)
-//   - InspectJinshu: uses JinshuPlan (jinshu_id + guidance)
 //   - ListReceivedJinshu: uses ListReceivedJinshuParams (query + page + limit)
 //   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
 //   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
 type Action struct {
 	ID   int64      `json:"-"` // Persisted top-level Action ID, assigned after Decide succeeds.
-	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=inspect_jinshu, 8=list_received_jinshu, 9=send_jinshu, 10=list_sent_jinshu, 11=inspect_owned_space,required"`
+	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -203,9 +204,9 @@ type Action struct {
 	WorkGuidance             *WorkGuidance             `json:"work_guidance,omitempty" jsonschema:"description=When type is route_focused_work(2) or cancel_focused_work(3): the directive to send to the target work"`
 	AlarmPlan                *AlarmPlan                `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`
 	BioUpdate                *BioUpdate                `json:"bio_update,omitempty" jsonschema:"description=When type is update_bio(5): the new bio text"`
-	JinshuPlan               *JinshuPlan               `json:"jinshu_plan,omitempty" jsonschema:"description=When type is inspect_jinshu(7): the jinshu reading plan"`
-	ListReceivedJinshuParams *ListReceivedJinshuParams `json:"list_received_jinshu_params,omitempty" jsonschema:"description=When type is list_received_jinshu(8): the paginated jinshu search params"`
-	SendJinshuPlan           *SendJinshuPlan           `json:"send_jinshu_plan,omitempty" jsonschema:"description=When type is send_jinshu(9): the jinshu delivery plan"`
-	ListSentJinshuParams     *ListSentJinshuParams     `json:"list_sent_jinshu_params,omitempty" jsonschema:"description=When type is list_sent_jinshu(10): the paginated sent-jinshu search params"`
-	OwnedSpaceInspectionPlan *OwnedSpaceInspectionPlan `json:"owned_space_inspection_plan,omitempty" jsonschema:"description=When type is inspect_owned_space(11): the bounded metadata inspection request"`
+	ListReceivedJinshuParams *ListReceivedJinshuParams `json:"list_received_jinshu_params,omitempty" jsonschema:"description=When type is list_received_jinshu(7): the paginated jinshu search params"`
+	SendJinshuPlan           *SendJinshuPlan           `json:"send_jinshu_plan,omitempty" jsonschema:"description=When type is send_jinshu(8): the jinshu delivery plan"`
+	ListSentJinshuParams     *ListSentJinshuParams     `json:"list_sent_jinshu_params,omitempty" jsonschema:"description=When type is list_sent_jinshu(9): the paginated sent-jinshu search params"`
+	OwnedSpaceInspectionPlan *OwnedSpaceInspectionPlan `json:"owned_space_inspection_plan,omitempty" jsonschema:"description=When type is inspect_owned_space(10): the bounded metadata inspection request"`
+	WaitForExecutionSlotPlan *WaitForExecutionSlotPlan `json:"wait_for_execution_slot_plan,omitempty" jsonschema:"description=When type is wait_for_execution_slot(11): the intention to reconsider later"`
 }

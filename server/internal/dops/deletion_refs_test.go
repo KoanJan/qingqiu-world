@@ -11,9 +11,9 @@ import (
 	"gorm.io/gorm"
 )
 
-// TestDeleteAgentRemovesEventSources verifies that the term-index rebuild
-// cannot encounter occurrences whose message, work or biography was deleted.
-func TestDeleteAgentRemovesEventSources(t *testing.T) {
+// TestSoftDeletionPreservesSharedExperience verifies that ending one agent's
+// activity and closing a Session preserve the records other people can recall.
+func TestSoftDeletionPreservesSharedExperience(t *testing.T) {
 	oldDB := database.DB
 	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/delete.db"), &gorm.Config{})
 	if err != nil {
@@ -44,7 +44,7 @@ func TestDeleteAgentRemovesEventSources(t *testing.T) {
 		&model.Event{ID: 21, EventType: model.EventTypeMessage, RefID: 11, CreatedAt: base},
 		&model.Event{ID: 22, EventType: model.EventTypeWorkCompleted, RefID: 12, CreatedAt: base},
 		&model.Event{ID: 23, EventType: model.EventTypeBiography, RefID: 13, CreatedAt: base},
-		&model.Event{ID: 24, EventType: model.EventTypeJinshuReadCompleted, PayloadJSON: "{}", CreatedAt: base},
+		&model.Event{ID: 24, EventType: model.EventType(-1), PayloadJSON: "{}", CreatedAt: base},
 		&model.AgentObservation{PersonID: 1, EventID: 21},
 		&model.EventVector{EventID: 21, Embedding: []byte{1}},
 		&model.MemoryTerm{Term: "hello", SourceKind: model.MemorySourceEvent, SourceID: 21, SourceCreatedAt: base},
@@ -56,20 +56,37 @@ func TestDeleteAgentRemovesEventSources(t *testing.T) {
 			t.Fatalf("create %T: %v", row, err)
 		}
 	}
-	if _, err := DeleteAIPersonCascade(1); err != nil {
+	if err := db.Transaction(func(tx *gorm.DB) error {
+		_, err := MarkAIPersonDeceasedTx(tx, 1)
+		return err
+	}); err != nil {
 		t.Fatal(err)
 	}
-	for _, table := range []string{"messages", "works", "agent_biographies", "decisions", "actions", "action_effects", "agent_observations", "event_vectors", "memory_terms"} {
+	if changed, err := MarkSessionDeleted(10); err != nil || !changed {
+		t.Fatalf("close session: changed=%v err=%v", changed, err)
+	}
+	if err := UpdateActiveSessionTitle(10, "Changed after deletion"); err == nil {
+		t.Fatal("deleted Session accepted a title change")
+	}
+	for _, table := range []string{"persons", "agent_configs", "sessions", "participant_sessions", "messages", "works", "agent_biographies", "decisions", "actions", "action_effects", "agent_observations", "event_vectors", "memory_terms"} {
 		var count int64
-		if err := db.Table(table).Count(&count).Error; err != nil || count != 0 {
-			t.Fatalf("%s still has %d rows: %v", table, count, err)
+		if err := db.Table(table).Count(&count).Error; err != nil || count == 0 {
+			t.Fatalf("%s history missing: count=%d err=%v", table, count, err)
 		}
+	}
+	var person model.Person
+	if err := db.First(&person, 1).Error; err != nil || person.Status != model.PersonStatusDeceased {
+		t.Fatalf("person status = %+v err=%v", person, err)
+	}
+	var session model.Session
+	if err := db.First(&session, 10).Error; err != nil || session.Status != model.SessionStatusDeleted {
+		t.Fatalf("session status = %+v err=%v", session, err)
 	}
 	var remaining []model.Event
 	if err := db.Order("id").Find(&remaining).Error; err != nil {
 		t.Fatal(err)
 	}
-	if len(remaining) != 1 || remaining[0].ID != 24 {
-		t.Fatalf("unrelated event changed or orphaned event remained: %+v", remaining)
+	if len(remaining) != 4 {
+		t.Fatalf("historical events missing: %+v", remaining)
 	}
 }

@@ -488,8 +488,8 @@ func (h *Handler) MarkJinshuRead(c *gin.Context) {
 // ListMessages handles listing messages in a session.
 func (h *Handler) ListMessages(c *gin.Context) {
 	sessionID := getPathID(c)
-	_, err := dops.GetSession(sessionID)
-	if err != nil {
+	session, err := dops.GetSession(sessionID)
+	if err != nil || session.Status != model.SessionStatusActive {
 		response.NotFound(c, "Session not found")
 		return
 	}

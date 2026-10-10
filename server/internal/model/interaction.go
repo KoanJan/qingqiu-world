@@ -18,7 +18,6 @@ const (
 // Each iteration produces two records: a request (type=1) and a response (type=2).
 type Interaction struct {
 	ID        int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	SessionID int64     `gorm:"not null;index;column:session_id" json:"session_id"`
 	WorkID    int64     `gorm:"not null;index;column:work_id" json:"work_id"` // References works.id
 	Iteration int       `gorm:"not null" json:"iteration"`
 	Type      int       `gorm:"not null" json:"type"`

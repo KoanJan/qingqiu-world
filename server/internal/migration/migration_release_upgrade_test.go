@@ -22,7 +22,7 @@ func TestUpgradeFrom0117PreservesObservationHistory(t *testing.T) {
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = previousDB })
-	if err := db.AutoMigrate(&model.DBVersion{}, &model.Message{}, &model.Event{}, &model.ParticipantSession{}, &model.AgentObservation{}); err != nil {
+	if err := db.AutoMigrate(&model.DBVersion{}, &model.Person{}, &model.Work{}, &model.Workspace{}, &model.WorkspaceUse{}, &model.Action{}, &model.AgentEventBuffer{}, &model.Message{}, &model.Event{}, &model.ParticipantSession{}, &model.AgentObservation{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.DBVersion{Version: "0.1.17"}).Error; err != nil {
@@ -42,11 +42,11 @@ func TestUpgradeFrom0117PreservesObservationHistory(t *testing.T) {
 
 	Run()
 	Run()
-	if got := getDBVersion(); got != "0.1.18" {
+	if got := getDBVersion(); got != "0.1.19" {
 		t.Fatalf("release upgrade version = %q", got)
 	}
 	var versionCount int64
-	if err := db.Model(&model.DBVersion{}).Where("version = ?", "0.1.18").Count(&versionCount).Error; err != nil || versionCount != 1 {
+	if err := db.Model(&model.DBVersion{}).Where("version = ? AND description NOT IN ?", "0.1.19", []string{retiredJinshuTypeMigration, durableEventTypeMigration}).Count(&versionCount).Error; err != nil || versionCount != 1 {
 		t.Fatalf("version recorded %d times: %v", versionCount, err)
 	}
 	var observationCount int64

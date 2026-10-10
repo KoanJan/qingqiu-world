@@ -2,10 +2,15 @@ package model
 
 import "time"
 
+// AgentExperienceSource identifies the provenance of a learned private asset.
+type AgentExperienceSource int
+
 // AgentExperience source type constants.
 const (
-	AgentExperienceSourceReflection = 1 // Auto-distilled from focused-work notes (Reflection Pipeline)
-	AgentExperienceSourceLearn      = 2 // Learned from public experience library
+	AgentExperienceSourceReflection          AgentExperienceSource = 1 // Historical session-level notes.
+	AgentExperienceSourceLearn               AgentExperienceSource = 2 // Learned from public experience library.
+	AgentExperienceSourceWorkReflection      AgentExperienceSource = 3 // Unreleased per-Work notes, retained for existing records.
+	AgentExperienceSourceWorkspaceReflection AgentExperienceSource = 4 // Notes from one registered Workspace.
 )
 
 // AgentExperience represents a private cognitive asset owned by a specific agent.
@@ -16,6 +21,8 @@ const (
 //   - Source=1 (Reflection): SourceID = session_id where this experience was distilled from.
 //     Granularity is session-level because the reflection pipeline runs per-session.
 //   - Source=2 (Learn): SourceID = public_experience_id this lesson was copied from.
+//   - Source=3 (Work reflection): SourceID = WorkID whose notes were reflected.
+//   - Source=4 (Workspace reflection): SourceID = WorkspaceID whose notes were reflected.
 //
 // Note: source_fingerprint (deprecated, removed) previously conflated "which resource"
 // with "has it changed". The new design separates these concerns:
@@ -24,18 +31,18 @@ const (
 //     last reflection" — written at the end of each reflection, compared at the
 //     start of the next heartbeat scan.
 type AgentExperience struct {
-	ID          int64     `gorm:"primaryKey;autoIncrement" json:"id"`
-	PersonID    int64     `gorm:"not null;index;column:person_id" json:"person_id"`
-	Title       string    `gorm:"type:varchar(500);not null" json:"title"`
-	Description string    `gorm:"type:text;not null" json:"description"`
-	WhenToUse   string    `gorm:"type:text;not null;default:''" json:"when_to_use"`
-	Guidelines  string    `gorm:"type:text;not null;default:''" json:"guidelines"`
-	Pitfalls    string    `gorm:"type:text;not null;default:''" json:"pitfalls"`
-	Procedure   string    `gorm:"type:text;not null;default:''" json:"procedure"`
-	Source      int       `gorm:"not null;default:1" json:"source"`
-	SourceID    int64     `gorm:"not null;default:0;index;column:source_id" json:"source_id"`
-	CreatedAt   time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
-	UpdatedAt   time.Time `gorm:"not null;autoUpdateTime" json:"updated_at"`
+	ID          int64                 `gorm:"primaryKey;autoIncrement" json:"id"`
+	PersonID    int64                 `gorm:"not null;index;column:person_id" json:"person_id"`
+	Title       string                `gorm:"type:varchar(500);not null" json:"title"`
+	Description string                `gorm:"type:text;not null" json:"description"`
+	WhenToUse   string                `gorm:"type:text;not null;default:''" json:"when_to_use"`
+	Guidelines  string                `gorm:"type:text;not null;default:''" json:"guidelines"`
+	Pitfalls    string                `gorm:"type:text;not null;default:''" json:"pitfalls"`
+	Procedure   string                `gorm:"type:text;not null;default:''" json:"procedure"`
+	Source      AgentExperienceSource `gorm:"not null;default:1" json:"source"`
+	SourceID    int64                 `gorm:"not null;default:0;index;column:source_id" json:"source_id"`
+	CreatedAt   time.Time             `gorm:"not null;autoCreateTime" json:"created_at"`
+	UpdatedAt   time.Time             `gorm:"not null;autoUpdateTime" json:"updated_at"`
 }
 
 // TableName returns the database table name for AgentExperience.

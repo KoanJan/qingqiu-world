@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
@@ -37,6 +38,9 @@ func persistDecision(personID int64, situation *Situation, result *DecisionResul
 		return false, tx.Error
 	}
 	defer tx.Rollback()
+	if err := dops.RequireActivePersonTx(tx, personID); err != nil {
+		return false, err
+	}
 
 	if eventID > 0 {
 		expectedType, err := durableEventType(event.Type)
@@ -120,8 +124,6 @@ func durableEventType(eventType eventqueue.AgentEventType) (model.EventType, err
 		return model.EventTypeBiography, nil
 	case eventqueue.EventTypeNewJinshuReceived:
 		return model.EventTypeJinshu, nil
-	case eventqueue.EventTypeJinshuReadCompleted:
-		return model.EventTypeJinshuReadCompleted, nil
 	case eventqueue.EventTypeJinshuListed:
 		return model.EventTypeJinshuListed, nil
 	case eventqueue.EventTypeJinshuSent:
@@ -132,6 +134,10 @@ func durableEventType(eventType eventqueue.AgentEventType) (model.EventType, err
 		return model.EventTypePSDigest, nil
 	case eventqueue.EventTypeOwnedSpaceInspected:
 		return model.EventTypeOwnedSpaceInspected, nil
+	case eventqueue.EventTypeExecutionSlotAvailable:
+		return model.EventTypeExecutionSlotAvailable, nil
+	case eventqueue.EventTypeSystemNotification:
+		return model.EventTypeSystemNotification, nil
 	default:
 		return 0, fmt.Errorf("external event type %d has no durable mapping", eventType)
 	}
@@ -169,8 +175,6 @@ func encodeActionPlan(act action.Action) (string, error) {
 		plan = act.BioUpdate
 	case action.EnterPrivateSpace:
 		plan = struct{}{}
-	case action.InspectJinshu:
-		plan = act.JinshuPlan
 	case action.ListReceivedJinshu:
 		plan = act.ListReceivedJinshuParams
 	case action.SendJinshu:
@@ -179,6 +183,8 @@ func encodeActionPlan(act action.Action) (string, error) {
 		plan = act.ListSentJinshuParams
 	case action.InspectOwnedSpace:
 		plan = act.OwnedSpaceInspectionPlan
+	case action.WaitForExecutionSlot:
+		plan = act.WaitForExecutionSlotPlan
 	default:
 		return "", fmt.Errorf("unknown action type %d", act.Type)
 	}
@@ -225,7 +231,7 @@ func endActionLogged(actionID int64, operation string) {
 
 // recordActionEffect adds a private, application-validated source relation.
 func recordActionEffect(tx *gorm.DB, actionID int64, effectType model.ActionEffectType, effectID int64) error {
-	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectSelfHeldEvent {
+	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectPSDigest {
 		return fmt.Errorf("invalid action effect: action=%d type=%d effect=%d", actionID, effectType, effectID)
 	}
 	var action model.Action
@@ -236,12 +242,25 @@ func recordActionEffect(tx *gorm.DB, actionID int64, effectType model.ActionEffe
 	return tx.Create(&model.ActionEffect{ActionID: actionID, EffectType: effectType, EffectID: effectID}).Error
 }
 
+// recordAcceptedWorkControl links a Route or Cancel Action only after the
+// running Work accepted the directive. The Action's ended state is separate
+// from whether this effect could be persisted.
+func (r *agentRuntime) recordAcceptedWorkControl(actionID, workID int64) {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		return recordActionEffect(tx, actionID, model.ActionEffectWorkControl, workID)
+	}); err != nil {
+		applogger.Error("failed to record accepted work control", "person_id", r.agentPersonID, "action_id", actionID, "work_id", workID, "error", err)
+		return
+	}
+	refreshMemorySource(model.MemorySourceAction, actionID)
+}
+
 // recoverInterruptedActions closes executions that cannot still be running
 // after a process restart. Their persisted effects remain available as facts;
 // execution is never retried merely because the status was left open.
 func recoverInterruptedActions() {
 	var actions []model.Action
-	if err := database.DB.Where("status = ?", model.ActionStatusInProgress).Find(&actions).Error; err != nil {
+	if err := database.DB.Where("status = ? AND type != ?", model.ActionStatusInProgress, model.ActionTypeWaitForExecutionSlot).Find(&actions).Error; err != nil {
 		applogger.Error("failed to load interrupted actions", "error", err)
 		return
 	}
@@ -270,4 +289,25 @@ func recoverInterruptedActions() {
 			"decision_id", action.DecisionID, "type", action.Type,
 			"recorded_effects", effectCounts[action.ID])
 	}
+}
+
+// endDeceasedPersonActions closes any finite Action stranded when its owner
+// died while generating a result or handing it to the commit worker. It runs
+// only after that person's Runtime has fully exited.
+func endDeceasedPersonActions(personID int64) error {
+	var actions []model.Action
+	if err := database.DB.Table("actions").Select("actions.*").
+		Joins("JOIN decisions ON decisions.id = actions.decision_id").
+		Where("decisions.person_id = ? AND actions.status = ?", personID, model.ActionStatusInProgress).
+		Find(&actions).Error; err != nil {
+		return fmt.Errorf("load deceased person's unfinished actions: %w", err)
+	}
+	for _, action := range actions {
+		if err := endAction(action.ID); err != nil {
+			return fmt.Errorf("end deceased person's action %d: %w", action.ID, err)
+		}
+		applogger.Warn("deceased person's unfinished action ended without retry", "person_id", personID,
+			"action_id", action.ID, "type", action.Type)
+	}
+	return nil
 }

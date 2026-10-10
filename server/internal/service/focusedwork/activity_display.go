@@ -31,6 +31,7 @@ var activityTargetKeys = map[string][]string{
 	tools.ToolNameScanKB.String():              {"query"},
 	tools.ToolNameListKBDocuments.String():     {"kb_id"},
 	tools.ToolNameReadKBEvidence.String():      {"chunk_ids"},
+	tools.ToolNameUseWorkspace.String():        {"workspace_id"},
 }
 
 // interactionDataResponse is the parsed form of Data JSON for type=2 interactions.

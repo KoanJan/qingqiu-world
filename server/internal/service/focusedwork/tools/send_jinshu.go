@@ -8,9 +8,9 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -22,20 +22,21 @@ const sessionContextMessageLimit = 5
 // SendJinshuTool sends files from the agent's Agent Owned Space to another
 // person as a jinshu (锦书). The actual record creation and file copying are
 // delegated to the shared jinshu.Send core; this tool only resolves the
-// session-scoped source directory and merges session context.
+// selected Work source directory and merges any originating session context.
 type SendJinshuTool struct {
 	personID      int64
 	sessionID     int64
+	workspaceDir  string
 	CycleDetector // Embedded: cycle detection on (args, result) pairs
 }
 
-// NewSendJinshuTool creates a SendJinshuTool for the given person and session.
-// sessionID is used only to locate the agent's session-scoped output/ source
-// directory; the delivery target is person-level and independent of the session.
-func NewSendJinshuTool(personID, sessionID int64) *SendJinshuTool {
+// NewSendJinshuTool resolves bare paths from the selected Workspace. The
+// optional originating session identifies context, not a filesystem path.
+func NewSendJinshuTool(personID, sessionID int64, workspaceDir string) *SendJinshuTool {
 	return &SendJinshuTool{
-		personID:  personID,
-		sessionID: sessionID,
+		personID:     personID,
+		sessionID:    sessionID,
+		workspaceDir: workspaceDir,
 	}
 }
 
@@ -72,7 +73,7 @@ func (s *SendJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"paths": map[string]interface{}{
 					"type":        "array",
-					"description": "List of AOS paths to send. Use work/<session_id>/... or private/...; bare relative paths remain relative to this session's output/ directory.",
+					"description": "List of AOS paths to send. Use work/<directory_id>/... or private/...; bare relative paths use this Focus's Workspace directory. Existing files under output/ must include that prefix.",
 					"items": map[string]interface{}{
 						"type": "string",
 					},
@@ -111,7 +112,7 @@ func (s *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	files, relPaths, err := workspace.ResolveAOSFiles(s.personID, workspace.GetOutputDir(s.personID, s.sessionID), paths)
+	files, relPaths, err := aos.ResolveAOSFiles(s.personID, s.workspaceDir, paths)
 	if err != nil {
 		return "", fmt.Errorf("resolve Agent Owned Space delivery paths: %w", err)
 	}

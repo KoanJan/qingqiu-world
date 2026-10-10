@@ -163,6 +163,8 @@ func allModels() []any {
 		&model.KBRelationEvidence{},
 		&model.KBRelationJob{},
 		&model.Work{},
+		&model.Workspace{},
+		&model.WorkspaceUse{},
 		&model.FocusHandoff{},
 		&model.ParticipantSession{},
 		&model.ScheduledEvent{},

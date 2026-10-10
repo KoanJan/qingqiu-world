@@ -35,9 +35,6 @@ const (
 	// EventTypeNewJinshuReceived represents another person delivering a jinshu
 	// to this agent.
 	EventTypeNewJinshuReceived
-	// EventTypeJinshuReadCompleted represents the agent finishing reading a
-	// received jinshu through the dedicated read loop.
-	EventTypeJinshuReadCompleted
 	// EventTypeJinshuListed represents the result of a paginated keyword search
 	// over the agent's received jinshu, produced by the ListReceivedJinshu action.
 	EventTypeJinshuListed
@@ -54,6 +51,8 @@ const (
 	EventTypePSCompleted
 	// EventTypeOwnedSpaceInspected carries bounded filesystem metadata observed by the agent.
 	EventTypeOwnedSpaceInspected
+	// EventTypeExecutionSlotAvailable reopens a previously recorded wait intention.
+	EventTypeExecutionSlotAvailable
 )
 
 // AgentEvent represents an event that should be processed by an agent.
@@ -105,9 +104,18 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Work completed]"
 		}
 		if p.CancelActionID > 0 {
-			return fmt.Sprintf("[Work stopped after cancellation] %s (status: %s). The earlier work request was stopped: %s", p.Guidance, p.Status, p.CancelReason)
+			return fmt.Sprintf("[Work stopped after cancellation] Work #%d: %s (status: %s). The earlier work request was stopped: %s", p.WorkID, p.Guidance, p.Status, p.CancelReason)
 		}
-		return fmt.Sprintf("[Work completed] %s (status: %s)", p.Guidance, p.Status)
+		result := fmt.Sprintf("[Work execution ended] Work #%d: %s (execution status: %s)", p.WorkID, p.Guidance, p.Status)
+		if output := strings.TrimSpace(p.WorkOutput); output != "" {
+			result += ". Focus reported: " + limitEventDescription(output, 650)
+		} else {
+			result += ". No result was reported. Execution status alone does not establish that the goal was achieved"
+		}
+		if workError := strings.TrimSpace(p.WorkError); workError != "" {
+			result += ". Execution error: " + limitEventDescription(workError, 240)
+		}
+		return result
 	case EventTypeBiography:
 		p, ok := e.Payload.(*BiographyPayload)
 		if !ok || p == nil {
@@ -125,17 +133,6 @@ func (e AgentEvent) FormatDescription() string {
 		}
 		return fmt.Sprintf("[Jinshu received] jinshu_id=%d from \"%s\" (topic: \"%s\"): \"%s\"%s",
 			p.JinshuID, p.FromName, p.Topic, p.Description, files)
-	case EventTypeJinshuReadCompleted:
-		p, ok := e.Payload.(*JinshuReadCompletedPayload)
-		if !ok || p == nil {
-			return "[Jinshu read completed]"
-		}
-		if p.Status == "success" {
-			return fmt.Sprintf("[Jinshu read completed] You read jinshu #%d from \"%s\" (topic: \"%s\"). Summary: %s",
-				p.JinshuID, p.FromName, p.Topic, p.Summary)
-		}
-		return fmt.Sprintf("[Jinshu read failed] jinshu #%d from \"%s\": %s",
-			p.JinshuID, p.FromName, p.Error)
 	case EventTypeJinshuListed:
 		p, ok := e.Payload.(*JinshuListedPayload)
 		if !ok || p == nil {
@@ -203,9 +200,31 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Owned space inspection]"
 		}
 		return fmt.Sprintf("[Owned space inspection] scope=%s\n%s", p.Scope, p.Result)
+	case EventTypeExecutionSlotAvailable:
+		p, ok := e.Payload.(*ExecutionSlotAvailablePayload)
+		if !ok || p == nil {
+			return "[Execution slot available]"
+		}
+		return fmt.Sprintf("[Execution slot available] You can reconsider this earlier intention: %s", p.Intention)
+	case EventTypeSystemNotification:
+		message, ok := e.Payload.(string)
+		if !ok || message == "" {
+			return "[System notification]"
+		}
+		return "[System notification] " + message
 	default:
 		return ""
 	}
+}
+
+// limitEventDescription bounds a reported result without changing its source
+// status: the text remains a Focus report, not a verified world fact.
+func limitEventDescription(value string, maxRunes int) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxRunes {
+		return string(runes)
+	}
+	return string(runes[:maxRunes]) + "… [report abbreviated]"
 }
 
 // NewMessagePayload is the payload type for EventTypeNewMessage events.
@@ -269,6 +288,12 @@ type PSCompletedPayload struct {
 	Digest   string // Natural-language session digest
 }
 
+// ExecutionSlotAvailablePayload identifies the original waiting Action.
+type ExecutionSlotAvailablePayload struct {
+	WaitActionID int64
+	Intention    string
+}
+
 // OwnedSpaceInspectedPayload is the bounded metadata result of inspect_owned_space.
 type OwnedSpaceInspectedPayload struct {
 	Scope  string
@@ -306,18 +331,6 @@ type JinshuReceivedPayload struct {
 	Files       []string // Delivered file/directory relative paths (so the agent knows what it received)
 }
 
-// JinshuReadCompletedPayload is the payload type for EventTypeJinshuReadCompleted.
-// When the dedicated jinshu-read loop finishes, the agent receives this event
-// so it can decide how to react to the content it just read (usually chat).
-type JinshuReadCompletedPayload struct {
-	JinshuID int64  // ID of the Jinshu record
-	FromName string // Display name of the sender
-	Topic    string // Short subject of the jinshu
-	Summary  string // The agent's own understanding/summary of the jinshu content
-	Status   string // "success" or "failure"
-	Error    string // Reading error (for failure)
-}
-
 // JinshuListItem is a single received jinshu in a JinshuListedPayload result.
 type JinshuListItem struct {
 	JinshuID  int64  // ID of the Jinshu record
@@ -329,7 +342,7 @@ type JinshuListItem struct {
 
 // JinshuListedPayload is the payload type for EventTypeJinshuListed events.
 // When the agent's ListReceivedJinshu action runs, the paginated keyword search result
-// flows back through this event so the agent can pick a jinshu_id to inspect.
+// flows back through this event so the agent can identify a delivery to read.
 type JinshuListedPayload struct {
 	Query   string           // The keyword used for filtering (empty means all)
 	Page    int              // The 1-based page number returned

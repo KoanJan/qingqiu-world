@@ -31,8 +31,7 @@ type ContextManager struct {
 	systemPrompt       string // Pure static system prompt (rules only, no dynamic info)
 	minIterationWindow int    // Minimum visible iterations (anchor size after shrink)
 	maxIterationWindow int    // Maximum visible iterations (triggers bulk-shrink when exceeded)
-	workspaceDir       string // Session workspace directory
-	outputDir          string // Default output directory
+	workspaceDir       string // Selected Workspace directory
 	toolList           string // Tool descriptions string
 	notesContent       string // Full content of agent's notes
 	totalIterations    int    // Total iterations accumulated
@@ -48,14 +47,13 @@ type ContextManager struct {
 // systemPrompt is the pure static rules block (no directives, no context info,
 // no workspace paths, no tool list — those are injected at the tail by BuildMessages).
 // toolList is the formatted tool descriptions string.
-func NewContextManager(systemPrompt string, minWindow, maxWindow int, notesContent string, workspaceDir, outputDir, toolList string) *ContextManager {
+func NewContextManager(systemPrompt string, minWindow, maxWindow int, notesContent, workspaceDir, toolList string) *ContextManager {
 	return &ContextManager{
 		systemPrompt:       systemPrompt,
 		minIterationWindow: minWindow,
 		maxIterationWindow: maxWindow,
 		notesContent:       notesContent,
 		workspaceDir:       workspaceDir,
-		outputDir:          outputDir,
 		toolList:           toolList,
 	}
 }
@@ -166,8 +164,7 @@ func (cm *ContextManager) buildLastMessage(visibleCount, invisibleIterations int
 
 	parts = append(parts,
 		"[Context Information]",
-		fmt.Sprintf("Your session directory is: %s", cm.workspaceDir),
-		fmt.Sprintf("Your default working directory is: %s", cm.outputDir),
+		fmt.Sprintf("Your selected Workspace directory is: %s", cm.workspaceDir),
 		fmt.Sprintf("Operating system: %s", runtime.GOOS),
 		"",
 		fmt.Sprintf("This FocusedWork has produced %d iterations total. Only the last %d are visible to you, %d earlier iterations are outside your visible range.", cm.totalIterations, visibleCount, invisibleIterations),

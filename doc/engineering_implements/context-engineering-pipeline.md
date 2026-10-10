@@ -214,6 +214,8 @@ type KBRetrieval struct {
 
 `Comprehension` is the event-wide wrapper; `ChatComprehension` carries chat-only details. General ongoing Work and Action summaries belong to `Situation.Subject`. `ReadMessageIDs` is the exact batch used to write Observations; a numeric interval alone is insufficient because message IDs are global.
 
+For `WorkCompleted`, Comprehend takes the event description directly without a chat-specific inference pass. That description now includes a bounded excerpt of the Focus result report when present, or explicitly says that no result was reported. General recent experience and Work-specific control attempts are assembled for Decide separately; Comprehend does not infer whether the requested goal was achieved from the execution status.
+
 ### A2A session partner resolution (0.1.3)
 
 In agent-to-agent sessions, the "other party" is another agent, not the human user. The comprehension and chat pipelines resolve the conversation partner dynamically via `GetSessionOtherParticipant(sessionID, selfPersonID)`, which returns the participant other than `selfPersonID`. This replaces the former hardcoded human-user assumption (`GetCurrentUserPersonID`) that broke A2A dialogs — both participants would have been labeled as the human user.

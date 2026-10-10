@@ -22,11 +22,7 @@
 //   - ReadKBEvidenceTool: Read full authorized evidence by chunk ID
 package tools
 
-import (
-	"strings"
-
-	"qingqiu-world-server/internal/service/llm"
-)
+import "qingqiu-world-server/internal/service/llm"
 
 // ToolName is the type-safe identifier for a tool using int enum values.
 // Each tool implementation returns its corresponding constant from Name().
@@ -50,6 +46,7 @@ const (
 	ToolNameScanKB                              // scan_kb
 	ToolNameListKBDocuments                     // list_kb_documents
 	ToolNameReadKBEvidence                      // read_kb_evidence
+	ToolNameUseWorkspace                        // use_workspace
 	toolNameCount                               // Sentinel; must remain last.
 )
 
@@ -71,6 +68,7 @@ var nameStrings = map[ToolName]string{
 	ToolNameScanKB:              "scan_kb",
 	ToolNameListKBDocuments:     "list_kb_documents",
 	ToolNameReadKBEvidence:      "read_kb_evidence",
+	ToolNameUseWorkspace:        "use_workspace",
 }
 
 // AllToolNames returns every registered ToolName in stable enum order. It is
@@ -100,40 +98,6 @@ func FromString(s string) ToolName {
 		}
 	}
 	return ToolNameBash
-}
-
-// normalizeOutputRelativePath accepts the common redundant output/ prefix.
-// Task file tools already resolve relative paths from output/, so retaining the
-// prefix would incorrectly create or look up output/output/. This keeps file
-// creation, reading, editing, and delivery on one canonical location.
-func normalizeOutputRelativePath(path string) string {
-	trimmed := strings.TrimPrefix(path, "./")
-	if trimmed == "output" || trimmed == "output/" {
-		return "."
-	}
-	if strings.HasPrefix(trimmed, "output/") {
-		return strings.TrimLeft(strings.TrimPrefix(trimmed, "output/"), "/")
-	}
-	return path
-}
-
-// normalizedTaskFileArgs copies only the file-path argument before normalizing
-// it, leaving the caller's tool argument map intact for cycle detection.
-func normalizedTaskFileArgs(args map[string]interface{}) map[string]interface{} {
-	filePath, ok := args["file_path"].(string)
-	if !ok {
-		return args
-	}
-	normalized := normalizeOutputRelativePath(filePath)
-	if normalized == filePath {
-		return args
-	}
-	copyArgs := make(map[string]interface{}, len(args))
-	for key, value := range args {
-		copyArgs[key] = value
-	}
-	copyArgs["file_path"] = normalized
-	return copyArgs
 }
 
 // Tool is the interface that all agent tools must implement.

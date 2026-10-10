@@ -8,6 +8,7 @@ import (
 	"time"
 
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/service/aos"
 )
 
 // PrivateLogSource identifies the system component that wrote a private log entry.
@@ -40,7 +41,7 @@ type LogEntry struct {
 }
 
 // AppendLog appends a log entry to the agent's log file.
-// The log is stored as JSONL at {privateSpaceDir}/log.jsonl.
+// The log is stored as JSONL under the private AOS metadata directory.
 func AppendLog(personID int64, content string) error {
 	return appendLogRecord(personID, PrivateLogSourceAgent, PrivateLogTypeAgentNote, content)
 }
@@ -55,7 +56,7 @@ func AppendRuntimeLog(personID int64, recordType PrivateLogType, content string)
 
 // appendLogRecord persists one private audit entry with system-assigned enum values.
 func appendLogRecord(personID int64, source PrivateLogSource, recordType PrivateLogType, content string) error {
-	path := GetLogPath(personID)
+	path := aos.GetPrivateLogPath(personID)
 	entry := LogEntry{
 		Timestamp: time.Now().Format(time.RFC3339),
 		Source:    source,
@@ -84,7 +85,7 @@ func appendLogRecord(personID int64, source PrivateLogSource, recordType Private
 // If the log file doesn't exist, returns an empty slice and nil error.
 // Returns fewer than n entries if the log has fewer entries.
 func ReadRecentLog(personID int64, n int) ([]LogEntry, error) {
-	path := GetLogPath(personID)
+	path := aos.GetPrivateLogPath(personID)
 
 	f, err := os.Open(path)
 	if err != nil {

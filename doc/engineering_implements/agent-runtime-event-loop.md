@@ -175,10 +175,11 @@ flowchart TD
 | Event Type | Source | Handling |
 |---|---|---|
 | `NewPrivateChatMessage` | Another person sends a message | Energy check → Batch-skip check → Comprehend → record exact Observations → Situation → Decide → persist Decision, Actions, and read boundary → DeductEnergy → Execute |
-| `WorkCompleted` | Work finishes (task loop) | Energy check → Remove from activeWorks → Rule-based Decide (ChatPlan with guidance) → DeductEnergy → Execute |
-| `Scheduled` | Alarm fires | Energy check → Fast-path check → Rule-based Decide (ChatPlan with guidance) → DeductEnergy → Execute |
+| `WorkCompleted` | Work finishes (Focus loop) | Energy check → Remove from activeWorks → Comprehend the result report → Situation → LLM Decide with recent experience and Work control attempts → DeductEnergy → Execute. Explicitly cancelled Work takes a fixed-rule empty Decision. |
+| `Scheduled` | Alarm fires | Session-bound alarm: rule-based Chat; standalone alarm: autonomous LLM Decide. A configured `send_message` alarm uses its direct delivery path. |
 | `AlarmCreated` | `CreateAlarm` action from Decide | Energy check → AlarmRegistry registers goroutine → return |
-| `GroupChatJoined` / `GroupChatLeft` / `SystemNotification` | System events | Direct return (no action) |
+| `GroupChatJoined` / `GroupChatLeft` | Session membership changes | Fixed-rule empty Decision |
+| `SystemNotification` | World notification | Comprehend → Situation → LLM Decide |
 
 Fast-path (`Scheduled` + `ActionSendMessage`) bypasses Comprehend/Decide entirely and writes the pre-computed message directly. Per "Decide-phase-only" energy rule, fast-path and `AlarmCreated` do not deduct energy.
 
@@ -290,7 +291,7 @@ Between Comprehend and Decide, the runtime builds a `Situation` DTO that is the 
 ```go
 type Situation struct {
     Source  SituationSource  // External (event) or Internal (heartbeat)
-    Subject SituationSubject // Energy + active works and actions
+    Subject SituationSubject // Energy, ongoing work/actions, and bounded recent experience
     Environment SituationEnvironment // General sessions, people, and resources
     Matter  SituationMatter  // Event + Comprehension (external) or Description (internal)
 }
@@ -300,19 +301,22 @@ type Situation struct {
 
 **Internal (heartbeat) path**: `heartbeat self-observation → buildHeartbeatSituation → Decide`
 
-The heartbeat does NOT go through Comprehend and does NOT create a fake event. It observes runtime facts (active works, pending alarms, recent conversations) and writes a natural-language description into `Matter.Description`. `Matter.Event` and `Matter.Comprehension` remain nil.
+The heartbeat does NOT go through Comprehend and does NOT create a fake event. It observes runtime facts (active works, pending alarms, recent conversations) and writes a natural-language description into `Matter.Description`. `Matter.Event` and `Matter.Comprehension` remain nil. Heartbeat and external-event Situations construct the same general `Subject` and `Environment`; the recent experience in `Subject` is not limited to the triggering Session.
 
 ## Decide Phase
 
 ```mermaid
 flowchart TD
     Input["Situation"] --> Source{"Situation.Source?"}
-    Source -->|Internal| HB["decideHeartbeat<br/>LLM call → Chat / CreateAlarm only"]
+    Source -->|Internal| HB["decideHeartbeat<br/>bounded LLM DecideLoop"]
     Source -->|External| EventType{Event.Type?}
     EventType -->|NewPrivateChatMessage| LLM["decideWithLLM<br/>LLM call → Chat / CreateTask / RouteTask / CancelTask"]
-    EventType -->|WorkCompleted| RuleWork["decideWorkCompleted<br/>rule-based → Chat"]
-    EventType -->|Scheduled| RuleSched["rule-based → Chat"]
-    EventType -->|Other| NoOp["no action"]
+    EventType -->|ordinary WorkCompleted| WorkResult["decideWithLLM<br/>Focus report + Work control attempts"]
+    EventType -->|explicitly cancelled WorkCompleted| Cancelled["fixed-rule empty Decision"]
+    EventType -->|session-bound Scheduled| RuleSched["rule-based → Chat"]
+    EventType -->|standalone Scheduled| AlarmDecide["autonomous LLM Decide"]
+    EventType -->|SystemNotification and other LLM events| OtherLLM["decideWithLLM"]
+    EventType -->|membership or control event| NoOp["fixed-rule empty Decision"]
 ```
 
 ### Action types
@@ -354,11 +358,13 @@ type ChatPlan struct {
 
 ### Sessions context injection
 
-The general `Situation.Environment` provides a bounded roster of accessible sessions, contactable people, and resources. It does not preload every conversation or EntityProfile. The triggering chat's direct Comprehension can include a small observed same-session window; the DecideLoop can inspect other authorized history and a known entity's current profile on demand. This lets the LLM choose a session target without treating unobserved messages as memories.
+The general `Situation.Environment` provides a bounded roster of accessible sessions, contactable people, and resources. It does not preload every conversation or EntityProfile. `Situation.Subject` also carries a bounded chronological view of this agent's earlier observed Events, subsequent Decisions, and recorded Action effects across Sessions. It excludes the current Event and does not treat an Action's intention as a completed effect. The triggering chat's direct Comprehension can include a small observed same-session window; the DecideLoop can inspect other authorized history and a known entity's current profile on demand. This lets the LLM choose a session target without treating unobserved messages as memories.
+
+An ordinary `WorkCompleted` event includes a bounded excerpt of the Focus output or says that no result was reported. Its Decide input also queries recent Route/Cancel attempts by that Work's ID, including attempts with no accepted control effect. The triggering message remains subject to Observation and source-access checks. The Focus report is evidence of what the executor reported, not independent proof that the requested goal was achieved.
 
 ### `trigger` field — causal semantic description
 
-`buildMetadata` constructs a trigger string per event type for traceability purposes. It is NOT injected into prompts or used to load messages.
+`buildTriggerContext` renders the earlier Action's recorded background and reason when an Event carries `TriggerAction`; Decide receives this as a causal clue. Message history and other source records still follow their own Observation and access checks.
 
 ## Work Lifecycle
 
@@ -423,10 +429,10 @@ flowchart LR
     Timer["heartbeatTimer fires"] --> Observe["buildHeartbeatDescription<br/>active works, pending alarms, recent sessions"]
     Observe --> Situation["buildHeartbeatSituation<br/>Source=Internal, Matter.Description"]
     Situation --> Decide["Decide(ctx, situation, personID, activeWorks)<br/>→ decideHeartbeat → LLM"]
-    Decide --> Execute["executeActions<br/>Chat / CreateAlarm only"]
+    Decide --> Execute["executeActions<br/>validated heartbeat actions"]
 ```
 
-Heartbeat Decide is restricted to `Chat` and `CreateAlarm` actions — no task creation or routing from autonomous heartbeats.
+Heartbeat Decide may choose Chat, CreateAlarm, UpdateBio, EnterPrivateSpace, SendJinshu, InspectOwnedSpace, or WaitForExecutionSlot. It cannot start, route, or cancel a Focus Work directly.
 
 ### Heartbeat checks
 

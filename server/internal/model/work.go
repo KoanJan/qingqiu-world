@@ -25,7 +25,8 @@ const (
 	FocusPhaseCancelled
 )
 
-// Work represents a unit of work for an agent within a session.
+// Work represents a sustained task for an agent. SessionID identifies an
+// optional originating conversation; zero is valid for other event sources.
 //
 // A Work is created when an agent decides to act on an event, and it may
 // absorb subsequent events (e.g., user corrections) during its execution.
@@ -35,7 +36,7 @@ const (
 type Work struct {
 	ID          int64      `gorm:"primaryKey;autoIncrement" json:"id"`
 	PersonID    int64      `gorm:"not null;index:idx_person_status" json:"person_id"`
-	SessionID   int64      `gorm:"not null" json:"session_id"`
+	SessionID   int64      `gorm:"not null;index:idx_works_session" json:"session_id"`
 	Description string     `gorm:"type:text;not null" json:"description"`                   // Natural language description for semantic routing and recovery
 	Status      WorkStatus `gorm:"not null;default:0;index:idx_agent_status" json:"status"` // 0=running, 1=completed, -1=abandoned
 	FocusPhase  FocusPhase `gorm:"not null;default:0" json:"focus_phase"`                   // Runtime-owned Focus phase

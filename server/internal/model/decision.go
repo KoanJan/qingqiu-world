@@ -14,11 +14,11 @@ const (
 	ActionTypeCreateAlarm
 	ActionTypeUpdateBio
 	ActionTypeEnterPrivateSpace
-	ActionTypeInspectJinshu
 	ActionTypeListReceivedJinshu
 	ActionTypeSendJinshu
 	ActionTypeListSentJinshu
 	ActionTypeInspectOwnedSpace
+	ActionTypeWaitForExecutionSlot
 )
 
 // Label names an Action for historical presentation without changing its
@@ -39,8 +39,6 @@ func (t ActionType) Label() string {
 		return "update bio"
 	case ActionTypeEnterPrivateSpace:
 		return "enter private space"
-	case ActionTypeInspectJinshu:
-		return "inspect jinshu"
 	case ActionTypeListReceivedJinshu:
 		return "list received jinshu"
 	case ActionTypeSendJinshu:
@@ -49,6 +47,8 @@ func (t ActionType) Label() string {
 		return "list sent jinshu"
 	case ActionTypeInspectOwnedSpace:
 		return "inspect owned space"
+	case ActionTypeWaitForExecutionSlot:
+		return "wait for execution slot"
 	default:
 		return "unknown action"
 	}
@@ -72,6 +72,9 @@ const (
 	ActionEffectScheduledEvent
 	ActionEffectJinshu
 	ActionEffectSelfHeldEvent
+	ActionEffectWorkspace
+	ActionEffectWorkControl
+	ActionEffectPSDigest
 )
 
 // Decision is one accepted Decide result. EventID is zero only for a true

@@ -248,11 +248,14 @@ func TestDecideLoopTransportFailureDoesNotRetryRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Event{}, &model.Decision{}, &model.Action{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Event{}, &model.Decision{}, &model.Action{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = old })
+	if err := db.Create(&model.Person{ID: 1, Name: "Decide test agent", Type: model.PersonTypeAI}).Error; err != nil {
+		t.Fatal(err)
+	}
 	source := model.Event{EventType: model.EventTypePSDigest}
 	if err := db.Create(&source).Error; err != nil {
 		t.Fatal(err)
