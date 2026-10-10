@@ -17,6 +17,7 @@ import (
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
@@ -32,7 +33,9 @@ func energyCost(src SituationSource) energy.Cost {
 }
 
 // decidePromptTemplate is the LLM prompt template for decision making.
-// Parameters: agent_name, character_settings, bio, message_content, trigger_context, comprehension_context, activeWorksContext, sessionsContext, personsContext, energyDynamicSuffix
+// Parameters: agent name, character, bio; current event, its origin and
+// comprehension; general subject, sessions, persons and resources; recall
+// guidance; current time and energy.
 //
 // The world rules are described in world.WorldDescriptions (stable prefix).
 // This template only adds the decision-specific instructions and concrete
@@ -67,29 +70,29 @@ Every action MUST include "background" and "reason" at the action level:
 IMPORTANT: Everything you state in background, reason, and guidance must be grounded in facts from what you have observed. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.
 
 Action types (use the integer value for the "type" field):
-1. 0 (chat) — Send a chat message to a Person.
+Type 0 (chat) — Send a chat message to a Person.
    - MUST include a "chat_plan" object with "guidance" and "session_id".
    - guidance: Your internal intention — why you want to speak and what you want to accomplish, written in first-person. Keep it brief; the actual message will be generated separately.
    - session_id: The target session ID. Always provide a real session ID:
      * Use a positive session ID from your sessions list to send to an existing session.
      * Use -1 to create a new 1v1 session with a Person (set recipient_person_id from the contactable persons list below).
 
-2. 1 (start_focused_work) — Start a FocusedWork that runs through a FocusedLoop.
+Type 1 (start_focused_work) — Start a FocusedWork that runs through a FocusedLoop.
    - MUST include a "work_plan" object with "guidance" and exactly one Workspace choice: "workspace_id" for an owned Workspace shown below or found through recall_workspace, OR "new_workspace" with "name" and "purpose". Do not invent a filesystem path.
    - guidance: Your internal intention: what you plan to do, written in first-person.
    - Start a FocusedWork when fulfilling the goal requires a continuing course of work: later observations or tool results determine the next step, several dependent actions must be coordinated, an investigation or artifact needs deliberate completion, or progress must survive beyond one response through notes and a final handoff.
    - Do NOT start a FocusedWork merely to acknowledge, explain, answer from the context already present, or make a simple decision. Those belong in chat or silence. If a bounded directory listing alone resolves the uncertainty, use inspect_owned_space instead; use Focus when finding or verifying a file requires deeper inspection of a Workspace or its contents.
    - A FocusedWork is sustained, concentrated execution, not a label for every user request or every possible tool call.
 
-3. 2 (route_focused_work) — Route the event to an existing active work listed above. Route when the event carries a new instruction or constraint that changes an active work's direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
+Type 2 (route_focused_work) — Route the event to an existing active work listed above. Route when the event carries a new instruction or constraint that changes an active work's direction, approach, scope, or requirements (e.g., "use Go instead", "don't install anything new", "also add dark mode"). Only works currently listed in "Active works" can be routed to.
 	- MUST include "work_guidance" with "target_work_id" and "guidance" (what I now want the target work to do, written in first-person).
 	- Do NOT route events that merely mention or ask about an active work (e.g., status questions like "how's it going?"). These belong to chat.
 
-4. 3 (cancel_focused_work) — Stop an existing active work. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
+Type 3 (cancel_focused_work) — Stop an existing active work. Use when the event explicitly requests stopping an ONGOING work. Only works currently listed in "Active works" can be cancelled.
 	- MUST include "work_guidance" with "target_work_id" and "guidance" (why I am stopping this work, written in first-person).
    - Cancel interrupts further Focus iterations. A tool call already in progress may finish; the runtime records a cancellation handoff.
 
-5. 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
+Type 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
@@ -97,54 +100,49 @@ Action types (use the integer value for the "type" field):
    - action_content: Required when action is "send_message" — the exact message to send.
    - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
 
-6. 5 (update_bio) — Update your own Bio (self-introduction displayed to others).
+Type 5 (update_bio) — Update your own Bio (self-introduction displayed to others).
    - MUST include a "bio_update" object with "bio".
    - bio: A one-sentence self-introduction. Only use this when you feel your current bio is outdated or inaccurate.
 
-7. 6 (enter_private_space) — Enter your private space to recall or review what you have made or kept there, so you can answer questions about your own past actions, promises, or deliverables (e.g., someone asking "didn't you say you'd give me something?").
+Type 6 (enter_private_space) — Enter your private space to recall or review what you have made or kept there, so you can answer questions about your own past actions, promises, or deliverables (e.g., someone asking "didn't you say you'd give me something?").
    - No plan struct needed. Your "background" and "reason" together express what you want to recall or check.
    - Your private space is yours alone. You are NOT obliged to do work for anyone there, and you are NOT obliged to reveal or tell anyone about anything in it — you have every right to keep it private, with no duty to share.
    - Use this only to refresh your own memory or verify your own past output, not to be directed into performing work for someone else.
 
 To inspect large Jinshu attachments, start a FocusedWork; its tools can scan and read received files across iterations. Choose a Workspace even when the Jinshu event has no Session.
 
-8. 7 (list_received_jinshu) — Search your received jinshu by keyword with pagination.
+Type 7 (list_received_jinshu) — Search your received jinshu by keyword with pagination.
    - MUST include a "list_received_jinshu_params" object with "page" and "limit"; "query" is optional.
    - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
    - page: 1-based page number. limit: results per page (1-50).
    - Use this when the current event references a jinshu but does not give its jinshu_id, so you need to find it first.
 
-9. 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
+Type 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from the contactable persons list). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
    - paths: Exact, verified AOS locators. Use work/<directory_id>/... or private/...; bare paths remain relative to private/. Do not infer a file path from a Work or Workspace ID.
    - Use this to share an existing deliverable when its exact path is known. If its location or contents need deeper inspection, start Focus in the relevant Workspace and send it there after verification.
 
-10. 9 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
+Type 9 (list_sent_jinshu) — Search your sent jinshu by keyword with pagination.
    - MUST include a "list_sent_jinshu_params" object with "page" and "limit"; "query" is optional.
    - query: Optional keyword matched against the jinshu topic or description. Omit to list all.
    - page: 1-based page number. limit: results per page (1-50).
    - Use this to recall what you have already sent to someone, e.g., to verify whether you actually delivered something before.
 
-11. 10 (inspect_owned_space) — Inspect a bounded, metadata-only listing of your own resources when the Focus Context is insufficient to decide whether to reply directly or begin focused work.
+Type 10 (inspect_owned_space) — Inspect a bounded, metadata-only listing of your own resources when the Focus Context is insufficient to decide whether to reply directly or begin focused work.
    - MUST include an "owned_space_inspection_plan" object with "scope" and "limit"; "query" is optional.
    - scope: "root", "work", "private", or "work/<directory_id>". The default is root. It never reads file contents.
    - limit: result count from 1 to 50. query: an optional plain substring filter for entry names.
    - The result is a new observation event. Do not use this action after an inspect result; create focused work when deeper inspection, reading, or changes are needed.
 
-12. 11 (wait_for_execution_slot) — Preserve an intention when your single Focus/Private Space execution slot is occupied.
+Type 11 (wait_for_execution_slot) — Preserve an intention when your single Focus/Private Space execution slot is occupied.
    - MUST include "wait_for_execution_slot_plan" with "intention". Availability later causes a new decision, not automatic execution.
    - Choose at most one of start_focused_work, enter_private_space, or wait_for_execution_slot in one decision. Actions in one decision have no execution order.
 
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request. Start a new FocusedWork only if the new request meets the FocusedWork criteria above; otherwise reply directly or inspect bounded metadata first.
 
 If no action is needed, return an empty actions list.
-
-You can return multiple actions. Examples (note: IDs in examples are placeholders; always use the actual work IDs from "Active works" above):
-- Cancel an old work and chat: [{"type":3, "background":"They said to stop searching and give a direct answer", "reason":"Cancelling the search is the fastest path; a direct chat is what they want", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should save my progress and stop"}}, {"type":0, "background":"After cancelling the search, I owe them an answer", "reason":"A direct reply is the right follow-up to a cancellation", "chat_plan":{"guidance":"I stopped searching and now I should give them a direct answer about X..."}}]
-- Route a follow-up to an existing work: [{"type":2, "background":"They want the same work continued in Go instead of Python", "reason":"Routing to the existing work avoids starting over", "work_guidance":{"target_work_id":<ID from Active works>, "guidance":"I should switch from Python to Go"}}]
-- Talk to another Person and acknowledge the request: [{"type":0, "background":"I need to ask Bob about the project status", "reason":"Direct communication is the only way to get this information", "chat_plan":{"session_id":-1, "recipient_person_id":3, "guidance":"I should ask Bob about the project status..."}}, {"type":0, "background":"I am being asked about the project status", "reason":"I should acknowledge the request before going to ask Bob", "chat_plan":{"guidance":"I should tell them I'll go ask Bob now..."}}]
 
 Decision rules (apply in order):
 1. First check Active works. If the event changes the goal, method, scope, or constraints of an active work, route it (type=2). If it explicitly asks to stop an active work, request cancellation (type=3). Do not create a competing FocusedWork for the same continuing work.
@@ -161,12 +159,23 @@ Choose the delivery medium by how the recipient will use the result. Chat is a c
 
 ---
 
-Event: %s
+Current event:
+%s
 
 %s
-%s%s
+%s
+Your present state and recent experience:
+%s
+
+Your surroundings:
 %s
 %s
+%s
+
+Memory tools:
+%s
+
+Time and energy:
 %s
 
 Write background, guidance, reason, and plan in the same language as the event content.`
@@ -177,7 +186,8 @@ Write background, guidance, reason, and plan in the same language as the event c
 // "time has passed" and asks whether it wants to form an
 // intention.
 //
-// Parameters: agent_name, character_settings, bio, description, focusContext, energyDynamicSuffix
+// Parameters: agent name, character, bio; present moment; general subject,
+// sessions, persons and resources; recall guidance; current time and energy.
 //
 // The Action surface is intentionally narrower than the event-triggered path:
 //   - action.Chat (type=0): compose and send a chat message.
@@ -221,9 +231,7 @@ IMPORTANT: Everything you state in background, reason, and guidance must be grou
 
 If you decide to act, you have these kinds of action available:
 
-11 (wait_for_execution_slot) preserves an intention while Focus or Private Space occupies your one sustained execution slot. Include "wait_for_execution_slot_plan" with "intention". Availability prompts a new decision; it does not execute the old intention. Do not combine it with enter_private_space in one decision.
-
-1. 0 (chat) — Chat: compose and send a message to another Person.
+Type 0 (chat) — Chat: compose and send a message to another Person.
    - MUST include a "chat_plan" object with "guidance".
    - guidance: Your internal intention, written in first-person as your own thought.
    - session_id controls where the message goes:
@@ -231,7 +239,7 @@ If you decide to act, you have these kinds of action available:
      * -1: create a new 1v1 session with a Person (set recipient_person_id from contactable persons below).
      * 0 is an illegal value — always provide a positive session_id or -1.
 
-2. 4 (create_alarm) — Set an alarm that will wake you at a future time.
+Type 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
    - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
@@ -239,11 +247,11 @@ If you decide to act, you have these kinds of action available:
    - action_content: Required when action is "send_message" — the exact message to send.
    - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
 
-3. 5 (update_bio) — Update your own Bio (self-introduction that others see).
+Type 5 (update_bio) — Update your own Bio (self-introduction that others see).
    - MUST include a "bio_update" object with "bio".
    - bio: A one-sentence self-introduction that others see. Update this whenever you want to present yourself differently.
 
-4. 6 (enter_private_space) — Enter your private space — a personal, persistent directory that belongs to you alone.
+Type 6 (enter_private_space) — Enter your private space — a personal, persistent directory that belongs to you alone.
    - No plan struct needed. Your "background" and "reason" together express what you want to do there.
    - Your private space is yours to use as you see fit — there are no prescribed activities.
    - Everything in your private space is private to you. You are not obliged to reveal or tell anyone about any of it — you have no duty to share, and you may keep it entirely to yourself.
@@ -252,23 +260,38 @@ If you decide to act, you have these kinds of action available:
    - You have a budget of steps; when you're done, simply stop.
    - If you know the exact path of a file you already made, you can use type=8 (send_jinshu) directly; a send_jinshu tool is also available once inside.
 
-5. 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
+Type 8 (send_jinshu) — Send selected resources from your Agent Owned Space to another Person as a jinshu (锦书).
    - MUST include a "send_jinshu_plan" object with "to_person_id", "topic", and "paths"; "description" is optional.
    - to_person_id: The recipient person ID (from contactable persons). Must not be yourself.
    - topic: A short subject/topic for the jinshu.
    - paths: Exact, verified AOS locators. Use work/<directory_id>/... or private/...; bare paths remain relative to private/. Do not guess a path from a Work or Workspace ID.
    - Use this to share an existing deliverable only when its exact path is known.
 
-6. 10 (inspect_owned_space) — Inspect a bounded metadata-only listing of your own AOS resources.
+Type 10 (inspect_owned_space) — Inspect a bounded metadata-only listing of your own AOS resources.
    - MUST include an "owned_space_inspection_plan" with scope (root, work, private, or work/<directory_id>) and limit (1-50).
    - This action cannot read file contents and does not permit writes. Use it only when the focus context does not tell you whether a resource still exists or where to resume.
+
+Type 11 (wait_for_execution_slot) — Preserve an intention while Focus or Private Space occupies your one sustained execution slot. Include "wait_for_execution_slot_plan" with "intention". Availability prompts a new decision; it does not execute the old intention. Do not combine it with enter_private_space in one decision.
 
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
 If you have nothing to act on, return an empty actions list. This is the default — do not force action.
 
+Present moment:
+%s
+
+Your present state and recent experience:
+%s
+
+Your surroundings:
 %s
 %s
+%s
+
+Memory tools:
+%s
+
+Time and energy:
 %s
 
 Write background, guidance, and plan in the same language you would use to speak.`
@@ -448,12 +471,12 @@ func buildTriggerContext(event *eventqueue.AgentEvent) string {
 		return ""
 	}
 	var sb strings.Builder
-	sb.WriteString("[Triggered by your own earlier intention]")
+	sb.WriteString("Your earlier action led to this event.")
 	if ta.Background != "" {
-		fmt.Fprintf(&sb, " Background: %s", ta.Background)
+		fmt.Fprintf(&sb, " Your understanding at the time: %q.", ta.Background)
 	}
 	if ta.Reason != "" {
-		fmt.Fprintf(&sb, " Reason: %s", ta.Reason)
+		fmt.Fprintf(&sb, " Your stated reason: %q.", ta.Reason)
 	}
 	return sb.String()
 }
@@ -490,7 +513,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 		return DecisionResult{}
 	}
 
-	comprehensionContext := buildComprehensionContext(comprehension)
+	comprehensionContext := buildComprehensionContext(comprehension, personID)
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		comprehensionContext += buildWorkCompletedReplyAnchor(event.SessionID)
 		if payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload); ok && payload != nil {
@@ -501,25 +524,22 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 	}
 	triggerContext := buildTriggerContext(event)
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && event.SessionID > 0 {
-		triggerContext += fmt.Sprintf("\nThis message batch is in session_id=%d. Use that ID to reply in this conversation.\n", event.SessionID)
+		triggerContext += fmt.Sprintf("\nThis message came from the current conversation (session_id=%d). Use this ID if you reply here.\n", event.SessionID)
 	}
-	activeWorksContext := formatGeneralSubject(situation.Subject)
 	agentDescription := a.Config.CharacterSettings
 	bio := a.Person.Bio
 
-	// Inject the agent's social context: its sessions (with narratives and
-	// recent messages) and the world's contactable persons. This lets the
+	// Inject general routing context separately from event comprehension. This lets the
 	// LLM choose between reply (respond in current session), send_to_session
 	// (continue an existing conversation), and create_and_send (start a new
 	// conversation with another Person). Without this context, the agent
 	// cannot know who else it can talk to or which sessions it has.
-	sessionsContext := situation.Environment.Sessions
-	personsContext := situation.Environment.Persons + "\n" + situation.Environment.Resources + "\n" + recallPromptInstruction
-
 	prompt := fmt.Sprintf(decidePromptTemplate,
 		a.Person.Name, agentDescription, bio,
-		eventDescription, triggerContext, comprehensionContext, activeWorksContext,
-		sessionsContext, personsContext,
+		eventDescription, triggerContext, comprehensionContext,
+		formatGeneralSubject(situation.Subject),
+		situation.Environment.Sessions, situation.Environment.Persons, situation.Environment.Resources,
+		recallPromptInstruction,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
@@ -600,7 +620,9 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 	prompt := fmt.Sprintf(heartbeatPromptTemplate,
 		a.Person.Name, agentDescription, bio,
 		situation.Matter.Description,
-		formatGeneralSubject(situation.Subject)+"\n"+situation.Environment.Sessions+"\n"+situation.Environment.Persons+"\n"+situation.Environment.Resources+"\n"+recallPromptInstruction,
+		formatGeneralSubject(situation.Subject),
+		situation.Environment.Sessions, situation.Environment.Persons, situation.Environment.Resources,
+		recallPromptInstruction,
 		buildEnergyDynamicSuffix(situation.Source, situation.Subject.Energy),
 	)
 
@@ -1185,14 +1207,14 @@ func truncateWorkDescription(s string) string {
 // prompt based on its type. It dispatches by Comprehension.Type so the Decide
 // phase stays decoupled from any single event-type-specific comprehension;
 // each branch renders only the context it actually has.
-func buildComprehensionContext(comprehension *comprehendTypes.Comprehension) string {
+func buildComprehensionContext(comprehension *comprehendTypes.Comprehension, selfPersonID int64) string {
 	if comprehension == nil {
 		return ""
 	}
 	var eventAnalysis string
 	switch comprehension.Type {
 	case comprehendTypes.ComprehensionTypeChat:
-		eventAnalysis = buildChatComprehensionContext(comprehension.Chat)
+		eventAnalysis = buildChatComprehensionContext(comprehension.Chat, selfPersonID)
 	case comprehendTypes.ComprehensionTypeBiography:
 		// Biography comprehension carries no extra analysis: the origin
 		// statement is already the event description itself.
@@ -1213,7 +1235,7 @@ func buildWorkCompletedReplyAnchor(sessionID int64) string {
 		return ""
 	}
 	return fmt.Sprintf(
-		"\nReply target: this work completed in session_id=%d. Your reply must set chat_plan.session_id=%d (do not use -1).\n\n",
+		"\nThis work originated in a conversation (session_id=%d). If you reply there, set chat_plan.session_id to %d.\n\n",
 		sessionID, sessionID,
 	)
 }
@@ -1221,7 +1243,7 @@ func buildWorkCompletedReplyAnchor(sessionID int64) string {
 // buildChatComprehensionContext formats comprehension results for the Decide prompt.
 // This provides the LLM with the agent's understanding of the message,
 // enabling informed decision-making instead of guessing from raw text.
-func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatComprehension) string {
+func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatComprehension, selfPersonID int64) string {
 	if chatComprehension == nil {
 		return ""
 	}
@@ -1241,22 +1263,26 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 		if _, current := batchIDs[message.ID]; current {
 			continue
 		}
-		recentLines = append(recentLines, fmt.Sprintf("%s [%s]: %s", message.PersonName, message.CreatedAt.Format("2006-01-02 15:04:05"), message.Content))
+		speaker := message.PersonName
+		if message.PersonID == selfPersonID {
+			speaker = "You"
+		}
+		recentLines = append(recentLines, fmt.Sprintf("- At %s — %s", message.CreatedAt.Format("2006-01-02 15:04:05"), memory.FormatChatSpeech(speaker, message.Content)))
 		if message.OwnAction != nil {
 			// The source action explains this past utterance; its plan does not
 			// become a new instruction for the current decision.
 			var pastContext []string
 			if message.OwnAction.Background != "" {
-				pastContext = append(pastContext, "background: "+message.OwnAction.Background)
+				pastContext = append(pastContext, fmt.Sprintf("your understanding: %q", message.OwnAction.Background))
 			}
 			if message.OwnAction.Reason != "" {
-				pastContext = append(pastContext, "reason: "+message.OwnAction.Reason)
+				pastContext = append(pastContext, fmt.Sprintf("your reason: %q", message.OwnAction.Reason))
 			}
 			if message.OwnAction.Guidance != "" {
-				pastContext = append(pastContext, "intended speech: "+message.OwnAction.Guidance)
+				pastContext = append(pastContext, fmt.Sprintf("your intended speech: %q", message.OwnAction.Guidance))
 			}
 			if len(pastContext) > 0 {
-				recentLines = append(recentLines, "  My context when I sent this: "+strings.Join(pastContext, "; "))
+				recentLines = append(recentLines, "  Your stated context at that time: "+strings.Join(pastContext, "; "))
 			}
 		}
 	}
@@ -1271,13 +1297,13 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 			parts = append(parts, "Possible conversational purpose: "+purpose)
 		}
 		if chatComprehension.PersonState.Situation != "" {
-			parts = append(parts, fmt.Sprintf("Situation context: %s", chatComprehension.PersonState.Situation))
+			parts = append(parts, fmt.Sprintf("Possible situation inferred during comprehension: %s", chatComprehension.PersonState.Situation))
 		}
 	}
 
 	if chatComprehension.KBRetrieval != nil && chatComprehension.KBRetrieval.Query != "" {
 		parts = append(parts, fmt.Sprintf(
-			"Knowledge-base search candidate: query=%q, kb_ids=%v.",
+			"Suggested knowledge-base search: %q (knowledge_base_ids=%v).",
 			truncateWorkDescription(chatComprehension.KBRetrieval.Query),
 			chatComprehension.KBRetrieval.KnowledgeBaseIDs,
 		))
@@ -1308,9 +1334,9 @@ func buildContactablePersonsContext(selfPersonID int64) string {
 	sb.WriteString("Contactable persons (use these IDs to start a conversation):\n")
 	for _, p := range persons {
 		if p.Bio != "" {
-			fmt.Fprintf(&sb, "- person_id=%d, name=%s, bio=%s\n", p.ID, p.Name, truncateWorkDescription(p.Bio))
+			fmt.Fprintf(&sb, "- %s (person_id=%d). Bio: %s\n", p.Name, p.ID, truncateWorkDescription(p.Bio))
 		} else {
-			fmt.Fprintf(&sb, "- person_id=%d, name=%s (no bio yet)\n", p.ID, p.Name)
+			fmt.Fprintf(&sb, "- %s (person_id=%d). No bio yet.\n", p.Name, p.ID)
 		}
 	}
 	var total int64

@@ -13,7 +13,7 @@ func TestWorkCompletionDescriptionReportsResult(t *testing.T) {
 		WorkOutput: "The files exist; no further work is needed.",
 	}}
 	description := event.FormatDescription()
-	for _, part := range []string{"Work #64", "execution status: success", "Focus reported: The files exist; no further work is needed"} {
+	for _, part := range []string{"work_id=64", "execution status is success", "Focus reported: The files exist; no further work is needed"} {
 		if !strings.Contains(description, part) {
 			t.Fatalf("completion description omits %q: %s", part, description)
 		}

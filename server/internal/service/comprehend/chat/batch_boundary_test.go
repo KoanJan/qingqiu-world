@@ -80,9 +80,16 @@ func TestUnreadBatchAndLocalContextHaveSeparateBounds(t *testing.T) {
 	if err != nil || len(batch) != 65 {
 		t.Fatalf("unread batch was truncated or crossed sessions: count=%d err=%v", len(batch), err)
 	}
-	description := formatMessageRange(batch)
+	description := formatMessageRange(batch, 1)
 	if !strings.Contains(description, "batch-entry-01") || !strings.Contains(description, "batch-entry-65") || strings.Contains(description, "other-session-only") {
 		t.Fatalf("batch description lost an endpoint or crossed sessions: %s", description)
+	}
+	if !strings.Contains(description, "Chat messages from session (session_id=10)") || !strings.Contains(description, "— Peer said:") {
+		t.Fatalf("batch attributed the session ID to a speaker: %s", description)
+	}
+	ownDescription := formatMessageRange([]model.Message{{SessionID: 10, PersonID: 1, Content: "我知道"}}, 1)
+	if !strings.Contains(ownDescription, "Chat messages from session (session_id=10)") || !strings.Contains(ownDescription, "— You said: \"我知道\".") {
+		t.Fatalf("own speech was not separated from its session: %s", ownDescription)
 	}
 	window, _, _, err := memory.LoadObservedSessionContext(1, 10, lastCurrentID, 50, currentIDs)
 	if err != nil || len(window) != 50 || window[0].Content != "batch-entry-16" || window[49].Content != "batch-entry-65" {
@@ -90,5 +97,15 @@ func TestUnreadBatchAndLocalContextHaveSeparateBounds(t *testing.T) {
 	}
 	if hidden, err := memory.ListObservedMessages(1, 10, lastCurrentID, 50, nil); err != nil || len(hidden) != 1 || hidden[0].Content != "batch-entry-00" {
 		t.Fatalf("unobserved current batch was admitted as older history: %+v err=%v", hidden, err)
+	}
+}
+
+func TestMessageSpeakerNameUsesObserverPerspective(t *testing.T) {
+	names := map[int64]string{1: "粒粒", 2: "Patrick"}
+	if got := messageSpeakerName(names, 1, 1); got != "You" {
+		t.Fatalf("own message speaker = %q", got)
+	}
+	if got := messageSpeakerName(names, 2, 1); got != "Patrick" {
+		t.Fatalf("peer message speaker = %q", got)
 	}
 }

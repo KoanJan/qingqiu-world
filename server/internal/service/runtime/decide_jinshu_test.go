@@ -61,7 +61,7 @@ func TestDecideJinshuTools(t *testing.T) {
 		}
 		var got struct {
 			Results []struct {
-				ID          int64   `json:"id"`
+				JinshuID    int64   `json:"jinshu_id"`
 				From        string  `json:"from"`
 				To          string  `json:"to"`
 				Description *string `json:"description"`
@@ -78,7 +78,13 @@ func TestDecideJinshuTools(t *testing.T) {
 		}
 		if spec.count > 0 {
 			first := got.Results[0]
-			if first.ID != spec.firstID || first.From != "小青" || first.To != "蛋挞" || first.Description != nil {
+			wantFrom, wantTo := "小青", "蛋挞"
+			if spec.personID == 1 {
+				wantFrom = "You"
+			} else if spec.personID == 2 {
+				wantTo = "You"
+			}
+			if first.JinshuID != spec.firstID || first.From != wantFrom || first.To != wantTo || first.Description != nil {
 				t.Fatalf("%s: unexpected list item: %s", spec.name, output)
 			}
 			if (first.IsRead != nil) != (spec.name == "list_received_jinshu") {

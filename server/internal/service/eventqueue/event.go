@@ -104,9 +104,9 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Work completed]"
 		}
 		if p.CancelActionID > 0 {
-			return fmt.Sprintf("[Work stopped after cancellation] Work #%d: %s (status: %s). The earlier work request was stopped: %s", p.WorkID, p.Guidance, p.Status, p.CancelReason)
+			return fmt.Sprintf("[Work stopped after cancellation] The work (work_id=%d) was about: %s. Its status is %s. The earlier work request was stopped: %s", p.WorkID, p.Guidance, p.Status, p.CancelReason)
 		}
-		result := fmt.Sprintf("[Work execution ended] Work #%d: %s (execution status: %s)", p.WorkID, p.Guidance, p.Status)
+		result := fmt.Sprintf("[Work execution ended] The work (work_id=%d) was about: %s. Its execution status is %s", p.WorkID, p.Guidance, p.Status)
 		if output := strings.TrimSpace(p.WorkOutput); output != "" {
 			result += ". Focus reported: " + limitEventDescription(output, 650)
 		} else {
@@ -129,9 +129,13 @@ func (e AgentEvent) FormatDescription() string {
 		}
 		files := ""
 		if len(p.Files) > 0 {
-			files = fmt.Sprintf(" (files: %s)", strings.Join(p.Files, ", "))
+			quoted := make([]string, 0, len(p.Files))
+			for _, path := range p.Files {
+				quoted = append(quoted, fmt.Sprintf("%q", path))
+			}
+			files = fmt.Sprintf(" (attached file paths: %s)", strings.Join(quoted, ", "))
 		}
-		return fmt.Sprintf("[Jinshu received] jinshu_id=%d from \"%s\" (topic: \"%s\"): \"%s\"%s",
+		return fmt.Sprintf("[Jinshu received] You received a Jinshu (jinshu_id=%d) from %s about %q: %q%s",
 			p.JinshuID, p.FromName, p.Topic, p.Description, files)
 	case EventTypeJinshuListed:
 		p, ok := e.Payload.(*JinshuListedPayload)
@@ -153,7 +157,7 @@ func (e AgentEvent) FormatDescription() string {
 			if r.IsRead {
 				read = "read"
 			}
-			fmt.Fprintf(&sb, "\n- jinshu_id=%d from %q topic %q (%s, %s)",
+			fmt.Fprintf(&sb, "\n- Jinshu (jinshu_id=%d) from %s about %q; %s; received: %s",
 				r.JinshuID, r.FromName, r.Topic, read, r.CreatedAt)
 		}
 		return sb.String()
@@ -163,7 +167,7 @@ func (e AgentEvent) FormatDescription() string {
 			return "[Jinshu sent]"
 		}
 		if p.Status == "success" {
-			return fmt.Sprintf("[Jinshu sent] You sent jinshu #%d to %q (topic: %q).",
+			return fmt.Sprintf("[Jinshu sent] You sent a Jinshu (jinshu_id=%d) to %s about %q.",
 				p.JinshuID, p.ToName, p.Topic)
 		}
 		return fmt.Sprintf("[Jinshu send failed] to %q (topic: %q): %s",
@@ -184,7 +188,7 @@ func (e AgentEvent) FormatDescription() string {
 			return sb.String()
 		}
 		for _, r := range p.Results {
-			fmt.Fprintf(&sb, "\n- jinshu_id=%d to %q topic %q (%s)",
+			fmt.Fprintf(&sb, "\n- Jinshu (jinshu_id=%d) sent to %s about %q; sent: %s",
 				r.JinshuID, r.ToName, r.Topic, r.CreatedAt)
 		}
 		return sb.String()
@@ -199,7 +203,7 @@ func (e AgentEvent) FormatDescription() string {
 		if !ok || p == nil {
 			return "[Owned space inspection]"
 		}
-		return fmt.Sprintf("[Owned space inspection] scope=%s\n%s", p.Scope, p.Result)
+		return fmt.Sprintf("[Owned space inspection] Your inspection of %q returned:\n%s", p.Scope, p.Result)
 	case EventTypeExecutionSlotAvailable:
 		p, ok := e.Payload.(*ExecutionSlotAvailablePayload)
 		if !ok || p == nil {

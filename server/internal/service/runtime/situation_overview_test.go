@@ -66,6 +66,9 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	}
 	situation := &Situation{}
 	populateGeneralSituation(self, situation)
+	if !strings.Contains(situation.Environment.Sessions, "Conversation (session_id=") || strings.Contains(situation.Environment.Sessions, "With no other participants (session_id=") {
+		t.Fatalf("conversation ID was attached to participants: %q", situation.Environment.Sessions)
+	}
 	for _, item := range []struct {
 		label, value, omitted string
 	}{
@@ -96,12 +99,12 @@ func TestOngoingActionSummaryUsesPlanMeaning(t *testing.T) {
 	record := model.Action{Type: model.ActionTypeChat, Background: "A asked about dinner", Reason: "I will reply",
 		PlanJSON: `{"guidance":"Tell A I can meet tomorrow","session_id":42}`}
 	summary := formatOngoingAction(record)
-	for _, part := range []string{"Tell A I can meet tomorrow", "Session #42"} {
+	for _, part := range []string{"Tell A I can meet tomorrow", "(session_id=42)"} {
 		if !strings.Contains(summary, part) {
 			t.Fatalf("missing %q in %q", part, summary)
 		}
 	}
-	if strings.Contains(summary, "guidance\"") || strings.Contains(summary, "session_id") {
+	if strings.Contains(summary, "guidance\"") || strings.Contains(summary, "\"session_id\"") {
 		t.Fatalf("storage JSON entered the Situation: %q", summary)
 	}
 }

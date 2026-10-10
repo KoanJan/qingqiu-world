@@ -62,7 +62,7 @@ func ComprehendMessage(
 	for _, message := range messages {
 		result.ReadMessageIDs = append(result.ReadMessageIDs, message.ID)
 	}
-	eventDescription := formatMessageRange(messages)
+	eventDescription := formatMessageRange(messages, ac.PersonID)
 	if eventDescription == "" {
 		applogger.Info("chat.ComprehendMessage: empty event, skipping",
 			"person_id", ac.PersonID,
@@ -191,7 +191,7 @@ func kbSegmentCount(retrieval *types.KBRetrieval) int {
 }
 
 // formatMessageRange describes the unread message batch as one chat Event.
-func formatMessageRange(messages []model.Message) string {
+func formatMessageRange(messages []model.Message, selfPersonID int64) string {
 	if len(messages) == 0 {
 		return ""
 	}
@@ -209,13 +209,10 @@ func formatMessageRange(messages []model.Message) string {
 		names = map[int64]string{}
 	}
 	lines := make([]string, 0, len(messages)+1)
-	lines = append(lines, "[Private chat]")
+	lines = append(lines, fmt.Sprintf("[Chat messages from session (session_id=%d)]", messages[0].SessionID))
 	for _, message := range messages {
-		name := names[message.PersonID]
-		if name == "" {
-			name = fmt.Sprintf("person_%d", message.PersonID)
-		}
-		lines = append(lines, fmt.Sprintf("%s [%s]: %s", name, message.CreatedAt.Format("2006-01-02 15:04:05"), message.Content))
+		name := messageSpeakerName(names, message.PersonID, selfPersonID)
+		lines = append(lines, fmt.Sprintf("- At %s — %s", message.CreatedAt.Format("2006-01-02 15:04:05"), memory.FormatChatSpeech(name, message.Content)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -240,10 +237,7 @@ func conversationMessagesFromModels(messages []model.Message, selfPersonID int64
 
 	history := make([]types.ConversationMessage, 0, len(messages))
 	for _, message := range messages {
-		personName := names[message.PersonID]
-		if personName == "" {
-			personName = fmt.Sprintf("person_%d", message.PersonID)
-		}
+		personName := messageSpeakerName(names, message.PersonID, selfPersonID)
 		history = append(history, types.ConversationMessage{
 			ID:         message.ID,
 			PersonID:   message.PersonID,
@@ -254,6 +248,20 @@ func conversationMessagesFromModels(messages []model.Message, selfPersonID int64
 		})
 	}
 	return history
+}
+
+// messageSpeakerName keeps the same first-person attribution in the current
+// batch and the preceding conversation window. A missing name is explicit and
+// logged instead of masquerading as a real name made from a database ID.
+func messageSpeakerName(names map[int64]string, personID, selfPersonID int64) string {
+	if personID == selfPersonID {
+		return "You"
+	}
+	if name := names[personID]; name != "" {
+		return name
+	}
+	applogger.Error("chat: message speaker identity missing", "person_id", personID)
+	return fmt.Sprintf("Unknown person (person_id=%d)", personID)
 }
 
 // loadOwnMessageActions resolves only the current agent's outgoing messages.

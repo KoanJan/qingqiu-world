@@ -6,11 +6,14 @@ import (
 	"time"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 )
 
 // eventSourceContent resolves the authoritative domain row for lexical
-// indexing and recall. A self-held Event retains its original JSON snapshot.
+// indexing. Its person IDs are source data, not agent-facing speaker labels.
+// A self-held Event retains its original JSON snapshot.
 func eventSourceContent(event model.Event) (string, time.Time, error) {
 	if event.RefID == 0 {
 		if event.PayloadJSON == "" {
@@ -74,6 +77,93 @@ func eventSourceContent(event model.Event) (string, time.Time, error) {
 	}
 }
 
+// presentedPersonName resolves one participant relative to the observer. A
+// missing identity is logged and stays unknown instead of becoming a bare ID.
+func presentedPersonName(observerID, personID, eventID int64) string {
+	if personID == observerID {
+		return "You"
+	}
+	names, err := dops.GetPersonNames([]int64{personID})
+	if err != nil {
+		applogger.Error("memory: event participant identity unavailable", "event_id", eventID, "person_id", personID, "error", err)
+		return "Unknown person"
+	}
+	if name := names[personID]; name != "" {
+		return name
+	}
+	applogger.Error("memory: event participant identity missing", "event_id", eventID, "person_id", personID)
+	return "Unknown person"
+}
+
+// FormatChatSpeech presents the speaker and their words as one complete claim.
+// Callers place the conversation and time outside this claim so record IDs do
+// not appear to identify the speaker.
+func FormatChatSpeech(speaker, content string) string {
+	return fmt.Sprintf("%s said: %q.", speaker, content)
+}
+
+// presentedEventContent turns an observed source into a statement addressed to
+// its observer. The neutral source text above remains stable for indexing.
+func presentedEventContent(observerID int64, event model.Event) (string, time.Time, error) {
+	if event.RefID == 0 {
+		content, occurred, err := eventSourceContent(event)
+		if err != nil {
+			return "", time.Time{}, err
+		}
+		return "(recorded JSON payload) " + content, occurred, nil
+	}
+	switch event.EventType {
+	case model.EventTypeMessage:
+		var message model.Message
+		if err := database.DB.First(&message, event.RefID).Error; err != nil {
+			return "", time.Time{}, err
+		}
+		return fmt.Sprintf("Chat message from session (session_id=%d) — %s", message.SessionID, FormatChatSpeech(presentedPersonName(observerID, message.PersonID, event.ID), message.Content)), message.CreatedAt, nil
+	case model.EventTypeJinshu, model.EventTypeJinshuSent:
+		var row model.Jinshu
+		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+			return "", time.Time{}, err
+		}
+		sender := presentedPersonName(observerID, row.FromPersonID, event.ID)
+		recipient := presentedPersonName(observerID, row.ToPersonID, event.ID)
+		if row.ToPersonID == observerID {
+			recipient = "you"
+		}
+		return fmt.Sprintf("Jinshu (jinshu_id=%d) — %s sent it to %s about %q: %q.", row.ID, sender, recipient, row.Topic, row.Description), event.CreatedAt, nil
+	case model.EventTypeWorkCompleted:
+		var work model.Work
+		if err := database.DB.First(&work, event.RefID).Error; err != nil {
+			return "", time.Time{}, err
+		}
+		content := fmt.Sprintf("A work completion event was recorded for %q (work_id=%d). The work's current status is %s.", work.Description, work.ID, work.Status.Label())
+		var handoff model.FocusHandoff
+		result := database.DB.Where("work_id = ? AND person_id = ? AND created_at <= ?", work.ID, work.PersonID, event.CreatedAt).
+			Order("created_at DESC, id DESC").Limit(1).Find(&handoff)
+		if result.Error != nil {
+			return "", time.Time{}, result.Error
+		}
+		if result.RowsAffected > 0 {
+			content += " Focus reported: " + handoff.Summary
+		} else {
+			content += " No Focus result was recorded at that time."
+		}
+		return content, event.CreatedAt, nil
+	default:
+		return eventSourceContent(event)
+	}
+}
+
+// presentedEventText keeps a fully attributed message or Jinshu readable as a
+// sentence; other events still need their source type to explain the payload.
+func presentedEventText(event model.Event, content string) string {
+	switch event.EventType {
+	case model.EventTypeMessage, model.EventTypeJinshu, model.EventTypeJinshuSent, model.EventTypeWorkCompleted:
+		return content
+	default:
+		return fmt.Sprintf("%s: %s", eventTypeName(event.EventType), content)
+	}
+}
+
 // DescribeObservedEvent reads one authoritative event for a short-lived
 // cognitive context. It applies the same observation and source permissions as
 // recall, and keeps reported outcomes attributed to their source.
@@ -89,11 +179,11 @@ func DescribeObservedEvent(personID, eventID int64) (string, error) {
 	if !allowed {
 		return "", fmt.Errorf("person %d cannot read event %d", personID, eventID)
 	}
-	content, _, err := eventSourceContent(event)
+	content, _, err := presentedEventContent(personID, event)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("%s: %s", eventTypeName(event.EventType), content), nil
+	return presentedEventText(event, content), nil
 }
 
 // canReadEvent checks both observation and the current domain authorization.
@@ -171,19 +261,25 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 		if err != nil || !allowed {
 			return item, false, err
 		}
-		content, occurred, err := eventSourceContent(event)
+		content, occurred, err := presentedEventContent(personID, event)
 		if err != nil {
 			return item, false, err
 		}
 		item.OccurredAt = occurred
-		item.Text = fmt.Sprintf("Observed %s: %s", eventTypeName(event.EventType), limitRecallText(content))
+		item.Text = "Observed: " + limitRecallText(presentedEventText(event, content))
+		if event.EventType == model.EventTypeMessage {
+			item.Text = limitRecallText(content)
+		}
+		if !strings.HasSuffix(item.Text, ".") && !strings.HasSuffix(item.Text, "!") && !strings.HasSuffix(item.Text, "?") {
+			item.Text += "."
+		}
 		var decision model.Decision
 		lookup := database.DB.Where("person_id = ? AND event_id = ?", personID, event.ID).Limit(1).Find(&decision)
 		if lookup.Error != nil {
 			return item, false, lookup.Error
 		}
 		if lookup.RowsAffected > 0 {
-			item.Text += fmt.Sprintf(" Your later decision_id=%d can be used to inspect its chosen actions.", decision.ID)
+			item.Text += fmt.Sprintf(" You later made a decision about this event (decision_id=%d).", decision.ID)
 		}
 		effectType, effectID := event.EffectTarget()
 		if effectID > 0 {
@@ -196,7 +292,7 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 				return item, false, err
 			}
 			for _, origin := range origins {
-				item.Text += fmt.Sprintf(" Produced by your action_id=%d.", origin.ActionID)
+				item.Text += fmt.Sprintf(" This record resulted from your action (action_id=%d).", origin.ActionID)
 			}
 		}
 	case model.MemorySourceAction:
@@ -216,7 +312,20 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 		if row.Status == model.ActionStatusEnded {
 			status = "ended"
 		}
-		item.Text = fmt.Sprintf("Your %s action from decision_id=%d (trigger event_id=%d), execution %s. At the time: background=%s; reason=%s; plan=%s", row.Type.Label(), decision.ID, decision.EventID, status, limitRecallText(row.Background), limitRecallText(row.Reason), limitRecallText(row.PlanJSON))
+		item.Text = fmt.Sprintf("You chose to %s (decision_id=%d).", row.Type.Label(), decision.ID)
+		if decision.EventID > 0 {
+			item.Text += fmt.Sprintf(" This decision responded to an event (event_id=%d).", decision.EventID)
+		}
+		item.Text += fmt.Sprintf(" This action's recorded status is %s.", status)
+		if row.Background != "" {
+			item.Text += fmt.Sprintf(" Your understanding at the time: %q.", limitRecallText(row.Background))
+		}
+		if row.Reason != "" {
+			item.Text += fmt.Sprintf(" Your stated reason: %q.", limitRecallText(row.Reason))
+		}
+		if row.PlanJSON != "" {
+			item.Text += " Plan (JSON): " + limitRecallText(row.PlanJSON)
+		}
 		var effects []model.ActionEffect
 		var effectCount int64
 		if err := database.DB.Model(&model.ActionEffect{}).Where("action_id = ?", row.ID).Count(&effectCount).Error; err != nil {
@@ -226,13 +335,13 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 			return item, false, err
 		}
 		if effectCount > 0 {
-			item.Text += fmt.Sprintf("; %d recorded effect link(s). Result events can be read with recall_event(action_id=%d)", effectCount, row.ID)
+			item.Text += fmt.Sprintf(" %d result link(s) were recorded. To inspect their events, use recall_event (action_id=%d).", effectCount, row.ID)
 		}
 		for _, effect := range effects {
-			item.Text += fmt.Sprintf("; recorded %s effect id=%d", effectTypeName(effect.EffectType), effect.EffectID)
+			item.Text += fmt.Sprintf(" Recorded %s effect (%s=%d).", effectTypeName(effect.EffectType), effectTargetIDName(effect.EffectType), effect.EffectID)
 		}
 		if effectCount > int64(len(effects)) {
-			item.Text += "; additional effect links are not expanded here"
+			item.Text += " Further result links are not shown."
 		}
 	case model.MemorySourceWork:
 		var row model.Work
@@ -243,7 +352,13 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 			return item, false, nil
 		}
 		item.OccurredAt = row.CreatedAt
-		item.Text = fmt.Sprintf("Your work %d in session %d, current status %s, phase %d: %s", row.ID, row.SessionID, workStatusName(row.Status), row.FocusPhase, limitRecallText(row.Description))
+		item.Text = fmt.Sprintf("Your work on %q (work_id=%d) currently has status %s.", limitRecallText(row.Description), row.ID, row.Status.Label())
+		if row.SessionID > 0 {
+			item.Text += fmt.Sprintf(" It originated in a conversation (session_id=%d).", row.SessionID)
+		}
+		if row.Status == model.WorkStatusRunning {
+			item.Text += fmt.Sprintf(" Focus phase: %s.", row.FocusPhase.Label())
+		}
 		var effects []model.ActionEffect
 		var originCount int64
 		if err := database.DB.Model(&model.ActionEffect{}).Where("effect_type = ? AND effect_id = ?", model.ActionEffectWork, row.ID).Count(&originCount).Error; err != nil {
@@ -255,11 +370,11 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 		for _, effect := range effects {
 			var action model.Action
 			if err := database.DB.First(&action, effect.ActionID).Error; err == nil {
-				item.Text += fmt.Sprintf("; created by your action_id=%d, decision_id=%d", action.ID, action.DecisionID)
+				item.Text += fmt.Sprintf(" You started it through an action (action_id=%d). That action came from a decision (decision_id=%d).", action.ID, action.DecisionID)
 			}
 		}
 		if originCount > int64(len(effects)) {
-			item.Text += "; further origin links are not expanded here"
+			item.Text += " Further origin links are not shown."
 		}
 	case model.MemorySourceFocusHandoff:
 		var row model.FocusHandoff
@@ -270,7 +385,19 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 			return item, false, nil
 		}
 		item.OccurredAt = row.CreatedAt
-		item.Text = fmt.Sprintf("Your Focus handoff for work_id=%d, session_id=%d, status=%s. Orientation: %s. Summary: %s. Recorded findings: %s. Artifact references: %s. Unresolved: %s. Next: %s", row.WorkID, row.SessionID, handoffStatusName(row.Status), limitRecallText(row.Orientation), limitRecallText(row.Summary), limitRecallText(row.ConfirmedFindings), limitRecallText(row.ArtifactReferences), limitRecallText(row.Unresolved), limitRecallText(row.NextStep))
+		item.Text = fmt.Sprintf("Focus reported on your work (work_id=%d).", row.WorkID)
+		if row.SessionID > 0 {
+			item.Text += fmt.Sprintf(" That work originated in a conversation (session_id=%d).", row.SessionID)
+		}
+		item.Text += fmt.Sprintf(" The handoff's recorded status is %s.", handoffStatusName(row.Status))
+		for _, detail := range []struct{ label, value string }{
+			{"Orientation", row.Orientation}, {"Summary", row.Summary}, {"Recorded findings", row.ConfirmedFindings},
+			{"Artifact references", row.ArtifactReferences}, {"Unresolved", row.Unresolved}, {"Next step", row.NextStep},
+		} {
+			if detail.value != "" {
+				item.Text += " " + detail.label + ": " + limitRecallText(detail.value) + "."
+			}
+		}
 	default:
 		return item, false, fmt.Errorf("unknown memory source kind %d", kind)
 	}
@@ -343,19 +470,26 @@ func effectTypeName(t model.ActionEffectType) string {
 	}
 }
 
-// workStatusName renders a Work's persisted status in recall output.
-func workStatusName(s model.WorkStatus) string {
-	switch s {
-	case model.WorkStatusRunning:
-		return "running"
-	case model.WorkStatusCompleted:
-		return "completed"
-	case model.WorkStatusFailed:
-		return "failed"
-	case model.WorkStatusAbandoned:
-		return "abandoned"
+// effectTargetIDName gives a result reference the identifier expected by a
+// follow-up recall tool instead of exposing an ambiguous generic effect_id.
+func effectTargetIDName(t model.ActionEffectType) string {
+	switch t {
+	case model.ActionEffectWork, model.ActionEffectWorkControl:
+		return "work_id"
+	case model.ActionEffectMessage:
+		return "message_id"
+	case model.ActionEffectScheduledEvent:
+		return "scheduled_event_id"
+	case model.ActionEffectJinshu:
+		return "jinshu_id"
+	case model.ActionEffectSelfHeldEvent:
+		return "event_id"
+	case model.ActionEffectWorkspace:
+		return "workspace_id"
+	case model.ActionEffectPSDigest:
+		return "ps_digest_id"
 	default:
-		return "unknown"
+		return "record_id"
 	}
 }
 

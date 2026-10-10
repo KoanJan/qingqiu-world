@@ -155,7 +155,7 @@ func (r *agentRuntime) executionSlotSummary() string {
 	if slot.private {
 		return "occupied by your current private-space activity"
 	}
-	return fmt.Sprintf("occupied by Work #%d", slot.workID)
+	return fmt.Sprintf("occupied by work (work_id=%d)", slot.workID)
 }
 
 // awaitExecutionSlotRelease prevents a completion event from overtaking loop exit.

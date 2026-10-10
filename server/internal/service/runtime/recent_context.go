@@ -101,21 +101,21 @@ func buildRecentExperienceSummary(personID, currentEventID int64) string {
 	var lines []string
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		var parts []string
+		line := "- " + entry.when.Format("01-02 15:04:05") + " "
 		if entry.eventID > 0 {
 			description, err := memory.DescribeObservedEvent(personID, entry.eventID)
 			if err != nil {
 				applogger.Error("recent experience: failed to read observed event", "person_id", personID, "event_id", entry.eventID, "error", err)
 				continue
 			}
-			parts = append(parts, "Observed: "+shortContextText(description, 240))
+			line += shortContextText(description, 240)
 		} else {
-			parts = append(parts, "Heartbeat")
+			line += "A heartbeat gave you a chance to act."
 		}
 		if entry.decision != nil {
-			parts = append(parts, describeRecentDecision(*entry.decision))
+			line += "\n  " + describeRecentDecision(*entry.decision)
 		}
-		lines = append(lines, "- "+entry.when.Format("01-02 15:04:05")+" "+strings.Join(parts, "; "))
+		lines = append(lines, line)
 	}
 	// Keep whole entries and prefer the newest ones when a verbose source
 	// exhausts the prompt budget.
@@ -133,11 +133,11 @@ func describeRecentDecision(decision model.Decision) string {
 		return "Decision recorded; actions unavailable"
 	}
 	if len(actions) == 0 {
-		return "Decided: no action"
+		return "You chose not to act"
 	}
 	var parts []string
 	for _, action := range actions {
-		part := action.Type.Label()
+		part := "You chose to " + action.Type.Label()
 		if action.Type == model.ActionTypeRouteFocusedWork || action.Type == model.ActionTypeCancelFocusedWork {
 			var target struct {
 				TargetWorkID int64 `json:"target_work_id"`
@@ -145,11 +145,11 @@ func describeRecentDecision(decision model.Decision) string {
 			if err := json.Unmarshal([]byte(action.PlanJSON), &target); err != nil {
 				applogger.Error("recent experience: invalid Work control plan", "action_id", action.ID, "error", err)
 			} else if target.TargetWorkID > 0 {
-				part += fmt.Sprintf(" Work #%d", target.TargetWorkID)
+				part += fmt.Sprintf(" (work_id=%d)", target.TargetWorkID)
 			}
 		}
 		if action.Reason != "" {
-			part += " (reason: " + shortContextText(action.Reason, 90) + ")"
+			part += fmt.Sprintf(". Your stated reason: %q", shortContextText(action.Reason, 90))
 		}
 		var effects []model.ActionEffect
 		if err := database.DB.Where("action_id = ?", action.ID).Order("id").Limit(3).Find(&effects).Error; err != nil {
@@ -158,22 +158,25 @@ func describeRecentDecision(decision model.Decision) string {
 		for _, effect := range effects {
 			switch effect.EffectType {
 			case model.ActionEffectWork:
-				part += fmt.Sprintf("; created Work #%d", effect.EffectID)
+				part += fmt.Sprintf("; a work was created (work_id=%d)", effect.EffectID)
 			case model.ActionEffectMessage:
-				part += fmt.Sprintf("; sent Message #%d", effect.EffectID)
+				part += fmt.Sprintf("; a message was sent (message_id=%d)", effect.EffectID)
 			case model.ActionEffectWorkControl:
-				part += fmt.Sprintf("; control accepted by Work #%d", effect.EffectID)
+				part += fmt.Sprintf("; the work accepted the control (work_id=%d)", effect.EffectID)
 			default:
 				part += "; recorded an effect"
 			}
 		}
 		if len(effects) == 0 && action.Status == model.ActionStatusEnded &&
 			(action.Type == model.ActionTypeCancelFocusedWork || action.Type == model.ActionTypeRouteFocusedWork) {
-			part += "; no accepted control recorded"
+			part += "; no accepted control was recorded"
 		}
 		parts = append(parts, part)
 	}
-	return "Decided: " + strings.Join(parts, ", ")
+	if len(parts) == 1 {
+		return parts[0]
+	}
+	return "You chose these actions together, without an execution order:\n  - " + strings.Join(parts, "\n  - ")
 }
 
 // buildWorkControlContext reads explicit control attempts for the Work named by
@@ -217,17 +220,17 @@ func buildWorkControlContext(personID, workID int64) string {
 		if control.Type == model.ActionTypeCancelFocusedWork {
 			kind = "Cancel"
 		}
-		line := fmt.Sprintf("- %s Work #%d", kind, workID)
+		line := fmt.Sprintf("- You attempted to %s the work (work_id=%d)", strings.ToLower(kind), workID)
 		if control.TriggerEventID > 0 {
 			source, err := memory.DescribeObservedEvent(personID, control.TriggerEventID)
 			if err != nil {
 				applogger.Error("work control context: failed to read trigger", "action_id", control.ID, "event_id", control.TriggerEventID, "error", err)
 			} else {
-				line += "; prompted by " + shortContextText(source, 190)
+				line += "; prompted by: " + shortContextText(source, 190)
 			}
 		}
 		if control.Reason != "" {
-			line += "; reason: " + shortContextText(control.Reason, 100)
+			line += fmt.Sprintf("; your stated reason: %q", shortContextText(control.Reason, 100))
 		}
 		var accepted int64
 		if err := database.DB.Model(&model.ActionEffect{}).
@@ -236,15 +239,15 @@ func buildWorkControlContext(personID, workID int64) string {
 			applogger.Error("work control context: failed to check acceptance", "action_id", control.ID, "error", err)
 		}
 		if accepted > 0 {
-			line += "; accepted by the Work"
+			line += "; the work accepted the control"
 		} else if control.Status == model.ActionStatusEnded {
-			line += "; no accepted control recorded"
+			line += "; no accepted control was recorded"
 		} else {
 			line += "; still in progress"
 		}
 		lines = append(lines, line)
 	}
-	return "Control attempts concerning this Work (an attempt is not proof of an effect):\n" + strings.Join(lines, "\n") + "\n"
+	return "Your attempts to change this work (an attempt alone does not prove an effect):\n" + strings.Join(lines, "\n") + "\n"
 }
 
 // shortContextText keeps a persisted source readable within the Situation's

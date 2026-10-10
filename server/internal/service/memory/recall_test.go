@@ -38,6 +38,55 @@ func recallTestDB(t testing.TB) *gorm.DB {
 	return db
 }
 
+// TestObservedMessagesNameTheirSpeakers keeps the agent-facing record distinct
+// from the person-ID source text used by the lexical index.
+func TestObservedMessagesNameTheirSpeakers(t *testing.T) {
+	db := recallTestDB(t)
+	for _, person := range []model.Person{{ID: 13, Name: "粒粒"}, {ID: 1, Name: "Patrick"}} {
+		if err := db.Create(&person).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&model.Session{ID: 25}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ParticipantSession{SessionID: 25, ParticipantID: 13}).Error; err != nil {
+		t.Fatal(err)
+	}
+	for _, spec := range []struct {
+		personID int64
+		content  string
+		wanted   string
+	}{
+		{1, "你好呀粒粒", "Chat message from session (session_id=25) — Patrick said: \"你好呀粒粒\"."},
+		{13, "嗯", "Chat message from session (session_id=25) — You said: \"嗯\"."},
+	} {
+		message := model.Message{SessionID: 25, PersonID: spec.personID, Content: spec.content}
+		if err := db.Create(&message).Error; err != nil {
+			t.Fatal(err)
+		}
+		event := model.Event{EventType: model.EventTypeMessage, RefID: message.ID}
+		if err := db.Create(&event).Error; err != nil {
+			t.Fatal(err)
+		}
+		if err := db.Create(&model.AgentObservation{PersonID: 13, EventID: event.ID}).Error; err != nil {
+			t.Fatal(err)
+		}
+		observed, err := DescribeObservedEvent(13, event.ID)
+		if err != nil || !strings.Contains(observed, spec.wanted) {
+			t.Fatalf("recent experience speaker: %q, err=%v", observed, err)
+		}
+		item, ok, err := readRecallItem(13, model.MemorySourceEvent, event.ID)
+		if err != nil || !ok || !strings.Contains(item.Text, spec.wanted) {
+			t.Fatalf("recall speaker: %+v, ok=%v, err=%v", item, ok, err)
+		}
+		indexed, _, err := eventSourceContent(event)
+		if err != nil || !strings.Contains(indexed, fmt.Sprintf("Person %d said", spec.personID)) {
+			t.Fatalf("neutral index source changed: %q, err=%v", indexed, err)
+		}
+	}
+}
+
 // BenchmarkRecallMessageHistory measures bounded recent and lexical reads
 // against a longer observed conversation with the production indexes.
 func BenchmarkRecallMessageHistory(b *testing.B) {
@@ -682,7 +731,7 @@ func TestRecallWorkAndHandoffKeepDistinctTimesAndClaims(t *testing.T) {
 	created := time.Now().Add(-2 * time.Hour).Truncate(time.Second)
 	completed := created.Add(time.Hour)
 	handedOff := completed.Add(time.Minute)
-	work := model.Work{PersonID: 1, Description: "整理知识库", Status: model.WorkStatusRunning, CreatedAt: created}
+	work := model.Work{PersonID: 1, SessionID: 25, Description: "整理知识库", Status: model.WorkStatusRunning, CreatedAt: created}
 	if err := db.Create(&work).Error; err != nil {
 		t.Fatal(err)
 	}
@@ -694,7 +743,7 @@ func TestRecallWorkAndHandoffKeepDistinctTimesAndClaims(t *testing.T) {
 		t.Fatal(err)
 	}
 	handoff := model.FocusHandoff{
-		PersonID: 1, WorkID: work.ID, Status: model.FocusHandoffCompleted,
+		PersonID: 1, WorkID: work.ID, SessionID: 25, Status: model.FocusHandoffCompleted,
 		Orientation: "原任务", Summary: "交付结果", ConfirmedFindings: "已确认资料", ArtifactReferences: "资料位置", Unresolved: "尚未核对", NextStep: "请查阅", CreatedAt: handedOff,
 	}
 	if err := db.Create(&handoff).Error; err != nil {
@@ -710,9 +759,9 @@ func TestRecallWorkAndHandoffKeepDistinctTimesAndClaims(t *testing.T) {
 		at    time.Time
 		want  []string
 	}{
-		{RecallWorks, work.ID, created, []string{"current status completed", "整理知识库（已完成）"}},
+		{RecallWorks, work.ID, created, []string{"currently has status completed", "整理知识库（已完成）", "It originated in a conversation (session_id=25)."}},
 		{RecallEvents, event.ID, completed, []string{"completion event", "current status"}},
-		{RecallHandoffs, handoff.ID, handedOff, []string{"交付结果", "已确认资料", "资料位置", "尚未核对", "请查阅"}},
+		{RecallHandoffs, handoff.ID, handedOff, []string{"That work originated in a conversation (session_id=25).", "交付结果", "已确认资料", "资料位置", "尚未核对", "请查阅"}},
 	} {
 		page, err := Recall(RecallRequest{Scope: spec.scope, PersonID: 1, SourceID: spec.id})
 		if err != nil || len(page.Items) != 1 || !page.Items[0].OccurredAt.Equal(spec.at) {
@@ -722,6 +771,9 @@ func TestRecallWorkAndHandoffKeepDistinctTimesAndClaims(t *testing.T) {
 			if !strings.Contains(page.Items[0].Text, phrase) {
 				t.Fatalf("source %d omitted %q: %+v", spec.scope, phrase, page.Items[0])
 			}
+		}
+		if strings.Contains(page.Items[0].Text, fmt.Sprintf("(work_id=%d, session_id=25)", work.ID)) {
+			t.Fatalf("the source conversation was presented as part of the work ID: %+v", page.Items[0])
 		}
 		if spec.scope == RecallEvents && strings.Contains(page.Items[0].Text, handoff.Summary) {
 			t.Fatalf("later handoff rewrote the earlier completion Event: %+v", page.Items[0])

@@ -10,6 +10,7 @@ import (
 	"unicode/utf8"
 
 	"qingqiu-world-server/internal/dops"
+	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
 
@@ -49,7 +50,7 @@ type decideJinshuArguments struct {
 
 // decideJinshuItem is the bounded delivery metadata returned by list tools.
 type decideJinshuItem struct {
-	ID        int64  `json:"id"`
+	JinshuID  int64  `json:"jinshu_id"`
 	From      string `json:"from"`
 	To        string `json:"to"`
 	Topic     string `json:"topic"`
@@ -130,7 +131,7 @@ func listDecideJinshu(personID int64, name, query string, page, offset, limit in
 	}
 	items := make([]decideJinshuItem, 0, len(records))
 	for _, record := range records {
-		items = append(items, newDecideJinshuItem(record, names, name == "list_received_jinshu" && record.ToPersonID == personID))
+		items = append(items, newDecideJinshuItem(record, names, personID, name == "list_received_jinshu" && record.ToPersonID == personID))
 	}
 	result := struct {
 		Results  []decideJinshuItem `json:"results"`
@@ -160,7 +161,7 @@ func readDecideJinshu(personID, jinshuID int64) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	detail := decideJinshuDetail{decideJinshuItem: newDecideJinshuItem(*record, names, record.ToPersonID == personID), Description: record.Description}
+	detail := decideJinshuDetail{decideJinshuItem: newDecideJinshuItem(*record, names, personID, record.ToPersonID == personID), Description: record.Description}
 	encoded, err := json.Marshal(detail)
 	if err != nil {
 		return "", err
@@ -192,11 +193,11 @@ func namesForDecideJinshu(records []model.Jinshu) (map[int64]string, error) {
 }
 
 // newDecideJinshuItem exposes read status only for the recipient's own view.
-func newDecideJinshuItem(record model.Jinshu, names map[int64]string, showIsRead bool) decideJinshuItem {
+func newDecideJinshuItem(record model.Jinshu, names map[int64]string, selfPersonID int64, showIsRead bool) decideJinshuItem {
 	item := decideJinshuItem{
-		ID:        record.ID,
-		From:      decideJinshuPersonName(names, record.FromPersonID),
-		To:        decideJinshuPersonName(names, record.ToPersonID),
+		JinshuID:  record.ID,
+		From:      decideJinshuPersonName(names, record.FromPersonID, selfPersonID),
+		To:        decideJinshuPersonName(names, record.ToPersonID, selfPersonID),
 		Topic:     record.Topic,
 		CreatedAt: record.CreatedAt.Format(time.RFC3339),
 	}
@@ -206,12 +207,17 @@ func newDecideJinshuItem(record model.Jinshu, names map[int64]string, showIsRead
 	return item
 }
 
-// decideJinshuPersonName retains a stable ID fallback when a name is absent.
-func decideJinshuPersonName(names map[int64]string, personID int64) string {
+// decideJinshuPersonName marks the reader's own role and makes a missing
+// identity explicit instead of presenting a database ID as a name.
+func decideJinshuPersonName(names map[int64]string, personID, selfPersonID int64) string {
+	if personID == selfPersonID {
+		return "You"
+	}
 	if name := names[personID]; name != "" {
 		return name
 	}
-	return fmt.Sprintf("person_%d", personID)
+	applogger.Error("decide Jinshu participant identity missing", "person_id", personID)
+	return fmt.Sprintf("Unknown person (person_id=%d)", personID)
 }
 
 // truncateUTF8Bytes fits a description in a byte budget without cutting a rune.

@@ -20,6 +20,48 @@ import (
 	"qingqiu-world-server/internal/service/llm"
 )
 
+// TestWorkspaceRecallExplainsDeclaredUse verifies that Decide sees a workspace
+// and its use as named records, without raw ownership or numeric enum fields.
+func TestWorkspaceRecallExplainsDeclaredUse(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/workspace-recall.db"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Workspace{}, &model.WorkspaceUse{}, &model.Work{},
+		&model.ActionEffect{}, &model.Action{}, &model.Decision{}); err != nil {
+		t.Fatal(err)
+	}
+	oldDB := database.DB
+	database.DB = db
+	t.Cleanup(func() { database.DB = oldDB })
+	workspace := model.Workspace{PersonID: 13, RelativePath: "work/brief", Name: "简报", Purpose: "整理资料"}
+	if err := db.Create(&workspace).Error; err != nil {
+		t.Fatal(err)
+	}
+	work := model.Work{PersonID: 13, Description: "整理知识库", Status: model.WorkStatusCompleted}
+	if err := db.Create(&work).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.WorkspaceUse{WorkspaceID: workspace.ID, SourceType: model.WorkspaceUseWork,
+		SourceID: work.ID, Role: model.WorkspaceUseDefault}).Error; err != nil {
+		t.Fatal(err)
+	}
+	output, err := executeWorkspaceRecall(13, recallArguments{WorkspaceID: workspace.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, wanted := range []string{`"workspace_id":`, `"name":"简报"`, "You used this workspace as the default workspace", "(work_id=", "currently completed"} {
+		if !strings.Contains(output, wanted) {
+			t.Fatalf("workspace recall omits %q: %s", wanted, output)
+		}
+	}
+	for _, unwanted := range []string{`"person_id":`, `"source_type":`, `"source_id":`, `"role":`, `"work_status":`} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("workspace recall leaked storage field %q: %s", unwanted, output)
+		}
+	}
+}
+
 // TestDecideLoopBoundsNetworkRequests checks the actual tool list sent to an
 // OpenAI-compatible endpoint, including the terminal request after recalls.
 func TestDecideLoopBoundsNetworkRequests(t *testing.T) {

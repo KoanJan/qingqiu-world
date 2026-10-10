@@ -247,31 +247,33 @@ func RecallEntityProfile(personID int64, entityType model.EntityType, entityID i
 	if personID <= 0 || entityID <= 0 {
 		return "", errors.New("invalid profile identity")
 	}
+	var subject string
 	switch entityType {
 	case model.EntityTypePerson:
-		var count int64
-		if err := database.DB.Model(&model.Person{}).Where("id = ?", entityID).Count(&count).Error; err != nil {
+		var person model.Person
+		if err := database.DB.Where("id = ?", entityID).Take(&person).Error; errors.Is(err, gorm.ErrRecordNotFound) {
+			return "", errors.New("person is not contactable")
+		} else if err != nil {
 			return "", err
 		}
-		if count == 0 {
-			return "", errors.New("person is not contactable")
-		}
+		subject = fmt.Sprintf("%s (person_id=%d)", person.Name, person.ID)
 	case model.EntityTypeSession:
 		if !canReadSession(personID, entityID) {
 			return "", errors.New("session is not accessible")
 		}
+		subject = fmt.Sprintf("the conversation (session_id=%d)", entityID)
 	default:
 		return "", errors.New("invalid entity type")
 	}
 	var profile model.EntityProfile
 	err := database.DB.Where("person_id = ? AND entity_type = ? AND entity_id = ?", personID, entityType, entityID).Take(&profile).Error
 	if errors.Is(err, gorm.ErrRecordNotFound) {
-		return "No current impression is recorded for this entity.", nil
+		return fmt.Sprintf("No current impression is recorded for %s.", subject), nil
 	}
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Your current impression of entity type %d, id %d (updated %s): %s", entityType, entityID, profile.LastUpdatedAt.Format(time.RFC3339), profile.Narrative), nil
+	return fmt.Sprintf("Your current impression of %s, last updated %s: %s", subject, profile.LastUpdatedAt.Format(time.RFC3339), profile.Narrative), nil
 }
 
 // canReadSession checks current session membership before returning a

@@ -165,10 +165,10 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 	}
 	var workLines []string
 	for _, w := range works {
-		line := fmt.Sprintf("- Work #%d, running: %s", w.ID, truncateWorkDescription(w.Description))
+		line := fmt.Sprintf("- Active work (work_id=%d): %q", w.ID, truncateWorkDescription(w.Description))
 		if database.DB.Migrator().HasTable(&model.WorkspaceUse{}) {
 			if selected, err := dops.GetDefaultWorkWorkspace(personID, w.ID); err == nil {
-				line += fmt.Sprintf("; default Workspace #%d %s (%s)", selected.ID, selected.Name, selected.RelativePath)
+				line += fmt.Sprintf("; default workspace: %s (workspace_id=%d, path=%q)", selected.Name, selected.ID, selected.RelativePath)
 			} else {
 				applogger.Error("populateGeneralSituation: running Work has no default Workspace", "person_id", personID, "work_id", w.ID, "error", err)
 			}
@@ -193,8 +193,13 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 // formatOngoingAction presents only the plan facts that help with the next
 // choice. Persisted PlanJSON is a storage format, not agent-facing language.
 func formatOngoingAction(record model.Action) string {
-	line := fmt.Sprintf("- ongoing %s action: %s; reason: %s", record.Type.Label(),
-		truncateWorkDescription(record.Background), truncateWorkDescription(record.Reason))
+	line := fmt.Sprintf("- You have an ongoing action to %s (action_id=%d)", record.Type.Label(), record.ID)
+	if record.Background != "" {
+		line += fmt.Sprintf(". Your understanding at the time: %q", truncateWorkDescription(record.Background))
+	}
+	if record.Reason != "" {
+		line += fmt.Sprintf(". Your stated reason: %q", truncateWorkDescription(record.Reason))
+	}
 	switch record.Type {
 	case model.ActionTypeChat:
 		var plan action.ChatPlan
@@ -204,12 +209,22 @@ func formatOngoingAction(record model.Action) string {
 			}
 		}
 		if plan.Guidance != "" {
-			line += "; intended message: " + truncateWorkDescription(plan.Guidance)
+			line += fmt.Sprintf(". Intended message: %q", truncateWorkDescription(plan.Guidance))
 		}
 		if plan.SessionID > 0 {
-			line += fmt.Sprintf("; destination Session #%d", plan.SessionID)
+			line += fmt.Sprintf(". Destination: an existing conversation (session_id=%d)", plan.SessionID)
 		} else if plan.SessionID < 0 && plan.RecipientPersonID > 0 {
-			line += fmt.Sprintf("; new conversation with Person #%d", plan.RecipientPersonID)
+			names, err := dops.GetPersonNames([]int64{plan.RecipientPersonID})
+			name := names[plan.RecipientPersonID]
+			if err != nil {
+				applogger.Error("formatOngoingAction: recipient identity unavailable", "action_id", record.ID, "person_id", plan.RecipientPersonID, "error", err)
+			} else if name == "" {
+				applogger.Error("formatOngoingAction: recipient identity missing", "action_id", record.ID, "person_id", plan.RecipientPersonID)
+			}
+			if name == "" {
+				name = "an unknown person"
+			}
+			line += fmt.Sprintf(". Destination: a new conversation with %s (person_id=%d)", name, plan.RecipientPersonID)
 		}
 	case model.ActionTypeWaitForExecutionSlot:
 		var plan action.WaitForExecutionSlotPlan
@@ -219,7 +234,7 @@ func formatOngoingAction(record model.Action) string {
 			}
 		}
 		if plan.Intention != "" {
-			line += "; awaiting room to reconsider: " + truncateWorkDescription(plan.Intention)
+			line += fmt.Sprintf(". Waiting to reconsider: %q", truncateWorkDescription(plan.Intention))
 		}
 	}
 	return line
@@ -231,9 +246,9 @@ func buildOwnedResourceOverview(personID int64) string {
 	entries, err := readDirSummary(aos.GetPrivateSpacePath(personID))
 	if err != nil {
 		applogger.Error("buildOwnedResourceOverview: listing failed", "person_id", personID, "error", err)
-		return "Owned resource overview unavailable."
+		return "Your private space could not be listed."
 	}
-	result := "Owned resource overview: " + entries
+	result := "Your private space currently contains: " + entries
 	if database.DB.Migrator().HasTable(&model.Workspace{}) {
 		workspaces, count, err := dops.ListRecentWorkspaces(personID, 5)
 		if err != nil {
@@ -241,9 +256,9 @@ func buildOwnedResourceOverview(personID int64) string {
 		} else {
 			var lines []string
 			for _, item := range workspaces {
-				lines = append(lines, fmt.Sprintf("#%d %s (%s): %s", item.ID, item.Name, item.RelativePath, truncateWorkDescription(item.Purpose)))
+				lines = append(lines, fmt.Sprintf("- %s (workspace_id=%d, path=%q): %s", item.Name, item.ID, item.RelativePath, truncateWorkDescription(item.Purpose)))
 			}
-			result += fmt.Sprintf("\nRegistered Workspaces: %d", count)
+			result += fmt.Sprintf("\nYour registered workspaces: %d", count)
 			if len(lines) > 0 {
 				result += "\n" + strings.Join(lines, "\n")
 			}
@@ -294,14 +309,20 @@ func buildSessionsRoster(personID int64) string {
 		for _, id := range peerIDs[:min(len(peerIDs), 5)] {
 			name := names[id]
 			if name == "" {
-				name = fmt.Sprintf("person_%d", id)
+				if err == nil {
+					applogger.Error("buildSessionsRoster: participant identity missing", "person_id", id, "session_id", row.SessionID)
+				}
+				name = fmt.Sprintf("unknown participant (person_id=%d)", id)
 			}
 			peers = append(peers, name)
 		}
 		if len(peerIDs) > 5 {
 			peers = append(peers, fmt.Sprintf("%d more participants", len(peerIDs)-5))
 		}
-		lines = append(lines, fmt.Sprintf("- session_id=%d, with %s (last active %s)", row.SessionID, strings.Join(peers, ", "), row.LastActiveAt.Format("2006-01-02 15:04")))
+		if len(peers) == 0 {
+			peers = append(peers, "no other participants")
+		}
+		lines = append(lines, fmt.Sprintf("- Conversation (session_id=%d) with %s; last recorded activity: %s", row.SessionID, strings.Join(peers, ", "), row.LastActiveAt.Format("2006-01-02 15:04")))
 	}
 	if count > int64(len(rows)) {
 		lines = append(lines, fmt.Sprintf("- %d further sessions not shown", count-int64(len(rows))))
@@ -327,7 +348,7 @@ func readDirSummary(dirPath string) (string, error) {
 		if e.IsDir() {
 			name += "/"
 		}
-		names = append(names, name)
+		names = append(names, fmt.Sprintf("%q", name))
 	}
 	if len(entries) > 20 {
 		names = append(names, fmt.Sprintf("%d more entries not shown", len(entries)-20))

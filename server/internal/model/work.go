@@ -13,6 +13,23 @@ const (
 	WorkStatusAbandoned WorkStatus = -1 // Work was abandoned (e.g., user correction, cancellation)
 )
 
+// Label describes a Work status for agent-facing history without exposing its
+// persisted integer value as a narrative fact.
+func (s WorkStatus) Label() string {
+	switch s {
+	case WorkStatusRunning:
+		return "running"
+	case WorkStatusCompleted:
+		return "completed"
+	case WorkStatusFailed:
+		return "failed"
+	case WorkStatusAbandoned:
+		return "abandoned"
+	default:
+		return "unknown"
+	}
+}
+
 // Focus phase constants provide a compact runtime checkpoint on the existing
 // Work lifecycle record without adding another persistent entity.
 type FocusPhase int
@@ -24,6 +41,25 @@ const (
 	FocusPhaseFailed
 	FocusPhaseCancelled
 )
+
+// Label describes the Focus checkpoint in a recalled Work without exposing
+// the persisted enum number as if it were narrative content.
+func (p FocusPhase) Label() string {
+	switch p {
+	case FocusPhaseExecuting:
+		return "executing"
+	case FocusPhasePaused:
+		return "paused"
+	case FocusPhaseCompleted:
+		return "completed"
+	case FocusPhaseFailed:
+		return "failed"
+	case FocusPhaseCancelled:
+		return "cancelled"
+	default:
+		return "unknown"
+	}
+}
 
 // Work represents a sustained task for an agent. SessionID identifies an
 // optional originating conversation; zero is valid for other event sources.

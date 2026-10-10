@@ -289,7 +289,7 @@ func formatMessagesForSummaryGeneric(messages []*model.Message) string {
 			if err != nil {
 				applogger.Error("formatMessagesForSummaryGeneric: failed to resolve sender",
 					"person_id", msg.PersonID, "error", err)
-				name = fmt.Sprintf("person_%d", msg.PersonID)
+				name = fmt.Sprintf("Unknown person (person_id=%d)", msg.PersonID)
 			} else {
 				name = person.Name
 			}
