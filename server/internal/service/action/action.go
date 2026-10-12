@@ -125,7 +125,7 @@ type OwnedSpaceInspectionPlan struct {
 //     indistinguishable from a missing field in the LLM's JSON output.
 type ChatPlan struct {
 	Guidance          string `json:"guidance" jsonschema:"description=Your internal intention, written in first-person as your own thought: what you plan to say. Write as if you are thinking to yourself.,required"`
-	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=Target session ID. Use a positive session ID from your sessions list to send to an existing session. Use -1 to create a new 1v1 session with recipient_person_id. 0 is invalid — always provide a real session ID or -1."`
+	SessionID         int64  `json:"session_id,omitempty" jsonschema:"description=Target session ID. Use a positive session ID from your sessions list to send to an existing session. Use -1 to create a new 1v1 session with recipient_person_id. 0 is invalid — always provide a real session ID or -1.,required"`
 	RecipientPersonID int64  `json:"recipient_person_id,omitempty" jsonschema:"description=When session_id is -1: the person ID to start a new 1v1 conversation with."`
 
 	// Content carries a pre-computed message for the fast path (scheduled
