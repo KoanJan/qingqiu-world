@@ -8,8 +8,8 @@ import (
 	"strings"
 )
 
-// maxFileBytes is the maximum file size allowed for read_text_file (10MB).
-const maxFileBytes = 10 * 1024 * 1024
+// maxFileBytes is the maximum source size for streamed text reads and search.
+const maxFileBytes = 64 * 1024 * 1024
 
 // binarySniffBytes is the number of leading bytes scanned for null-byte detection.
 const binarySniffBytes = 512

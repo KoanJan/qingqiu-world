@@ -8,7 +8,7 @@
 // person-scoped authorization.
 //
 // Available tools:
-//   - ReadTextFileTool: Read text file contents with line offset/limit
+//   - TextFileTool: Read bounded lines or blocks and search within a text file
 //   - WriteTextFileTool: Create, overwrite, or append to text files
 //   - EditTextFileTool: Make precise text replacements in existing files
 //   - BashTool: Execute shell commands within a workspace
@@ -47,6 +47,9 @@ const (
 	ToolNameListKBDocuments                     // list_kb_documents
 	ToolNameReadKBEvidence                      // read_kb_evidence
 	ToolNameUseWorkspace                        // use_workspace
+	ToolNameReadTextLines                       // read_text_lines
+	ToolNameReadTextBlock                       // read_text_block
+	ToolNameSearchTextFile                      // search_text_file
 	toolNameCount                               // Sentinel; must remain last.
 )
 
@@ -69,6 +72,9 @@ var nameStrings = map[ToolName]string{
 	ToolNameListKBDocuments:     "list_kb_documents",
 	ToolNameReadKBEvidence:      "read_kb_evidence",
 	ToolNameUseWorkspace:        "use_workspace",
+	ToolNameReadTextLines:       "read_text_lines",
+	ToolNameReadTextBlock:       "read_text_block",
+	ToolNameSearchTextFile:      "search_text_file",
 }
 
 // AllToolNames returns every registered ToolName in stable enum order. It is

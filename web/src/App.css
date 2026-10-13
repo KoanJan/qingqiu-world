@@ -1492,7 +1492,7 @@
   color: #7c3aed;
 }
 
-/* Tool call target: lighter italic for visual hierarchy */
+/* Tool call parameters: lighter italic for visual hierarchy. */
 .activity-tool-target {
   color: var(--color-text-placeholder);
   font-style: italic;

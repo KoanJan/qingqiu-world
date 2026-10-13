@@ -1,58 +1,49 @@
 package tools
 
 import (
+	"fmt"
 	"qingqiu-world-server/internal/service/llm"
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
 
-// --- Read File Tool ---
-
-// ReadFileTool reads file contents within the private-space, delegating
-// path validation and file reading to service/tools.
-type ReadFileTool struct {
-	core *servicetools.ReadFileTool
+// TextFileTool binds one shared text operation to the private-space loop.
+type TextFileTool struct {
+	core *servicetools.TextFileTools
+	name string
 }
 
-// NewReadFileTool creates a ReadFileTool for the given private-space paths.
-func NewReadFileTool(rootDir, workDir string) *ReadFileTool {
-	return &ReadFileTool{core: servicetools.NewReadFileTool(rootDir, workDir)}
+// NewTextFileTool creates a named text reader or searcher in Agent Owned Space.
+func NewTextFileTool(rootDir, workDir, name string) *TextFileTool {
+	return &TextFileTool{core: servicetools.NewTextFileTools(rootDir, workDir), name: name}
 }
-
-func (t *ReadFileTool) Name() string        { return "read_file" }
-func (t *ReadFileTool) Description() string { return "Read file contents within your private space" }
-
-func (t *ReadFileTool) Schema() llm.FunctionDefinition {
-	return llm.FunctionDefinition{
-		Name:        "read_file",
-		Description: "Read contents of a file in your private space. Use offset/limit for large files.",
-		Parameters: map[string]interface{}{
-			"type": "object",
-			"properties": map[string]interface{}{
-				"path": map[string]interface{}{
-					"type":        "string",
-					"description": "File path (relative to your space/ directory, or absolute within the private-space root)",
-				},
-				"offset": map[string]interface{}{
-					"type":        "integer",
-					"description": "Line number to start reading from (1-based, optional)",
-				},
-				"limit": map[string]interface{}{
-					"type":        "integer",
-					"description": "Maximum number of lines to read (optional)",
-				},
-			},
-			"required": []string{"path"},
-		},
+func (t *TextFileTool) Name() string { return t.name }
+func (t *TextFileTool) Description() string {
+	switch t.name {
+	case "read_text_lines":
+		return "Read bounded numbered text lines"
+	case "read_text_block":
+		return "Read bounded text from a source byte offset"
+	case "search_text_file":
+		return "Search literal text within one file"
+	default:
+		return "Unknown text file operation"
 	}
 }
-
-// Execute translates the arg name from "path" (privatespace convention) to
-// "file_path" (service/tools convention) before delegating.
-func (t *ReadFileTool) Execute(args map[string]interface{}) (string, error) {
-	if v, ok := args["path"]; ok {
-		args["file_path"] = v
+func (t *TextFileTool) Schema() llm.FunctionDefinition {
+	description, parameters := servicetools.TextToolSpec(t.name)
+	return llm.FunctionDefinition{Name: t.name, Description: description, Parameters: parameters}
+}
+func (t *TextFileTool) Execute(args map[string]interface{}) (string, error) {
+	switch t.name {
+	case "read_text_lines":
+		return t.core.ReadTextLines(args)
+	case "read_text_block":
+		return t.core.ReadTextBlock(args)
+	case "search_text_file":
+		return t.core.SearchTextFile(args)
+	default:
+		return "", fmt.Errorf("unknown text file operation: %s", t.name)
 	}
-	return t.core.Execute(args)
 }
 
 // --- Write File Tool ---

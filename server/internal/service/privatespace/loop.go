@@ -36,7 +36,9 @@ WHAT THIS SPACE IS:
 
 TOOLS AVAILABLE:
 - bash: Execute shell commands in your Agent Owned Space (sandboxed when available).
-- read_file: Read file contents within your Agent Owned Space.
+- read_text_lines: Read bounded numbered lines from a text file.
+- read_text_block: Read a text file from a byte offset, including a truncated line or search match.
+- search_text_file: Find exact text within a specified file without returning whole lines.
 - write_file: Create or overwrite files within your Agent Owned Space.
 - edit_file: Make precise text replacements in existing files.
 - write_log: Append a record to your private activity log. You may use it to note what you did, what you thought about, or anything that happened here — but it is never required.
@@ -111,7 +113,9 @@ func NewLoop(
 	}
 
 	l.registerTool(privspacetools.NewBashTool(personID, rootDir, workDir))
-	l.registerTool(privspacetools.NewReadFileTool(rootDir, workDir))
+	l.registerTool(privspacetools.NewTextFileTool(rootDir, workDir, "read_text_lines"))
+	l.registerTool(privspacetools.NewTextFileTool(rootDir, workDir, "read_text_block"))
+	l.registerTool(privspacetools.NewTextFileTool(rootDir, workDir, "search_text_file"))
 	l.registerTool(privspacetools.NewWriteFileTool(rootDir, workDir))
 	l.registerTool(privspacetools.NewEditFileTool(rootDir, workDir))
 	l.registerTool(privspacetools.NewWriteLogTool(personID, AppendLog))

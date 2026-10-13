@@ -69,3 +69,28 @@ func TestBuildActivityEventsPreservesStableIDsAndWorkOwnership(t *testing.T) {
 		t.Errorf("event ownership = %d, %d; want 11, 12", events[0].PersonID, events[4].PersonID)
 	}
 }
+
+func TestActivityTextToolsExposeOnlyDisplayParameters(t *testing.T) {
+	cases := []struct {
+		tool      string
+		arguments string
+		key       string
+		want      interface{}
+	}{
+		{tools.ToolNameSearchTextFile.String(), `{"file_path":"output/script.js","query":"render","max_matches":10}`, "query", "render"},
+		{tools.ToolNameReadTextLines.String(), `{"file_path":"output/script.js","start_line":14,"max_lines":30}`, "start_line", 14},
+		{tools.ToolNameReadTextBlock.String(), `{"file_path":"output/script.js","start_byte_offset":4096,"max_bytes":2048}`, "start_byte_offset", int64(4096)},
+	}
+	for _, tc := range cases {
+		params := extractTextToolParams(1, tc.tool, tc.arguments)
+		if got := params[tc.key]; got != tc.want {
+			t.Errorf("%s %s = %v, want %v", tc.tool, tc.key, got, tc.want)
+		}
+		if _, exposed := params["file_path"]; exposed {
+			t.Errorf("%s duplicated file_path in tool params", tc.tool)
+		}
+	}
+	if params := extractTextToolParams(1, tools.ToolNameWriteTextFile.String(), `{"content":"private"}`); params != nil {
+		t.Errorf("write tool arguments leaked: %v", params)
+	}
+}

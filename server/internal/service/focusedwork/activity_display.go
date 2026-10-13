@@ -32,6 +32,9 @@ var activityTargetKeys = map[string][]string{
 	tools.ToolNameListKBDocuments.String():     {"kb_id"},
 	tools.ToolNameReadKBEvidence.String():      {"chunk_ids"},
 	tools.ToolNameUseWorkspace.String():        {"workspace_id"},
+	tools.ToolNameReadTextLines.String():       {"file_path"},
+	tools.ToolNameReadTextBlock.String():       {"file_path"},
+	tools.ToolNameSearchTextFile.String():      {"file_path", "query"},
 }
 
 // interactionDataResponse is the parsed form of Data JSON for type=2 interactions.
@@ -131,13 +134,58 @@ func buildToolCallEvent(timeStr string, interactionID int64, toolCallIndex int, 
 	}
 
 	return schema.ActivityEvent{
-		ID:       fmt.Sprintf("%d:tool:%d", interactionID, toolCallIndex),
-		Time:     timeStr,
-		Type:     "tool_call",
-		Tool:     tc.Function.Name,
-		Target:   target,
-		PersonID: personID,
+		ID:         fmt.Sprintf("%d:tool:%d", interactionID, toolCallIndex),
+		Time:       timeStr,
+		Type:       "tool_call",
+		Tool:       tc.Function.Name,
+		Target:     target,
+		ToolParams: extractTextToolParams(interactionID, tc.Function.Name, tc.Function.Arguments),
+		PersonID:   personID,
 	}
+}
+
+// extractTextToolParams exposes only the file-operation arguments needed for
+// Activity wording; other tool arguments may contain private or long content.
+func extractTextToolParams(interactionID int64, toolName, argumentsJSON string) map[string]interface{} {
+	switch toolName {
+	case tools.ToolNameReadTextLines.String(), tools.ToolNameReadTextBlock.String(), tools.ToolNameSearchTextFile.String():
+	default:
+		return nil
+	}
+	var args struct {
+		Query           string `json:"query"`
+		StartLine       *int   `json:"start_line"`
+		MaxLines        *int   `json:"max_lines"`
+		StartByteOffset *int64 `json:"start_byte_offset"`
+		MaxBytes        *int   `json:"max_bytes"`
+	}
+	if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
+		applogger.Error("activity: failed to parse text-tool arguments", "interaction_id", interactionID, "tool", toolName, "error", err)
+		return nil
+	}
+	switch toolName {
+	case tools.ToolNameSearchTextFile.String():
+		return map[string]interface{}{"query": args.Query}
+	case tools.ToolNameReadTextLines.String():
+		startLine, maxLines := 1, 200
+		if args.StartLine != nil {
+			startLine = *args.StartLine
+		}
+		if args.MaxLines != nil {
+			maxLines = *args.MaxLines
+		}
+		return map[string]interface{}{"start_line": startLine, "max_lines": maxLines}
+	case tools.ToolNameReadTextBlock.String():
+		startByteOffset, maxBytes := int64(0), 8192
+		if args.StartByteOffset != nil {
+			startByteOffset = *args.StartByteOffset
+		}
+		if args.MaxBytes != nil {
+			maxBytes = *args.MaxBytes
+		}
+		return map[string]interface{}{"start_byte_offset": startByteOffset, "max_bytes": maxBytes}
+	}
+	return nil
 }
 
 // extractTarget extracts the first non-empty value from the arguments JSON.

@@ -1,7 +1,7 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Spin } from 'antd';
 import { ClipboardList } from 'lucide-react';
-import { useTranslation } from 'react-i18next';
+import { Trans, useTranslation } from 'react-i18next';
 import { activityApi } from '../services/api';
 import type { ActivityEvent } from '../types';
 import { logger } from '../logger';
@@ -22,6 +22,9 @@ const toolIcon: Record<string, React.ReactNode> = {
   scan_my_experience: '🧠',
   recall_my_experience: '🧠',
   read_text_file: '🔍',
+  read_text_lines: '🔍',
+  read_text_block: '🔍',
+  search_text_file: '🔍',
   write_text_file: '📝',
   edit_text_file: '📝',
   search_chat_histories: '🔍',
@@ -239,10 +242,20 @@ const ActivityList: React.FC<ActivityListProps> = ({ workId, agentId }) => {
         {events.map(event => {
           if (event.type === 'tool_call') {
             const icon = toolIcon[event.tool || ''] || '🔧';
-            const action = t(`activity.tool.${event.tool}`);
             const targetText = formatToolTarget(event, t);
             const needsTruncate = targetText.length > CONTENT_TRUNCATE_LENGTH;
             const expanded = expandedEventIds.has(event.id);
+            const targetNode = targetText ? (
+              <span className="activity-tool-target">
+                {needsTruncate && !expanded ? `${targetText.slice(0, CONTENT_TRUNCATE_LENGTH)}...` : targetText}
+                {needsTruncate && (
+                  <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
+                    {t(expanded ? 'activity.collapse' : 'activity.expand')}
+                  </button>
+                )}
+              </span>
+            ) : null;
+            const textToolAction = formatTextToolAction(event, targetNode);
 
             return (
               <div key={event.id} className="activity-row activity-row-tool_call">
@@ -250,24 +263,8 @@ const ActivityList: React.FC<ActivityListProps> = ({ workId, agentId }) => {
                   <span className="activity-time">{event.time}</span>
                 </div>
                 <div className="activity-summary">
-                  {icon} {action}
-                  {targetText && (needsTruncate && !expanded ? (
-                    <span className="activity-tool-target">
-                      {' '}{targetText.slice(0, CONTENT_TRUNCATE_LENGTH)}...
-                      <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
-                        {t('activity.expand')}
-                      </button>
-                    </span>
-                  ) : (
-                    <span className="activity-tool-target">
-                      {' '}{targetText}
-                      {needsTruncate && (
-                        <button className="activity-expand-btn" onClick={() => toggleExpand(event.id)}>
-                          {t('activity.collapse')}
-                        </button>
-                      )}
-                    </span>
-                  ))}
+                  {icon} {textToolAction ?? t(`activity.tool.${event.tool}`)}
+                  {!textToolAction && targetNode && <> {targetNode}</>}
                 </div>
               </div>
             );
@@ -334,6 +331,22 @@ function formatToolTarget(event: ActivityEvent, t: (key: string, options?: Recor
     return count > 0 ? t('activity.toolTarget.read_kb_evidence', { count }) : '';
   }
   return event.target || '';
+}
+
+/** Lets each locale order the file path and styled text-tool parameters. */
+function formatTextToolAction(event: ActivityEvent, targetNode: React.ReactElement | null): React.ReactNode {
+  if (!targetNode) return null;
+  const params = event.tool_params;
+  if (event.tool === 'search_text_file' && params?.query) {
+    return <Trans i18nKey="activity.toolDetail.search_text_file" components={[<span className="activity-tool-target">{params.query}</span>, targetNode]} />;
+  }
+  if (event.tool === 'read_text_lines' && params?.start_line !== undefined && params.max_lines !== undefined) {
+    return <Trans i18nKey="activity.toolDetail.read_text_lines" components={[<span className="activity-tool-target">{params.max_lines}</span>, <span className="activity-tool-target">{params.start_line}</span>, targetNode]} />;
+  }
+  if (event.tool === 'read_text_block' && params?.start_byte_offset !== undefined && params.max_bytes !== undefined) {
+    return <Trans i18nKey="activity.toolDetail.read_text_block" components={[<span className="activity-tool-target">{params.max_bytes}</span>, <span className="activity-tool-target">{params.start_byte_offset}</span>, targetNode]} />;
+  }
+  return null;
 }
 
 /**

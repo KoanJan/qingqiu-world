@@ -380,6 +380,9 @@
       "scan_my_experience": "Scan experience",
       "recall_my_experience": "Recall experience",
       "read_text_file": "Read file",
+      "read_text_lines": "Read file lines",
+      "read_text_block": "Read file section",
+      "search_text_file": "Search file",
       "write_text_file": "Write file",
       "edit_text_file": "Edit file",
       "search_chat_histories": "Search chat history",
@@ -394,6 +397,11 @@
     },
     "toolTarget": {
       "read_kb_evidence": "{{count}} evidence chunks"
+    },
+    "toolDetail": {
+      "search_text_file": "Search \"<0/>\" in <1/>",
+      "read_text_lines": "Read up to <0/> lines from line <1/> in <2/>",
+      "read_text_block": "Read up to <0/> bytes from offset <1/> in <2/>"
     }
   },
   "publicExperience": {

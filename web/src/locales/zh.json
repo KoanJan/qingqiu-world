@@ -380,6 +380,9 @@
       "scan_my_experience": "搜索经验",
       "recall_my_experience": "回忆经验",
       "read_text_file": "查看文件",
+      "read_text_lines": "按行查看文件",
+      "read_text_block": "查看文件片段",
+      "search_text_file": "搜索文件内容",
       "write_text_file": "写入文件",
       "edit_text_file": "编辑文件",
       "search_chat_histories": "搜索聊天记录",
@@ -394,6 +397,11 @@
     },
     "toolTarget": {
       "read_kb_evidence": "{{count}} 条证据片段"
+    },
+    "toolDetail": {
+      "search_text_file": "在文件 <1/> 中搜索“<0/>”",
+      "read_text_lines": "从文件 <2/> 的第 <1/> 行起最多读取 <0/> 行",
+      "read_text_block": "从文件 <2/> 的字节偏移 <1/> 起最多读取 <0/> 字节"
     }
   },
   "publicExperience": {

@@ -257,7 +257,7 @@ func TestSendJinshuTool_Execute(t *testing.T) {
 		if err := os.WriteFile(legacyFile, []byte("historical"), 0644); err != nil {
 			t.Fatal(err)
 		}
-		readResult, err := NewReadTextFileTool(senderID, workspaceDir).Execute(map[string]interface{}{"file_path": "output/old.txt"})
+		readResult, err := NewReadTextLinesTool(senderID, workspaceDir).Execute(map[string]interface{}{"file_path": "output/old.txt"})
 		if err != nil || !strings.Contains(readResult, "historical") {
 			t.Fatalf("read historical output path: %q %v", readResult, err)
 		}

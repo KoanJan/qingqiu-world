@@ -371,16 +371,18 @@ func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSe
 		"",
 		"[Understanding Current State]",
 		"To understand the current project state:",
-		"- Use read_text_file to read file contents",
+		"- Use read_text_lines to read bounded numbered lines; search_text_file locates exact text within a known file",
 		"- Use 'ls -la' to list files in your working directory",
 		"- Use 'find . -type f' to discover all files",
 		"- Check your NOTES (provided above) for previous progress",
 		"",
 		"FILE OPERATIONS:",
-		"- read_text_file: Read file contents with line offset/limit. Preferred over bash cat.",
+		"- read_text_lines: Read bounded numbered lines. Continue after the last complete line; if a line is truncated, use read_text_block at its end byte offset.",
+		"- read_text_block: Read bounded text from a byte offset, including a search match or a truncated line.",
+		"- search_text_file: Find exact text within a specified file and page with next_byte_offset.",
 		"- write_text_file: Create, overwrite, or append to files. Preferred over bash echo/heredoc.",
 		"- edit_text_file: Make precise text replacements in existing files. Preferred for modifying files.",
-		"  - Copy old_str EXACTLY from read_text_file output, preserving indentation and special characters",
+		"  - Copy old_str EXACTLY from read_text_lines or read_text_block output, preserving indentation and special characters",
 		"  - Keep old_str concise but unique enough to match exactly one location",
 		"- bash: Use for system commands (mkdir, find, git, build, etc.) and directory operations",
 		"",
@@ -466,7 +468,7 @@ func buildKBSection(personID int64) string {
 }
 
 // buildToolList creates the list of available tools for the FocusedLoop.
-// Always includes read_text_file, write_text_file, edit_text_file, bash,
+// Always includes the three bounded text tools, write_text_file, edit_text_file, bash,
 // write_notes, scan_my_experience, recall_my_experience, scan_kb,
 // read_kb_evidence and list_kb_documents; adds web_search if search config is
 // available.
@@ -477,7 +479,9 @@ func buildKBSection(personID int64) string {
 func buildToolList(sessionID, personID, workID int64, searchConfig *model.SearchConfig, notesMaxChars int, workspaceDir, metaDir string) []tools.Tool {
 	bashTool := tools.NewBashToolForWork(personID, workID, workspaceDir)
 	toolList := []tools.Tool{
-		tools.NewReadTextFileTool(personID, workspaceDir),
+		tools.NewReadTextLinesTool(personID, workspaceDir),
+		tools.NewReadTextBlockTool(personID, workspaceDir),
+		tools.NewSearchTextFileTool(personID, workspaceDir),
 		tools.NewWriteTextFileTool(personID, workspaceDir),
 		tools.NewEditTextFileTool(personID, workspaceDir),
 		bashTool,

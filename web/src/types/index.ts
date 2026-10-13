@@ -291,6 +291,7 @@ export interface ActivityEvent {
   content: string; // thinking/guidance text; empty for tool_call
   tool?: string;   // only for tool_call
   target?: string; // only for tool_call
+  tool_params?: { query?: string; start_line?: number; max_lines?: number; start_byte_offset?: number; max_bytes?: number }; // allowlisted text tool arguments
   agent_id: number;
 }
 
