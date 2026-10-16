@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -23,7 +24,7 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{}, &model.AgentObservation{}, &model.Decision{}, &model.Action{}, &model.Work{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{}, &model.AgentObservation{}, &model.Decision{}, &model.Action{}, &model.Work{}, &model.Memo{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
@@ -37,6 +38,14 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.Person{ID: self, Name: "Self", Type: model.PersonTypeAI}).Error; err != nil {
+		t.Fatal(err)
+	}
+	createdAt := time.Date(2026, time.October, 16, 9, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	updatedAt := createdAt.Add(24 * time.Hour)
+	if err := db.Create(&model.Memo{PersonID: self, Content: "Check the promised report tomorrow", Status: model.MemoStatusActive, Pinned: true, Revision: 2, CreatedAt: createdAt, UpdatedAt: updatedAt}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Memo{PersonID: self, Content: "Old archived reminder", Status: model.MemoStatusArchived, Revision: 3}).Error; err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 22; i++ {
@@ -66,6 +75,13 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	}
 	situation := &Situation{}
 	populateGeneralSituation(self, situation)
+	if !strings.Contains(situation.Subject.PinnedMemosSummary, "Check the promised report tomorrow") ||
+		!strings.Contains(situation.Subject.PinnedMemosSummary, "revision=2") ||
+		!strings.Contains(situation.Subject.PinnedMemosSummary, "created_at="+createdAt.Format(time.RFC3339)) ||
+		!strings.Contains(situation.Subject.PinnedMemosSummary, "updated_at="+updatedAt.Format(time.RFC3339)) ||
+		strings.Contains(situation.Subject.PinnedMemosSummary, "Old archived reminder") {
+		t.Fatalf("Subject did not show only current pinned reminders: %q", situation.Subject.PinnedMemosSummary)
+	}
 	if !strings.Contains(situation.Environment.Sessions, "Conversation (session_id=") || strings.Contains(situation.Environment.Sessions, "With no other participants (session_id=") {
 		t.Fatalf("conversation ID was attached to participants: %q", situation.Environment.Sessions)
 	}

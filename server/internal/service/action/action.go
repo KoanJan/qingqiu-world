@@ -62,7 +62,20 @@ const (
 	InspectOwnedSpace = model.ActionTypeInspectOwnedSpace
 	// WaitForExecutionSlot retains an intention for a later Decision.
 	WaitForExecutionSlot = model.ActionTypeWaitForExecutionSlot
+	// ManageMemo creates or changes one private memo as a finite world action.
+	ManageMemo = model.ActionTypeManageMemo
 )
+
+// MemoPlan requests one explicit change to the agent's own memo resource.
+// Revision is required for every operation except Create, so an old decision
+// cannot silently overwrite a more recent update.
+type MemoPlan struct {
+	Operation model.MemoOperation `json:"operation" jsonschema:"description=1 create; 2 revise; 3 set pinned; 4 archive; 5 restore.,required"`
+	MemoID    int64               `json:"memo_id,omitempty" jsonschema:"description=Existing memo ID from your pinned reminders or recall_memo; omit for create"`
+	Revision  int64               `json:"revision,omitempty" jsonschema:"description=Current revision of the existing memo; omit for create"`
+	Content   string              `json:"content,omitempty" jsonschema:"description=Full text you want to keep for create or revise; at most 8192 UTF-8 bytes"`
+	Pinned    *bool               `json:"pinned,omitempty" jsonschema:"description=For create or set pinned: explicitly true or false; required for set pinned"`
+}
 
 // WaitForExecutionSlotPlan records what the agent intends to reconsider later.
 type WaitForExecutionSlotPlan struct {
@@ -189,9 +202,10 @@ type BioUpdate struct {
 //   - ListReceivedJinshu: uses ListReceivedJinshuParams (query + page + limit)
 //   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
 //   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
+//   - ManageMemo: uses MemoPlan (operation and complete desired content/state)
 type Action struct {
 	ID   int64      `json:"-"` // Persisted top-level Action ID, assigned after Decide succeeds.
-	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot,required"`
+	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot, 12=manage_memo,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -209,4 +223,5 @@ type Action struct {
 	ListSentJinshuParams     *ListSentJinshuParams     `json:"list_sent_jinshu_params,omitempty" jsonschema:"description=When type is list_sent_jinshu(9): the paginated sent-jinshu search params"`
 	OwnedSpaceInspectionPlan *OwnedSpaceInspectionPlan `json:"owned_space_inspection_plan,omitempty" jsonschema:"description=When type is inspect_owned_space(10): the bounded metadata inspection request"`
 	WaitForExecutionSlotPlan *WaitForExecutionSlotPlan `json:"wait_for_execution_slot_plan,omitempty" jsonschema:"description=When type is wait_for_execution_slot(11): the intention to reconsider later"`
+	MemoPlan                 *MemoPlan                 `json:"memo_plan,omitempty" jsonschema:"description=When type is manage_memo(12): one change to a private memo"`
 }

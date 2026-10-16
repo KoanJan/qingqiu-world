@@ -335,7 +335,7 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 			return item, false, err
 		}
 		if effectCount > 0 {
-			item.Text += fmt.Sprintf(" %d result link(s) were recorded. To inspect their events, use recall_event (action_id=%d).", effectCount, row.ID)
+			item.Text += fmt.Sprintf(" %d result link(s) were recorded:", effectCount)
 		}
 		for _, effect := range effects {
 			item.Text += fmt.Sprintf(" Recorded %s effect (%s=%d).", effectTypeName(effect.EffectType), effectTargetIDName(effect.EffectType), effect.EffectID)
@@ -465,6 +465,8 @@ func effectTypeName(t model.ActionEffectType) string {
 		return "accepted work control"
 	case model.ActionEffectPSDigest:
 		return "private-space digest"
+	case model.ActionEffectMemo:
+		return "memo"
 	default:
 		return "unknown"
 	}
@@ -488,6 +490,8 @@ func effectTargetIDName(t model.ActionEffectType) string {
 		return "workspace_id"
 	case model.ActionEffectPSDigest:
 		return "ps_digest_id"
+	case model.ActionEffectMemo:
+		return "memo_id"
 	default:
 		return "record_id"
 	}

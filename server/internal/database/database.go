@@ -172,6 +172,7 @@ func allModels() []any {
 		&model.Decision{},
 		&model.Action{},
 		&model.ActionEffect{},
+		&model.Memo{},
 		&model.AgentObservation{},
 		&model.EventVector{},
 		&model.MemoryTerm{},

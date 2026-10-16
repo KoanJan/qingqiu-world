@@ -185,6 +185,8 @@ func encodeActionPlan(act action.Action) (string, error) {
 		plan = act.OwnedSpaceInspectionPlan
 	case action.WaitForExecutionSlot:
 		plan = act.WaitForExecutionSlotPlan
+	case action.ManageMemo:
+		plan = act.MemoPlan
 	default:
 		return "", fmt.Errorf("unknown action type %d", act.Type)
 	}
@@ -231,7 +233,7 @@ func endActionLogged(actionID int64, operation string) {
 
 // recordActionEffect adds a private, application-validated source relation.
 func recordActionEffect(tx *gorm.DB, actionID int64, effectType model.ActionEffectType, effectID int64) error {
-	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectPSDigest {
+	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectMemo {
 		return fmt.Errorf("invalid action effect: action=%d type=%d effect=%d", actionID, effectType, effectID)
 	}
 	var action model.Action

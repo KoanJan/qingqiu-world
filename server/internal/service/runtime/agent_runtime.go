@@ -513,6 +513,8 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				continue
 			}
 			r.registerExecutionWait(act.ID)
+		case action.ManageMemo:
+			r.handleManageMemo(act)
 		default:
 			applogger.Error("executeActions: unsupported action type", "action_id", act.ID, "action_type", act.Type)
 			endActionLogged(act.ID, "unsupported_action")

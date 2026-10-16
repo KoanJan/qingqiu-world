@@ -19,6 +19,7 @@ const (
 	ActionTypeListSentJinshu
 	ActionTypeInspectOwnedSpace
 	ActionTypeWaitForExecutionSlot
+	ActionTypeManageMemo
 )
 
 // Label names an Action for historical presentation without changing its
@@ -49,6 +50,8 @@ func (t ActionType) Label() string {
 		return "inspect owned space"
 	case ActionTypeWaitForExecutionSlot:
 		return "wait for execution slot"
+	case ActionTypeManageMemo:
+		return "maintain a memo"
 	default:
 		return "unknown action"
 	}
@@ -75,6 +78,7 @@ const (
 	ActionEffectWorkspace
 	ActionEffectWorkControl
 	ActionEffectPSDigest
+	ActionEffectMemo
 )
 
 // Decision is one accepted Decide result. EventID is zero only for a true

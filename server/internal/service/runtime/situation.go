@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -14,6 +15,7 @@ import (
 	"qingqiu-world-server/internal/service/aos"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/memo"
 )
 
 // Situation is a runtime-only DTO that serves as the unified input to
@@ -64,6 +66,10 @@ type SituationSubject struct {
 	// RecentExperienceSummary groups previously observed facts with the
 	// agent's subsequent choices and recorded effects, regardless of Session.
 	RecentExperienceSummary string
+	// PinnedMemosSummary is a small preview with creation and update times
+	// for memos the agent chose to keep in everyday view. Complete text
+	// remains in the private Memo table.
+	PinnedMemosSummary string
 }
 
 // SituationEnvironment contains the bounded, generally available world
@@ -187,6 +193,18 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 		currentEventID = situation.Matter.Event.EventID
 	}
 	situation.Subject.RecentExperienceSummary = buildRecentExperienceSummary(personID, currentEventID)
+	pinned, err := memo.PinnedOverview(personID, 3)
+	if err != nil {
+		applogger.Error("populateGeneralSituation: pinned memos", "person_id", personID, "error", err)
+	} else {
+		var lines []string
+		for _, record := range pinned {
+			lines = append(lines, fmt.Sprintf("- %q (memo_id=%d, revision=%d, created_at=%s, updated_at=%s)",
+				shortContextText(record.Content, 180), record.ID, record.Revision,
+				record.CreatedAt.Format(time.RFC3339), record.UpdatedAt.Format(time.RFC3339)))
+		}
+		situation.Subject.PinnedMemosSummary = strings.Join(lines, "\n")
+	}
 	situation.generalReady = true
 }
 

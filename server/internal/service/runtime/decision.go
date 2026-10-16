@@ -17,6 +17,7 @@ import (
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/memo"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/world"
 
@@ -140,6 +141,12 @@ Type 11 (wait_for_execution_slot) — Preserve an intention when your single Foc
    - MUST include "wait_for_execution_slot_plan" with "intention". Availability later causes a new decision, not automatic execution.
    - Choose at most one of start_focused_work, enter_private_space, or wait_for_execution_slot in one decision. Actions in one decision have no execution order.
 
+Type 12 (manage_memo) — Write or change a private memo to your future self, across conversations and Works.
+   - MUST include "memo_plan": operation 1=create, 2=revise, 3=set pinned, 4=archive, 5=restore.
+   - Create needs the full content and may set pinned. Other operations need an existing memo_id and its current revision from your reminders or recall_memo; revise also needs the complete replacement content. Set pinned uses the boolean pinned field.
+   - A memo preserves what you choose to remember; it does not schedule a wake-up or prove that an intention was fulfilled. Use create_alarm separately for a timed reminder. Do not copy every message into a memo automatically.
+   - Actions in one decision have no order. Choose at most one change to the same memo in this decision.
+
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request. Start a new FocusedWork only if the new request meets the FocusedWork criteria above; otherwise reply directly or inspect bounded metadata first.
 
 If no action is needed, return an empty actions list.
@@ -196,6 +203,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 //   - action.EnterPrivateSpace (type=6): enter your private space.
 //   - action.SendJinshu: send an existing deliverable.
 //   - action.InspectOwnedSpace (type=10): observe a bounded AOS directory listing.
+//   - action.ManageMemo (type=12): maintain a private memo.
 //   - action.StartFocusedWork / action.RouteFocusedWork / action.CancelFocusedWork: not allowed — there is no event
 //     to route and no active work context to cancel against in this path.
 //
@@ -273,6 +281,12 @@ Type 10 (inspect_owned_space) — Inspect a bounded metadata-only listing of you
 
 Type 11 (wait_for_execution_slot) — Preserve an intention while Focus or Private Space occupies your one sustained execution slot. Include "wait_for_execution_slot_plan" with "intention". Availability prompts a new decision; it does not execute the old intention. Do not combine it with enter_private_space in one decision.
 
+Type 12 (manage_memo) — Write or change a private memo to your future self without needing an incoming event.
+   - MUST include "memo_plan": operation 1=create, 2=revise, 3=set pinned, 4=archive, 5=restore.
+   - Create needs the full content and may set pinned. Other operations need an existing memo_id and its current revision from your reminders or recall_memo; revise also needs the complete replacement content. Set pinned uses the boolean pinned field.
+   - A memo is not a timed alarm or proof that an intention was fulfilled. Keep one only when you have something worth retaining for later.
+   - Actions in one decision have no order. Choose at most one change to the same memo in this decision.
+
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
 If you have nothing to act on, return an empty actions list. This is the default — do not force action.
@@ -314,7 +328,7 @@ type DecisionResult struct {
 // For SituationSourceInternal (heartbeat), the agent is granted an autonomous
 // cognitive opportunity — time has passed and it is idle. The LLM can:
 //   - Chat, create an alarm, update its bio, enter private space,
-//     send Jinshu, or inspect its owned space
+//     send Jinshu, inspect its owned space, or manage a memo
 //   - Produce no actions (the legitimate "I have nothing to act on" choice)
 //
 // For EventTypeNewPrivateChatMessage, EventTypeBiography, and ordinary
@@ -666,7 +680,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks).
 //   - Internal (heartbeat): Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
-//     SendJinshu, and InspectOwnedSpace are allowed. Focused-work actions and
+//     SendJinshu, InspectOwnedSpace, and ManageMemo are allowed. Focused-work actions and
 //     Jinshu inspection/list actions require an external event.
 //
 // session_id==0 is always illegal — it is the Go zero value and
@@ -756,6 +770,12 @@ func filterValidActions(actions []action.Action, activeWorks []*work, situation 
 			if isValidInspectOwnedSpaceAction(act) {
 				valid = append(valid, act)
 			}
+		case action.ManageMemo:
+			if err := memo.ValidatePlan(act.MemoPlan); err != nil {
+				applogger.Error("Decision manage_memo: invalid plan", "error", err)
+				continue
+			}
+			valid = append(valid, act)
 		default:
 			applogger.Error("Decision: unknown action type, skipping",
 				"action_type", act.Type,

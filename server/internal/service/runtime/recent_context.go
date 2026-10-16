@@ -163,13 +163,19 @@ func describeRecentDecision(decision model.Decision) string {
 				part += fmt.Sprintf("; a message was sent (message_id=%d)", effect.EffectID)
 			case model.ActionEffectWorkControl:
 				part += fmt.Sprintf("; the work accepted the control (work_id=%d)", effect.EffectID)
+			case model.ActionEffectMemo:
+				part += fmt.Sprintf("; a private memo was changed (memo_id=%d)", effect.EffectID)
 			default:
 				part += "; recorded an effect"
 			}
 		}
-		if len(effects) == 0 && action.Status == model.ActionStatusEnded &&
-			(action.Type == model.ActionTypeCancelFocusedWork || action.Type == model.ActionTypeRouteFocusedWork) {
-			part += "; no accepted control was recorded"
+		if len(effects) == 0 && action.Status == model.ActionStatusEnded {
+			switch action.Type {
+			case model.ActionTypeCancelFocusedWork, model.ActionTypeRouteFocusedWork:
+				part += "; no accepted control was recorded"
+			case model.ActionTypeManageMemo:
+				part += "; no memo change was recorded"
+			}
 		}
 		parts = append(parts, part)
 	}

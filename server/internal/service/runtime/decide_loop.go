@@ -26,12 +26,14 @@ Choose the source that can answer your question:
 - "recall_work" finds past or ongoing work; "recall_focus_handoff" shows what Focus reported when it ended.
 - The Jinshu list tools show deliveries; "read_jinshu" adds a description, never attachment contents.
 - "recall_workspace" shows workspace names, purposes, and recorded Work or Private Space uses.
+- "recall_memo" browses memos you wrote to yourself or reads one in full, including how it was changed.
 - "recall_entity_profile" reads an impression you formed of a known person or conversation; it is not direct access to anyone's inner state.
 - "recall_history" discovers records across sources by text or time.
 Record references appear in tool ID fields or in parentheses in descriptive text; they are for follow-up lookups. Search results may be incomplete: a limited page or lexical miss does not prove absence. Recall reads records, not AOS file contents or paths; inspect files inside Focus. Decide when the evidence is sufficient, or state what remains uncertain.`
 
 const maxDecideRequests = 5
 const maxRecallResultBytes = 8000
+const maxMemoRecallResultBytes = 22000
 const maxRecallContextBytes = 24000
 
 // formatGeneralSubject presents the agent's current state independently of
@@ -55,6 +57,10 @@ func formatGeneralSubject(s SituationSubject) string {
 	if s.RecentExperienceSummary != "" {
 		b.WriteString("Recent experience (earlier observations, choices, and recorded effects; an intention alone is not a result):\n")
 		b.WriteString(s.RecentExperienceSummary + "\n")
+	}
+	if s.PinnedMemosSummary != "" {
+		b.WriteString("Memos you chose to keep in view (previews; use recall_memo for full text):\n")
+		b.WriteString(s.PinnedMemosSummary + "\n")
 	}
 	return b.String()
 }
@@ -109,6 +115,8 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 			seen[key] = struct{}{}
 			if isJinshuTool(call.Function.Name) {
 				output, err = executeJinshuTool(personID, call.Function.Name, call.Function.Arguments)
+			} else if call.Function.Name == "recall_memo" {
+				output, err = executeMemoRecall(personID, call.Function.Arguments)
 			} else {
 				output, err = executeRecallTool(personID, eventID, call.Function.Name, call.Function.Arguments)
 			}
@@ -116,9 +124,17 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 				applogger.Error("DecideLoop recall failed", "person_id", personID, "event_id", eventID, "tool", call.Function.Name, "error", err)
 				output = "Recall could not complete: " + err.Error() + ". This is an unavailable source, not evidence of absence."
 			}
-			if len(output) > maxRecallResultBytes || recalledBytes+len(output) > maxRecallContextBytes {
+			resultLimit := maxRecallResultBytes
+			if call.Function.Name == "recall_memo" {
+				resultLimit = maxMemoRecallResultBytes // A complete memo can contain 8 KiB of text before JSON escaping.
+			}
+			if len(output) > resultLimit || recalledBytes+len(output) > maxRecallContextBytes {
 				applogger.Warn("DecideLoop recall output exceeded budget", "person_id", personID, "event_id", eventID, "tool", call.Function.Name, "bytes", len(output), "already_used", recalledBytes)
-				output = "This recall page exceeds the remaining context budget. Narrow the query, time range, or page size; the omitted material is not evidence of absence."
+				if call.Function.Name == "recall_memo" {
+					output = "This memo result does not fit the remaining recall context for this decision. Decide from the available material or revisit it later; omitted content is not evidence of absence."
+				} else {
+					output = "This recall page exceeds the remaining context budget. Narrow the query, time range, or page size; the omitted material is not evidence of absence."
+				}
 			}
 		}
 		recalledBytes += len(output)
@@ -164,6 +180,13 @@ func recallToolDefinitions() []llm.FunctionDefinition {
 		makeTool("recall_action", "Read your recorded action by action_id, one decision's actions, or actions related to a work_id. For observed effects, use recall_event.", map[string]interface{}{"action_id": map[string]interface{}{"type": "integer"}, "decision_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_work", "Find your past or ongoing Works by query or time without a work_id, or inspect one by ID. Returns its goal and current status; use recall_focus_handoff for its recorded outcome.", map[string]interface{}{"work_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_workspace", "Browse your registered Workspace names and purposes, or inspect one by workspace_id to see its origin and declared Work or private-space uses. Does not read files.", map[string]interface{}{"workspace_id": map[string]interface{}{"type": "integer"}}),
+		{Name: "recall_memo", Description: "Browse your private memos or read one in full by memo_id. Lists include previews and creation/update times; reading returns full current content and recorded change sources. A memo is your own note, not proof that its content remains true.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+			"memo_id":      map[string]interface{}{"type": "integer", "description": "Read this owned memo in full; omit to browse."},
+			"status":       map[string]interface{}{"type": "integer", "description": "When browsing: 0 or omitted for all, 1 active, 2 archived."},
+			"page":         map[string]interface{}{"type": "integer", "description": "When browsing: 1-based page; default 1."},
+			"page_size":    map[string]interface{}{"type": "integer", "description": "When browsing: default 5, maximum 20."},
+			"history_page": map[string]interface{}{"type": "integer", "description": "When reading one memo: page of recorded changes, newest first; default 1."},
+		}}},
 		makeTool("recall_focus_handoff", "Search past Focus handoffs by query or time without an ID, or read one by handoff_id or work_id. Returns the task's reported outcome, findings, artifacts and unresolved points, not a step-by-step tool log.", map[string]interface{}{"handoff_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
 		{Name: "recall_entity_profile", Description: "Read your current impression of one known person or session by identity.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{"entity_type": map[string]interface{}{"type": "integer", "description": "1 for person, 2 for session"}, "entity_id": map[string]interface{}{"type": "integer"}}, "required": []string{"entity_type", "entity_id"}}},
 	}
