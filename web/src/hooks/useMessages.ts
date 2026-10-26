@@ -70,7 +70,9 @@ export function useMessages(
   const isInitialLoadRef = useRef(true);
   const skipLoadRef = useRef(false);
   const sessionRef = useRef(initialSession);
-  sessionRef.current = initialSession;
+  useEffect(() => {
+    sessionRef.current = initialSession;
+  }, [initialSession]);
 
   const markTempToRealTransition = useCallback(() => {
     skipLoadRef.current = true;

@@ -10,6 +10,16 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
+func initAOSTestLogger(t *testing.T) {
+	t.Helper()
+	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
+}
+
 // TestAOSPathsAndLocators verifies explicit Workspace locators and their
 // paired metadata without creating a Session-derived working directory.
 func TestAOSPathsAndLocators(t *testing.T) {
@@ -18,7 +28,7 @@ func TestAOSPathsAndLocators(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 17
 	if err := InitAgentOwnedSpace(personID); err != nil {
@@ -84,7 +94,7 @@ func TestAvailableWorkDirectoryIDSkipsMetadataOnlyPath(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 18
 	if err := os.MkdirAll(filepath.Join(GetAgentMetaPath(personID), "work", "5", ".meta"), 0755); err != nil {
@@ -104,7 +114,7 @@ func TestNewWorkspaceMetadataCollisionPreservesExistingFiles(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 19
 	record := model.Workspace{ID: 5, PersonID: personID, RelativePath: filepath.Join("work", "5")}
@@ -146,7 +156,7 @@ func TestInitAgentOwnedSpaceCreatesStableSkeleton(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 29
 	if err := InitAgentOwnedSpace(personID); err != nil {
@@ -188,7 +198,7 @@ func TestInitAgentOwnedSpacePreservesHistoricalFiles(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 53
 	legacyDir := filepath.Join(GetAgentOwnedSpacePath(personID), "work", "2")
@@ -215,7 +225,7 @@ func TestInitPrivateSpaceDoesNotCreateSessionWorkspace(t *testing.T) {
 	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
-	applogger.Init()
+	initAOSTestLogger(t)
 
 	const personID int64 = 61
 	if _, _, _, err := InitPrivateSpace(personID); err != nil {

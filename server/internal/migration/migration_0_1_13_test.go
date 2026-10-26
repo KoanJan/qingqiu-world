@@ -35,6 +35,11 @@ func TestMigrateLegacyOwnedSpaceCopiesWithoutDeletingOrOverwriting(t *testing.T)
 	t.Setenv("PRIVATE_SPACE_ROOT", legacyPrivateRoot)
 	config.Init()
 	applogger.Init()
+	t.Cleanup(func() {
+		if err := applogger.Close(); err != nil {
+			t.Errorf("close logger: %v", err)
+		}
+	})
 
 	const personID int64 = 61
 	const sessionID int64 = 67

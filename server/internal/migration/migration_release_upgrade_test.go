@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 
@@ -42,11 +43,11 @@ func TestUpgradeFrom0117PreservesObservationHistory(t *testing.T) {
 
 	Run()
 	Run()
-	if got := getDBVersion(); got != "0.1.19" {
+	if got := getDBVersion(); got != config.AppVersion {
 		t.Fatalf("release upgrade version = %q", got)
 	}
 	var versionCount int64
-	if err := db.Model(&model.DBVersion{}).Where("version = ? AND description NOT IN ?", "0.1.19", []string{retiredJinshuTypeMigration, durableEventTypeMigration}).Count(&versionCount).Error; err != nil || versionCount != 1 {
+	if err := db.Model(&model.DBVersion{}).Where("version = ? AND description NOT IN ?", config.AppVersion, []string{retiredJinshuTypeMigration, durableEventTypeMigration}).Count(&versionCount).Error; err != nil || versionCount != 1 {
 		t.Fatalf("version recorded %d times: %v", versionCount, err)
 	}
 	var observationCount int64

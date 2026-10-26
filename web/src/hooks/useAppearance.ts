@@ -95,16 +95,21 @@ async function resolvedApiBase(): Promise<string> {
 
 /** Parse and validate API response JSON into AppearanceSettings,
  *  applying DEFAULTS for missing or invalid fields. */
-function parseSettingsResponse(data: any): AppearanceSettings {
+function parseSettingsResponse(data: unknown): AppearanceSettings {
+  const value = typeof data === 'object' && data !== null
+    ? data as Record<string, unknown>
+    : {};
   return {
-    language: (data.language === 'zh' || data.language === 'en') ? data.language : DEFAULTS.language,
-    bgMode: (data.bgMode === 'color' || data.bgMode === 'image') ? data.bgMode : DEFAULTS.bgMode,
-    bgColor: data.bgColor || DEFAULTS.bgColor,
-    bgImage: data.bgImage || '',
-    bgImageSource: (data.bgImageSource === 'preset' || data.bgImageSource === 'upload') ? data.bgImageSource : '',
-    customColors: Array.isArray(data.customColors) ? data.customColors : [],
-    glassOpacity: typeof data.glassOpacity === 'number' ? data.glassOpacity : DEFAULTS.glassOpacity,
-    glassBlur: typeof data.glassBlur === 'number' ? data.glassBlur : DEFAULTS.glassBlur,
+    language: (value.language === 'zh' || value.language === 'en') ? value.language : DEFAULTS.language,
+    bgMode: (value.bgMode === 'color' || value.bgMode === 'image') ? value.bgMode : DEFAULTS.bgMode,
+    bgColor: typeof value.bgColor === 'string' && value.bgColor ? value.bgColor : DEFAULTS.bgColor,
+    bgImage: typeof value.bgImage === 'string' ? value.bgImage : '',
+    bgImageSource: (value.bgImageSource === 'preset' || value.bgImageSource === 'upload') ? value.bgImageSource : '',
+    customColors: Array.isArray(value.customColors)
+      ? value.customColors.filter((color): color is string => typeof color === 'string')
+      : [],
+    glassOpacity: typeof value.glassOpacity === 'number' ? value.glassOpacity : DEFAULTS.glassOpacity,
+    glassBlur: typeof value.glassBlur === 'number' ? value.glassBlur : DEFAULTS.glassBlur,
   };
 }
 

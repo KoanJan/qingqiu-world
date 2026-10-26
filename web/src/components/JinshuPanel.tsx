@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Spin, Empty, Select, Input, Upload, Button, Form, message } from 'antd';
 import { CaretRightOutlined, CaretDownOutlined, FolderOpenOutlined, FolderOutlined, FileOutlined, DesktopOutlined, UploadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -256,7 +256,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction, active }) => {
   // silent so they do not disrupt an already rendered list.
   const hasLoadedRef = useRef(false);
 
-  const load = async (isPoll: boolean = false) => {
+  const load = useCallback(async (isPoll: boolean = false) => {
     if (!isPoll) {
       setLoading(true);
     }
@@ -280,7 +280,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction, active }) => {
         hasLoadedRef.current = true;
       }
     }
-  };
+  }, [direction]);
 
   useEffect(() => {
     // Reset detail selection, send form, and cached data when switching direction.
@@ -316,7 +316,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction, active }) => {
         void load(hasLoadedRef.current);
       }
     });
-  }, [active, direction]);
+  }, [active, direction, load]);
 
   useEffect(() => {
     if (!active) return;
@@ -324,7 +324,7 @@ const JinshuPanel: React.FC<JinshuPanelProps> = ({ direction, active }) => {
     void load(hasLoadedRef.current);
     const timer = window.setInterval(() => load(true), FALLBACK_INTERVAL_MS);
     return () => window.clearInterval(timer);
-  }, [active, direction]);
+  }, [active, load]);
 
   const handleOpenDir = async (item: Jinshu) => {
     const firstPath = (item.files ?? [])[0]?.local_path;

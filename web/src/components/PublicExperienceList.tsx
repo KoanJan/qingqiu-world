@@ -29,7 +29,7 @@ const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ active, sho
   const [loading, setLoading] = useState(false);
   const [ingestVisible, setIngestVisible] = useState(false);
   const [ingesting, setIngesting] = useState(false);
-  const [_redistillingId, setRedistillingId] = useState<number | null>(null);
+  const [redistillingId, setRedistillingId] = useState<number | null>(null);
   const [ingestForm] = Form.useForm();
   const [fileContent, setFileContent] = useState<string | null>(null);
   const [fileName, setFileName] = useState<string | null>(null);
@@ -231,8 +231,9 @@ const PublicExperienceList: React.FC<PublicExperienceListProps> = ({ active, sho
                       <button
                         className="item-card-action-btn"
                         onClick={(e) => handleRedistill(e, exp.id)}
+                        disabled={redistillingId === exp.id}
                       >
-                        <ReloadOutlined />
+                        <ReloadOutlined spin={redistillingId === exp.id} />
                       </button>
                     )}
                   </CardActions>

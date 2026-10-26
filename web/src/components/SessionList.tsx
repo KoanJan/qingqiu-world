@@ -1,4 +1,4 @@
-import React, { useEffect, useRef, useState } from 'react';
+import React, { useCallback, useEffect, useRef, useState } from 'react';
 import { Button, Modal, message, Input } from 'antd';
 import { DeleteOutlined, EditOutlined } from '@ant-design/icons';
 import { MessageCircle, Users, Eye } from 'lucide-react';
@@ -116,9 +116,11 @@ const SessionList: React.FC<SessionListProps> = ({
   const [editTitle, setEditTitle] = useState('');
   const [viewMode, setViewMode] = useState<ViewMode>('sessions');
   const currentSessionIdRef = useRef(currentSessionId);
-  currentSessionIdRef.current = currentSessionId;
+  useEffect(() => {
+    currentSessionIdRef.current = currentSessionId;
+  }, [currentSessionId]);
 
-  const loadSessions = async () => {
+  const loadSessions = useCallback(async () => {
     setLoading(true);
     try {
       const response = await sessionApi.list();
@@ -129,9 +131,9 @@ const SessionList: React.FC<SessionListProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
-  const loadAgentsBrief = async () => {
+  const loadAgentsBrief = useCallback(async () => {
     setLoading(true);
     try {
       const response = await agentApi.listWithEnergy();
@@ -142,11 +144,11 @@ const SessionList: React.FC<SessionListProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     loadSessions();
-  }, []);
+  }, [loadSessions]);
 
   useEffect(() => {
     if (!notification) return;
@@ -169,7 +171,7 @@ const SessionList: React.FC<SessionListProps> = ({
     if (viewMode === 'agents') {
       loadAgentsBrief();
     }
-  }, [viewMode]);
+  }, [loadAgentsBrief, viewMode]);
 
   const handleDeleteSession = async (sessionId: number, e: React.MouseEvent) => {
     e.stopPropagation();

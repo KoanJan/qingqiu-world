@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import type { CSSProperties } from 'react';
 import { Tooltip, Spin, message } from 'antd';
 import { DownOutlined } from '@ant-design/icons';
 import { MessageCircle, Settings, Timeline, User } from 'lucide-react';
@@ -210,20 +211,20 @@ function App() {
 
   // Re-check the system LLM singleton config; `systemLLMReady` gates features
   // that require a system LLM (e.g. experience ingestion).
-  const refreshSystemLLMReady = async () => {
+  const refreshSystemLLMReady = useCallback(async () => {
     try {
       const res = await systemLLMConfigApi.get();
       setSystemLLMReady(!!res.data?.llm_config_id);
     } catch {
       setSystemLLMReady(false);
     }
-  };
+  }, []);
 
   // After user profile is confirmed, check if the system LLM is configured.
   useEffect(() => {
     if (!userProfileReady) return;
     refreshSystemLLMReady();
-  }, [userProfileReady]);
+  }, [refreshSystemLLMReady, userProfileReady]);
 
   useEffect(() => {
     if (!window.electronAPI?.onBackendError) return;
@@ -552,7 +553,7 @@ function App() {
           : appearance.bgImage
             ? { backgroundImage: `url(${getBackgroundUrl(appearance.bgImage, appearance.bgImageSource)})` }
             : {}),
-      }}
+      } as CSSProperties}
     >
       <header className={`app-header${isMacElectron ? ' app-header-mac' : ''}${isWinLinuxElectron ? ' app-header-win-linux' : ''}`}>
         <Tooltip title={version ? `v${version}` : ''} placement="right">

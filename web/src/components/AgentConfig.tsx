@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { useCallback, useEffect, useState } from 'react';
 import { Form, Input, Modal, Select, Upload, message } from 'antd';
 import { PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
@@ -32,7 +32,7 @@ const AgentConfig: React.FC<AgentConfigProps> = ({ showCreate, onCreateClose, on
     if (createAvatarPreview) URL.revokeObjectURL(createAvatarPreview);
   }, [createAvatarPreview]);
 
-  const loadAgents = async () => {
+  const loadAgents = useCallback(async () => {
     setLoading(true);
     try {
       const response = await agentApi.list();
@@ -43,14 +43,14 @@ const AgentConfig: React.FC<AgentConfigProps> = ({ showCreate, onCreateClose, on
     } finally {
       setLoading(false);
     }
-  };
+  }, [t]);
 
   useEffect(() => {
     void loadAgents();
     llmConfigApi.list().then(response => setLLMConfigs(response.data)).catch(error => {
       logger.error('Failed to load LLM configs', error);
     });
-  }, []);
+  }, [loadAgents]);
 
   useEffect(() => {
     if (showCreate) setModalVisible(true);

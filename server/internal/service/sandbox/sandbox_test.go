@@ -10,10 +10,26 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 )
 
+func successfulCommand() []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd", "/c", "exit", "0"}
+	}
+	return []string{"true"}
+}
+
+func echoCommand(message string) []string {
+	if runtime.GOOS == "windows" {
+		return []string{"cmd", "/c", "echo", message}
+	}
+	return []string{"echo", message}
+}
+
 // TestMain initializes the logger so sandbox execution tests can log without panicking.
 func TestMain(m *testing.M) {
 	applogger.Init()
-	os.Exit(m.Run())
+	code := m.Run()
+	_ = applogger.Close()
+	os.Exit(code)
 }
 
 // TestRun_EmptyCmd tests that Run returns an error for an empty command slice.
@@ -42,23 +58,28 @@ func TestFallbackExec_NonEmpty(t *testing.T) {
 // TestFallbackExec_Empty tests fallbackExec with empty args.
 func TestFallbackExec_Empty(t *testing.T) {
 	cmd := fallbackExec([]string{})
-	if cmd.Path != "true" && filepath.Base(cmd.Path) != "true" {
-		t.Errorf("expected 'true' for empty cmd, got %q", cmd.Path)
+	expected := "true"
+	if runtime.GOOS == "windows" {
+		expected = "cmd"
+	}
+	actual := strings.TrimSuffix(strings.ToLower(filepath.Base(cmd.Path)), strings.ToLower(filepath.Ext(cmd.Path)))
+	if actual != expected {
+		t.Errorf("expected %q for empty cmd, got %q", expected, cmd.Path)
 	}
 }
 
 // TestFallbackExec_Integration verifies that the returned *exec.Cmd can actually run.
 func TestFallbackExec_Integration(t *testing.T) {
-	cmd := fallbackExec([]string{"true"})
+	cmd := fallbackExec(successfulCommand())
 	if err := cmd.Run(); err != nil {
-		applogger.Error("sandbox test: fallback exec of 'true' failed", "error", err)
-		t.Errorf("fallback exec of 'true' failed: %v", err)
+		applogger.Error("sandbox test: fallback no-op command failed", "error", err)
+		t.Errorf("fallback no-op command failed: %v", err)
 	}
 }
 
 // TestFallbackExec_EchoIntegration verifies echo works through fallback exec.
 func TestFallbackExec_EchoIntegration(t *testing.T) {
-	cmd := fallbackExec([]string{"echo", "hello"})
+	cmd := fallbackExec(echoCommand("hello"))
 	out, err := cmd.Output()
 	if err != nil {
 		applogger.Error("sandbox test: fallback exec of echo failed", "error", err)

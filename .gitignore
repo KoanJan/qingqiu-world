@@ -1,12 +1,5 @@
-# IDE
-.trae
-.codebuddy
-.lingma
-.specify
-/specs
-AGENTS.md
-
-# Node.js
+# Runtime
+.tools/
 node_modules/
 npm-debug.log*
 yarn-debug.log*
@@ -14,6 +7,14 @@ yarn-error.log*
 .pnpm-debug.log*
 .npm
 .eslintcache
+
+# IDE
+.trae
+.codebuddy
+.lingma
+.specify
+/specs
+AGENTS.md
 
 # Build outputs
 dist/

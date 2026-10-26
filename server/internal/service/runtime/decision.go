@@ -2,6 +2,7 @@ package runtime
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -323,6 +324,57 @@ type DecisionResult struct {
 	Accepted bool            `json:"-"` // True only when Decide produced a valid result, including intentional silence.
 }
 
+type decisionJSONCompleter func(context.Context, []llm.Message, llm.JSONSchemaDefinition) (string, error)
+
+func needsChatPlanRepair(act action.Action) bool {
+	if act.Type != action.Chat {
+		return false
+	}
+	plan := act.ChatPlan
+	return plan == nil || plan.Guidance == "" || plan.SessionID == 0 || (plan.SessionID < 0 && plan.RecipientPersonID <= 0)
+}
+
+// repairChatPlans asks for the missing delivery plan without changing the action's intent.
+func repairChatPlans(ctx context.Context, complete decisionJSONCompleter, prompt string, personID int64, decision *DecisionResult) {
+	const maxRepairs = 3
+	repairs := 0
+	schema := llm.GenerateSchema[action.ChatPlan]()
+	for i := range decision.Actions {
+		act := &decision.Actions[i]
+		if !needsChatPlanRepair(*act) {
+			continue
+		}
+		if repairs >= maxRepairs {
+			applogger.Warn("Decision chat plan repair limit reached", "person_id", personID)
+			break
+		}
+		repairs++
+		previousPlan, _ := json.Marshal(act.ChatPlan)
+		repairPrompt := fmt.Sprintf("%s\n\nYour last decision chose a chat action, but its chat_plan was missing or invalid. Produce only the chat_plan for that action; do not decide again.\nAction background: %q\nAction reason: %q\nPrevious chat_plan: %s\nSet guidance to your own intention. Set session_id to the existing target session, or -1 with recipient_person_id for a new conversation. If replying to the triggering message, use that message's session ID.", prompt, act.Background, act.Reason, previousPlan)
+		result, err := complete(ctx, []llm.Message{{Role: "user", Content: repairPrompt}}, llm.JSONSchemaDefinition{
+			Name:        "ChatPlan",
+			Description: "Delivery plan for the chat action already chosen",
+			Strict:      true,
+			Schema:      schema,
+		})
+		if err != nil {
+			applogger.Error("Decision chat plan repair failed", "person_id", personID, "error", err)
+			continue
+		}
+		var plan action.ChatPlan
+		if err := json.Unmarshal([]byte(result), &plan); err != nil {
+			applogger.Error("Decision chat plan repair parse failed", "person_id", personID, "error", err)
+			continue
+		}
+		if plan.Guidance == "" || plan.SessionID == 0 || (plan.SessionID < 0 && plan.RecipientPersonID <= 0) {
+			applogger.Error("Decision chat plan repair returned invalid plan", "person_id", personID)
+			continue
+		}
+		act.ChatPlan = &plan
+		applogger.Info("Decision chat plan repaired", "person_id", personID, "session_id", plan.SessionID)
+	}
+}
+
 // Decide determines how the agent should respond to a Situation.
 //
 // For SituationSourceInternal (heartbeat), the agent is granted an autonomous
@@ -570,6 +622,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 	if !ok {
 		return DecisionResult{}
 	}
+	repairChatPlans(ctx, chatModel.ChatWithJSONSchema, prompt, personID, &decision)
 
 	applogger.Info("Decision made",
 		"person_id", personID,
@@ -648,6 +701,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 	if !ok {
 		return DecisionResult{}
 	}
+	repairChatPlans(ctx, chatModel.ChatWithJSONSchema, prompt, personID, &decision)
 
 	applogger.Info("Heartbeat decision made",
 		"person_id", personID,
