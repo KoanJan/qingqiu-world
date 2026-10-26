@@ -20,6 +20,11 @@
 //   - JINSHU_ROOT: Root directory for person-level jinshu (锦书) files (default: DATA_ROOT/jinshu)
 //   - CONTEXT_WINDOW_ITERATIONS: Number of recent iterations visible to agent (default: 10)
 //   - NOTES_MAX_CHARS: Maximum character limit for agent notes (default: 5000)
+//   - KB_FLAT_THRESHOLD: Minimum vector count before HNSW building (default: 1000)
+//   - KB_RETRIEVAL_MIN_TOKENS: Target lower bound for KB retrieval units (default: 64)
+//   - KB_RETRIEVAL_MAX_TOKENS: Hard upper bound for KB retrieval units (default: 512)
+//   - KB_CHUNK_OVERLAP_TOKENS: Overlap for splits within one oversized leaf (default: 64)
+//   - KB_EMBEDDING_HARD_MAX_TOKENS: Embedding provider input guard (default: 8192)
 package config
 
 import (
@@ -29,7 +34,7 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.13"
+const AppVersion = "0.1.20"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings
@@ -48,6 +53,11 @@ type Settings struct {
 	MinIterationWindow       int    // Minimum iterations visible to agent (anchor size)
 	MaxIterationWindow       int    // Maximum iterations before bulk-shrink triggers
 	NotesMaxChars            int    // Maximum character limit for agent notes
+	KBFlatThreshold          int    // Minimum vector count before building an HNSW index
+	KBRetrievalMinTokens     int    // Target lower bound for KB retrieval units
+	KBRetrievalMaxTokens     int    // Hard upper bound for KB retrieval units
+	KBChunkOverlapTokens     int    // Overlap for chunks split within one oversized leaf
+	KBEmbeddingHardMaxTokens int    // Embedding provider input guard for KB retrieval units
 }
 
 // Init loads configuration from environment variables with defaults.
@@ -67,6 +77,11 @@ func Init() {
 		MinIterationWindow:       getEnvInt("MIN_ITERATION_WINDOW", 10),
 		MaxIterationWindow:       getEnvInt("MAX_ITERATION_WINDOW", 100),
 		NotesMaxChars:            getEnvInt("NOTES_MAX_CHARS", 10000),
+		KBFlatThreshold:          getPositiveEnvInt("KB_FLAT_THRESHOLD", 1000),
+		KBRetrievalMinTokens:     getEnvInt("KB_RETRIEVAL_MIN_TOKENS", 64),
+		KBRetrievalMaxTokens:     getEnvInt("KB_RETRIEVAL_MAX_TOKENS", 512),
+		KBChunkOverlapTokens:     getEnvInt("KB_CHUNK_OVERLAP_TOKENS", 64),
+		KBEmbeddingHardMaxTokens: getEnvInt("KB_EMBEDDING_HARD_MAX_TOKENS", 8192),
 	}
 }
 
@@ -148,6 +163,18 @@ func getEnv(key, fallback string) string {
 func getEnvInt(key string, fallback int) int {
 	if val := os.Getenv(key); val != "" {
 		if n, err := strconv.Atoi(val); err == nil {
+			return n
+		}
+	}
+	return fallback
+}
+
+// getPositiveEnvInt reads a strictly positive integer or returns fallback.
+// Index thresholds must never silently become zero, which would force HNSW
+// builds for every small knowledge base.
+func getPositiveEnvInt(key string, fallback int) int {
+	if val := os.Getenv(key); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
 			return n
 		}
 	}

@@ -12,7 +12,7 @@ import (
 
 	"qingqiu-world-server/internal/config"
 	applogger "qingqiu-world-server/internal/logger"
-	"qingqiu-world-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/aos"
 )
 
 // migrate_0_1_13 copies legacy filesystem data into the Agent Owned Space
@@ -26,9 +26,8 @@ func migrate_0_1_13() {
 }
 
 // migrateLegacyOwnedSpace discovers all legacy person/session directories and
-// invokes the copy-only import operations provided by workspace. Discovery and
-// release-version ownership belong here; workspace owns path resolution and
-// one-directory copy semantics.
+// uses AOS paths for a copy-only import. Discovery and release-version
+// ownership belong here; the migration retains its own copy semantics.
 func migrateLegacyOwnedSpace() error {
 	workspaceRoot := legacyRoot("WORKSPACE_ROOT", filepath.Join(config.Get().GetDataRoot(), "workspace"))
 	privateRoot := legacyRoot("PRIVATE_SPACE_ROOT", filepath.Join(config.Get().GetDataRoot(), "private_space"))
@@ -135,8 +134,8 @@ func sortedIDs(ids map[int64]struct{}) []int64 {
 // after both resource and metadata copies finish.
 func migrateLegacyWorkspace(personID, sessionID int64, legacyRoot string) error {
 	legacy := filepath.Join(legacyRoot, strconv.FormatInt(personID, 10), strconv.FormatInt(sessionID, 10))
-	targetWorkspace := workspace.GetWorkspacePath(personID, sessionID)
-	targetMeta := workspace.GetMetaDir(personID, sessionID)
+	targetWorkspace := legacySessionWorkspacePath(personID, sessionID)
+	targetMeta := legacySessionMetaDir(personID, sessionID)
 	recorded, err := migrationAlreadyRecorded(filepath.Join(targetMeta, "legacy_workspace_imported"))
 	if err != nil {
 		return fmt.Errorf("check legacy workspace migration marker: %w", err)
@@ -167,8 +166,8 @@ func migrateLegacyWorkspace(personID, sessionID int64, legacyRoot string) error 
 // and AOSMeta with the same copy-only completion semantics.
 func migrateLegacyPrivateSpace(personID int64, legacyRoot string) error {
 	legacy := filepath.Join(legacyRoot, strconv.FormatInt(personID, 10))
-	targetWork := workspace.GetPrivateSpacePath(personID)
-	targetMeta := workspace.GetPrivateMetaDir(personID)
+	targetWork := aos.GetPrivateSpacePath(personID)
+	targetMeta := aos.GetPrivateMetaDir(personID)
 	recorded, err := migrationAlreadyRecorded(filepath.Join(targetMeta, "legacy_private_imported"))
 	if err != nil {
 		return fmt.Errorf("check legacy private migration marker: %w", err)

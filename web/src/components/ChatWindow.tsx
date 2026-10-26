@@ -1,18 +1,17 @@
 import React, { useEffect, useState, useRef, useCallback, useMemo } from 'react';
 import { Input, Button, Spin, message } from 'antd';
 import { RobotOutlined } from '@ant-design/icons';
-import { Send, Copy, ChevronsUpDown, ChevronsDownUp } from 'lucide-react';
+import { Send, Copy, ChevronsUpDown, ChevronsDownUp, Volume2, LoaderCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { formatMessageTime } from '../utils/time';
 import AgentAvatar from './AgentAvatar';
 import AgentStatusBar from './AgentStatusBar';
-import ActivityList from './ActivityList';
 import { MarkdownRenderer } from 'pd-markdown/web';
 import { useMessages } from '../hooks/useMessages';
 import { subscribeClientNotifications, CLIENT_NOTIFICATION_TYPES } from '../services/clientNotifications';
 import type { Message, Session, Agent, SessionAgentStatus } from '../types';
 import { MESSAGE_STATUS_COMPLETED, PARTICIPANT_STATUS_IDLE, PARTICIPANT_STATUS_WORKING, TEMP_SESSION_ID } from '../types';
-import { agentApi, chatApi, personApi, sessionApi } from '../services/api';
+import { agentApi, chatApi, messageApi, personApi, sessionApi } from '../services/api';
 import { logger } from '../logger';
 
 interface ChatWindowProps {
@@ -26,21 +25,20 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
   const [inputValue, setInputValue] = useState('');
   const [currentAgent, setCurrentAgent] = useState<Agent | null>(null);
   const [sessionAgents, setSessionAgents] = useState<SessionAgentStatus[]>([]);
-  const [viewMode, setViewMode] = useState<'chat' | 'activity'>('chat');
   const [currentUserPersonId, setCurrentUserPersonId] = useState<number>(0);
-  const tabContainerRef = useRef<HTMLDivElement>(null);
-  const tabRefs = useRef<Record<string, HTMLButtonElement | null>>({});
+  const [speechLoadingMessageID, setSpeechLoadingMessageID] = useState<number | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const chatMessagesRef = useRef<HTMLDivElement>(null);
   const isInitialLoadRef = useRef<boolean>(true);
   // IDs are tracked per event route/resource, rather than globally: unrelated
   // events must not suppress a newer status update for this chat participant.
   const latestEventIDRef = useRef<Map<string, number>>(new Map());
+  const speechAudioRef = useRef<HTMLAudioElement | null>(null);
+  const speechRequestIDRef = useRef(0);
 
-  // Reset initial-load flag and view mode when the session changes.
+  // Reset the initial-load flag when the session changes.
   useEffect(() => {
     isInitialLoadRef.current = true;
-    setViewMode('chat');
   }, [session?.id]);
 
   const isTempSession = session?.id === TEMP_SESSION_ID;
@@ -112,6 +110,9 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
         session_id: selectedSessionID,
         person_id: personID,
         content,
+        expression_instruction: typeof notification.data?.expression_instruction === 'string'
+          ? notification.data.expression_instruction
+          : '',
         status: MESSAGE_STATUS_COMPLETED,
         created_at: occurredAt,
         updated_at: occurredAt,
@@ -152,7 +153,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
         logger.error('Failed to load session agents', error, 'session_id', session.id);
         if (currentAgent) {
           setSessionAgents([
-            { agent_id: currentAgent.id, name: currentAgent.name, avatar: currentAgent.avatar, status: PARTICIPANT_STATUS_IDLE },
+            { agent_id: currentAgent.id, name: currentAgent.name, avatar: currentAgent.avatar, status: PARTICIPANT_STATUS_IDLE, life_status: currentAgent.status },
           ]);
         }
       }
@@ -205,24 +206,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
     }
   }, [messages, scrollToBottom]);
 
-  // Tab indicator position
-  useEffect(() => {
-    const container = tabContainerRef.current;
-    const activeTab = tabRefs.current[viewMode];
-    if (!container || !activeTab) return;
-    const containerRect = container.getBoundingClientRect();
-    const tabRect = activeTab.getBoundingClientRect();
-    container.style.setProperty('--indicator-left', `${tabRect.left - containerRect.left}px`);
-    container.style.setProperty('--indicator-width', `${tabRect.width}px`);
-  }, [viewMode]);
-
-  // Scroll to bottom when switching to chat view — use instant jump since
-  // the chat-messages div is freshly mounted and starts at scrollTop=0.
-  useEffect(() => {
-    if (viewMode !== 'chat') return;
-    scrollToBottom(false);
-  }, [viewMode, scrollToBottom]);
-
   // ---- Handlers ----
 
   const handleSend = async () => {
@@ -248,6 +231,67 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
       // Fallback for environments without clipboard API
       message.error('Copy failed');
     });
+  };
+
+  const stopCurrentSpeech = useCallback(() => {
+    const audio = speechAudioRef.current;
+    if (!audio) return;
+    const sourceURL = audio.src;
+    audio.pause();
+    audio.src = '';
+    if (sourceURL.startsWith('blob:')) URL.revokeObjectURL(sourceURL);
+    speechAudioRef.current = null;
+  }, []);
+
+  useEffect(() => () => {
+    // Invalidate any in-flight request so a late response cannot start audio
+    // after this view has unmounted.
+    speechRequestIDRef.current += 1;
+    stopCurrentSpeech();
+  }, [stopCurrentSpeech]);
+
+  const handlePlaySpeech = async (messageID: number) => {
+    if (speechLoadingMessageID === messageID) return;
+    // Every click invalidates the previous request so a slow response cannot
+    // start a second audio element on top of the newest one.
+    const requestID = ++speechRequestIDRef.current;
+    stopCurrentSpeech();
+    setSpeechLoadingMessageID(messageID);
+    try {
+      const response = await messageApi.getSpeech(messageID);
+      if (requestID !== speechRequestIDRef.current) return;
+      if (!(response.data instanceof Blob) || response.data.size === 0) {
+        throw new Error('speech response is empty');
+      }
+      // The backend reports failures as its JSON envelope even on this binary
+      // endpoint, so a JSON payload must never be treated as audio.
+      if (response.data.type.includes('application/json')) {
+        const envelope = JSON.parse(await response.data.text()) as { message?: string };
+        throw new Error(envelope.message || 'speech request failed');
+      }
+      const sourceURL = URL.createObjectURL(response.data);
+      const audio = new Audio(sourceURL);
+      speechAudioRef.current = audio;
+      const clearAudio = () => {
+        if (speechAudioRef.current === audio) speechAudioRef.current = null;
+        URL.revokeObjectURL(sourceURL);
+      };
+      audio.onended = clearAudio;
+      audio.onerror = () => {
+        clearAudio();
+        message.error(t('chat.speechUnavailable'));
+      };
+      await audio.play();
+    } catch (error) {
+      if (requestID !== speechRequestIDRef.current) return;
+      stopCurrentSpeech();
+      logger.warn('Failed to load message speech', error, 'message_id', messageID);
+      message.error(t('chat.speechUnavailable'));
+    } finally {
+      if (requestID === speechRequestIDRef.current) {
+        setSpeechLoadingMessageID(current => current === messageID ? null : current);
+      }
+    }
   };
 
   const toggleMessageExpand = useCallback((msgId: number) => {
@@ -282,31 +326,8 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
     <>
       <div className="chat-header-row">
         <AgentStatusBar agents={sessionAgents} />
-        {!isTempSession && (
-          <div className="chat-view-tabs" ref={tabContainerRef}>
-            <div className="chat-tab-indicator" />
-            <button
-              ref={el => { tabRefs.current.chat = el; }}
-              className={`chat-tab ${viewMode === 'chat' ? 'active' : ''}`}
-              onClick={() => setViewMode('chat')}
-            >
-              {t('viewTabs.chat')}
-            </button>
-            <button
-              ref={el => { tabRefs.current.activity = el; }}
-              className={`chat-tab ${viewMode === 'activity' ? 'active' : ''}`}
-              onClick={() => setViewMode('activity')}
-            >
-              {t('viewTabs.activities')}
-            </button>
-          </div>
-        )}
       </div>
 
-      {viewMode === 'activity' ? (
-        <ActivityList sessionId={session.id} agents={sessionAgents} />
-      ) : (
-        <>
           <div className="chat-messages" ref={chatMessagesRef}>
             {messagesLoading ? (
               <div style={{ textAlign: 'center', padding: '40px' }}>
@@ -323,6 +344,7 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
                   const sender = !isMe ? agentLookup.get(msg.person_id) : undefined;
                   const senderAvatar = sender?.avatar ?? currentAgent?.avatar ?? '';
                   const senderName = sender?.name ?? currentAgent?.name ?? 'AI';
+                  const isAgentMessage = agentLookup.has(msg.person_id) || msg.person_id === currentAgent?.id;
                   return (
                   <div key={msg.id} className={`message-item ${isMe ? 'user' : 'assistant'}`}>
                     <div className="message-header">
@@ -371,6 +393,16 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
                         >
                           <Copy size={14} />
                         </button>
+                        {isAgentMessage && (
+                          <button
+                            className="copy-btn"
+                            onClick={() => void handlePlaySpeech(msg.id)}
+                            disabled={speechLoadingMessageID === msg.id}
+                            title={t('chat.playSpeech')}
+                          >
+                            {speechLoadingMessageID === msg.id ? <LoaderCircle size={14} className="speech-loading-icon" /> : <Volume2 size={14} />}
+                          </button>
+                        )}
                         {msg.content.length > COLLAPSE_THRESHOLD && (
                           <button
                             className="copy-btn"
@@ -448,8 +480,6 @@ const ChatWindow: React.FC<ChatWindowProps> = ({ session, onSessionCreated }) =>
               </div>
             </div>
           )}
-        </>
-      )}
     </>
   );
 };

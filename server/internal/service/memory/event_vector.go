@@ -9,7 +9,7 @@ import (
 )
 
 // embeddingJob carries the data needed for async embedding generation.
-// The event record is already persisted synchronously by RecordEvent;
+// The event record is already persisted by its producer;
 // the background goroutine only needs eventID + content to call the
 // embedding API and store the resulting vector.
 type embeddingJob struct {
@@ -21,7 +21,7 @@ const vectorizationChannelSize = 256
 
 // vectorizerCh is the buffered channel for async embedding generation.
 // It is purely a vectorization work queue — no event creation, no
-// observation creation. Those are handled by RecordEvent (sync) and
+// observation creation. Those are handled by Event producers and
 // CreateObservation (caller-side) respectively.
 var vectorizerCh = make(chan embeddingJob, vectorizationChannelSize)
 
@@ -45,7 +45,13 @@ func RecordMessageEvent(messageID int64, content string) (int64, error) {
 		return 0, err
 	}
 
-	// Enqueue async embedding generation if embedding service is configured.
+	EnqueueEventEmbedding(eventID, content)
+	return eventID, nil
+}
+
+// EnqueueEventEmbedding schedules vectorization after a caller-owned Event
+// transaction has committed. Event persistence never depends on this queue.
+func EnqueueEventEmbedding(eventID int64, content string) {
 	if embeddingSvc != nil {
 		select {
 		case vectorizerCh <- embeddingJob{eventID: eventID, content: content}:
@@ -55,11 +61,10 @@ func RecordMessageEvent(messageID int64, content string) (int64, error) {
 		}
 	}
 
-	return eventID, nil
 }
 
 // RecordBiographyEvent creates a memory event record for an agent's origin
-// record. Unlike RecordEvent, it does not enqueue embedding generation — an
+// record. Unlike RecordMessageEvent, it does not enqueue embedding generation — an
 // origin statement is a fixed self-orienting fact, not conversational content
 // that needs semantic retrieval.
 //

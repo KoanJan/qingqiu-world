@@ -2,7 +2,7 @@
 //
 // The single external entry point is Run(workspace, policyDir, cmd).
 // Internally dispatches to platform-native mechanisms:
-//   - macOS: sandbox-exec (Seatbelt MACF), with a per-session policy file
+//   - macOS: sandbox-exec (Seatbelt MACF), with a per-Work policy file
 //   - Linux: bubblewrap (user namespaces + mount namespaces), embedded bwrap binary
 //   - Windows: plain exec (AppContainer planned but not yet implemented)
 //
@@ -11,7 +11,7 @@
 // When the platform sandbox is unavailable, commands fall back to plain os/exec
 // rather than blocking focused work. This trade-off is deliberate: an agent that
 // cannot execute commands is useless, while a sandbox breach (even if unlikely)
-// is limited by the fact that agents operate on isolated session workspaces.
+// is limited by the Agent Owned Space boundary enforced by the available sandbox.
 //
 // # Platform details
 //
@@ -22,8 +22,8 @@
 //     the current agent's AOS. Outside data/, read, execution and network
 //     remain available by default, while protected system directories stay
 //     write-denied.
-//   - Policy files are stored outside the workspace ({DATA_ROOT}/aac/{personID}/{sessionID}/sandbox.sb)
-//     to prevent tampering. Generated once per session, reused for subsequent calls.
+//   - Policy files are stored outside the workspace under the Work policy
+//     directory to prevent tampering and are reused for subsequent calls.
 //
 // Linux (linux.go):
 //   - The bwrap binary is embedded per-architecture (bwrap_linux_{amd64,arm64,arm,386}).

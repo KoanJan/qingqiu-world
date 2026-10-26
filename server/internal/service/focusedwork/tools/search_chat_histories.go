@@ -163,13 +163,16 @@ func (s *SearchChatHistoriesTool) getParticipantSessionIDs() ([]int64, error) {
 	return ids, err
 }
 
-// loadMessages returns all messages from the given sessions in descending time order.
-// Uses index-only DB access (no LIKE) to avoid holding DB locks.
+// loadMessages returns only messages this agent has observed. Membership is a
+// search scope, while an Observation is the authority to recall a statement.
+// Keyword matching remains in memory after this visibility filter.
 func (s *SearchChatHistoriesTool) loadMessages(sessionIDs []int64) ([]model.Message, error) {
 	var messages []model.Message
-	err := database.DB.
-		Where("session_id IN ?", sessionIDs).
-		Order("created_at DESC").
+	err := database.DB.Table("messages").Select("DISTINCT messages.*").
+		Joins("JOIN events ON events.event_type = ? AND events.ref_id = messages.id", model.EventTypeMessage).
+		Joins("JOIN agent_observations ON agent_observations.event_id = events.id AND agent_observations.person_id = ?", s.personID).
+		Where("messages.session_id IN ?", sessionIDs).
+		Order("messages.created_at DESC").
 		Find(&messages).Error
 	return messages, err
 }

@@ -14,12 +14,15 @@ func TestActivityPageParams(t *testing.T) {
 		name       string
 		query      string
 		wantBefore int64
+		wantAfter  int64
 		wantLimit  int
 		wantErr    bool
 	}{
 		{name: "defaults", wantLimit: activityDefaultPageSize},
 		{name: "explicit cursor and limit", query: "?before_interaction_id=42&limit=25", wantBefore: 42, wantLimit: 25},
+		{name: "newer cursor", query: "?after_interaction_id=42", wantAfter: 42, wantLimit: activityDefaultPageSize},
 		{name: "zero cursor rejected", query: "?before_interaction_id=0", wantErr: true},
+		{name: "combined cursors rejected", query: "?before_interaction_id=41&after_interaction_id=42", wantErr: true},
 		{name: "oversized page rejected", query: "?limit=201", wantErr: true},
 	}
 
@@ -28,7 +31,7 @@ func TestActivityPageParams(t *testing.T) {
 			context, _ := gin.CreateTestContext(httptest.NewRecorder())
 			request := httptest.NewRequest("GET", "/activities"+testCase.query, nil)
 			context.Request = request
-			before, limit, err := activityPageParams(context)
+			before, after, limit, err := activityPageParams(context)
 			if testCase.wantErr {
 				if err == nil {
 					t.Fatal("expected parameter validation error")
@@ -38,8 +41,8 @@ func TestActivityPageParams(t *testing.T) {
 			if err != nil {
 				t.Fatalf("unexpected parameter validation error: %v", err)
 			}
-			if before != testCase.wantBefore || limit != testCase.wantLimit {
-				t.Errorf("params = (%d, %d), want (%d, %d)", before, limit, testCase.wantBefore, testCase.wantLimit)
+			if before != testCase.wantBefore || after != testCase.wantAfter || limit != testCase.wantLimit {
+				t.Errorf("params = (%d, %d, %d), want (%d, %d, %d)", before, after, limit, testCase.wantBefore, testCase.wantAfter, testCase.wantLimit)
 			}
 		})
 	}

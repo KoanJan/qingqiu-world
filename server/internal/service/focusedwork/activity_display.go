@@ -30,6 +30,11 @@ var activityTargetKeys = map[string][]string{
 	tools.ToolNameCopyFromJinshu.String():      {"target_relative_dir", "jinshu_id"},
 	tools.ToolNameScanKB.String():              {"query"},
 	tools.ToolNameListKBDocuments.String():     {"kb_id"},
+	tools.ToolNameReadKBEvidence.String():      {"chunk_ids"},
+	tools.ToolNameUseWorkspace.String():        {"workspace_id"},
+	tools.ToolNameReadTextLines.String():       {"file_path"},
+	tools.ToolNameReadTextBlock.String():       {"file_path"},
+	tools.ToolNameSearchTextFile.String():      {"file_path", "query"},
 }
 
 // interactionDataResponse is the parsed form of Data JSON for type=2 interactions.
@@ -122,18 +127,65 @@ func parseResponseInteraction(interaction *model.Interaction, personID int64) []
 func buildToolCallEvent(timeStr string, interactionID int64, toolCallIndex int, personID int64, tc *rawToolCall) schema.ActivityEvent {
 	keys := activityTargetKeys[tc.Function.Name]
 	target := ""
-	if len(keys) > 0 {
+	if tc.Function.Name == tools.ToolNameReadKBEvidence.String() {
+		target = extractReadKBEvidenceTarget(interactionID, tc.Function.Arguments)
+	} else if len(keys) > 0 {
 		target = extractTarget(interactionID, tc.Function.Name, tc.Function.Arguments, keys)
 	}
 
 	return schema.ActivityEvent{
-		ID:       fmt.Sprintf("%d:tool:%d", interactionID, toolCallIndex),
-		Time:     timeStr,
-		Type:     "tool_call",
-		Tool:     tc.Function.Name,
-		Target:   target,
-		PersonID: personID,
+		ID:         fmt.Sprintf("%d:tool:%d", interactionID, toolCallIndex),
+		Time:       timeStr,
+		Type:       "tool_call",
+		Tool:       tc.Function.Name,
+		Target:     target,
+		ToolParams: extractTextToolParams(interactionID, tc.Function.Name, tc.Function.Arguments),
+		PersonID:   personID,
 	}
+}
+
+// extractTextToolParams exposes only the file-operation arguments needed for
+// Activity wording; other tool arguments may contain private or long content.
+func extractTextToolParams(interactionID int64, toolName, argumentsJSON string) map[string]interface{} {
+	switch toolName {
+	case tools.ToolNameReadTextLines.String(), tools.ToolNameReadTextBlock.String(), tools.ToolNameSearchTextFile.String():
+	default:
+		return nil
+	}
+	var args struct {
+		Query           string `json:"query"`
+		StartLine       *int   `json:"start_line"`
+		MaxLines        *int   `json:"max_lines"`
+		StartByteOffset *int64 `json:"start_byte_offset"`
+		MaxBytes        *int   `json:"max_bytes"`
+	}
+	if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
+		applogger.Error("activity: failed to parse text-tool arguments", "interaction_id", interactionID, "tool", toolName, "error", err)
+		return nil
+	}
+	switch toolName {
+	case tools.ToolNameSearchTextFile.String():
+		return map[string]interface{}{"query": args.Query}
+	case tools.ToolNameReadTextLines.String():
+		startLine, maxLines := 1, 200
+		if args.StartLine != nil {
+			startLine = *args.StartLine
+		}
+		if args.MaxLines != nil {
+			maxLines = *args.MaxLines
+		}
+		return map[string]interface{}{"start_line": startLine, "max_lines": maxLines}
+	case tools.ToolNameReadTextBlock.String():
+		startByteOffset, maxBytes := int64(0), 8192
+		if args.StartByteOffset != nil {
+			startByteOffset = *args.StartByteOffset
+		}
+		if args.MaxBytes != nil {
+			maxBytes = *args.MaxBytes
+		}
+		return map[string]interface{}{"start_byte_offset": startByteOffset, "max_bytes": maxBytes}
+	}
+	return nil
 }
 
 // extractTarget extracts the first non-empty value from the arguments JSON.
@@ -159,6 +211,27 @@ func extractTarget(interactionID int64, toolName, argumentsJSON string, keys []s
 	}
 
 	return ""
+}
+
+// extractReadKBEvidenceTarget returns a display-safe evidence count instead of
+// exposing internal chunk IDs in the user-facing Activity timeline.
+func extractReadKBEvidenceTarget(interactionID int64, argumentsJSON string) string {
+	if argumentsJSON == "" {
+		return ""
+	}
+
+	var args struct {
+		ChunkIDs []int64 `json:"chunk_ids"`
+	}
+	if err := json.Unmarshal([]byte(argumentsJSON), &args); err != nil {
+		applogger.Error("activity: failed to parse read_kb_evidence arguments",
+			"interaction_id", interactionID, "error", err)
+		return ""
+	}
+	if len(args.ChunkIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", len(args.ChunkIDs))
 }
 
 // extractGuidance extracts the guidance text from a type=3 interaction's Data JSON.

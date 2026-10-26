@@ -23,6 +23,8 @@ const routingPrompt = `Analyze the query type and process accordingly.
 Conversation history:
 %s
 
+A knowledge base is like a library of materials in Qingqiu World: a persistent collection of documents with its own name and description.
+
 Authorized knowledge bases (the only knowledge bases you are allowed to search):
 %s
 
@@ -30,37 +32,13 @@ Current message batch: %s
 
 Decide whether this message batch needs knowledge-base retrieval. If it does, produce a self-contained search query and pick the IDs of the authorized knowledge bases worth searching. When retrieval is unnecessary, return an empty query and an empty ID list.
 
-Extract keywords suitable for searching relevant conversation history. Return an empty keyword list when history search is unnecessary.
+Extract keywords suitable for searching relevant conversation history. Return an empty keyword list when history search is unnecessary.`
 
-If the batch is too vague to act on even with the conversation history, set needs_clarification to true and explain why in clarification_reason.`
-
-// clarifyPrompt is the LLM prompt template for generating clarification questions.
-// It takes three parameters: history, query, and reason.
-const clarifyPrompt = `The query is too vague and needs clarification.
-
-Conversation history:
-%s
-
-Query: %s
-
-Reason for vagueness: %s
-
-Generate a clarification question. The question should be concise, specific, and provide possible options.
-
-IMPORTANT: The clarification question MUST be in the SAME LANGUAGE as the original query.
-- If the query is in Chinese, respond in Chinese.
-- If the query is in English, respond in English.
-
-Output only the clarification question, without any additional content.`
-
-// QueryPreprocessingOutput contains retrieval and clarification instructions for a message batch.
+// QueryPreprocessingOutput contains retrieval requests for a message batch.
 type QueryPreprocessingOutput struct {
 	KnowledgeBaseQuery    string   `json:"knowledge_base_query" jsonschema:"description=Self-contained query for knowledge-base vector search; empty when unnecessary,required"`
 	KnowledgeBaseIDs      []int64  `json:"knowledge_base_ids" jsonschema:"description=IDs of the authorized knowledge bases to search; empty when unnecessary,required"`
 	HistorySearchKeywords []string `json:"history_search_keywords" jsonschema:"description=Keywords for conversation history search; empty when unnecessary,required"`
-	NeedsClarification    bool     `json:"needs_clarification" jsonschema:"description=Whether the message batch needs clarification,required"`
-	ClarificationReason   string   `json:"clarification_reason" jsonschema:"description=Reason the message batch needs clarification"`
-	Clarification         string   `json:"clarification" jsonschema:"description=Clarification question when needed"`
 }
 
 // formatAuthorizedKBs renders the authorized KB inventory for the routing
@@ -155,40 +133,7 @@ func preprocessQuery(
 	return allKBsFallback(query, authorizedKBs)
 }
 
-// generateClarification generates a clarification question for vague queries.
-// If characterSettings is non-empty, it is prepended to the prompt for personality alignment.
-// Uses TemperatureDeterministic for consistent outputs.
-func generateClarification(
-	ctx context.Context,
-	llmConfig *model.LLMConfig,
-	query string,
-	history []types.ConversationMessage,
-	reason string,
-	characterSettings string,
-	maxMessages int,
-) string {
-	chatModel := llm.NewChatModelWithTemperature(llmConfig.BaseURL, llmConfig.APIKey, llmConfig.ModelID, llm.TemperatureDeterministic)
-
-	historyText := formatHistoryForPreprocessing(history, maxMessages)
-	prompt := fmt.Sprintf(clarifyPrompt, historyText, query, reason)
-
-	if characterSettings != "" {
-		prompt = fmt.Sprintf("[Your Character]\n%s\n\n%s", characterSettings, prompt)
-	}
-
-	result, err := chatModel.Chat(ctx, []llm.Message{
-		{Role: "user", Content: prompt},
-	})
-	if err != nil {
-		applogger.Error("Clarification generation failed", "error", err)
-		return "Your question is a bit vague. Could you please provide more details about your needs?"
-	}
-
-	applogger.Info("Generated clarification for query", "query", query[:min(50, len(query))])
-	return result
-}
-
-// PreprocessQuery prepares retrieval requests and clarification output for a message batch.
+// PreprocessQuery prepares retrieval requests for a message batch.
 // authorizedKBs is the agent's granted KB inventory: it is injected into the
 // decision prompt (the LLM may only pick from it) and doubles as the fail-open
 // fallback set when the decision call itself fails.
@@ -197,19 +142,10 @@ func PreprocessQuery(
 	llmConfig *model.LLMConfig,
 	query string,
 	history []types.ConversationMessage,
-	characterSettings string,
 	authorizedKBs []types.KBDescriptor,
 	maxMessages int,
 ) *QueryPreprocessingOutput {
 	output := preprocessQuery(ctx, llmConfig, query, history, authorizedKBs, maxMessages)
-	if output.NeedsClarification {
-		reason := "Query is too vague"
-		if output.ClarificationReason != "" {
-			reason = output.ClarificationReason
-		}
-		output.Clarification = generateClarification(ctx, llmConfig, query, history, reason, characterSettings, maxMessages)
-	}
-
 	applogger.Info("query preprocessing complete",
 		"knowledge_base_query", output.KnowledgeBaseQuery[:min(50, len(output.KnowledgeBaseQuery))],
 		"knowledge_base_ids", output.KnowledgeBaseIDs,

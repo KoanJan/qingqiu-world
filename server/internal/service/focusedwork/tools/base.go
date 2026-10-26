@@ -8,7 +8,7 @@
 // person-scoped authorization.
 //
 // Available tools:
-//   - ReadTextFileTool: Read text file contents with line offset/limit
+//   - TextFileTool: Read bounded lines or blocks and search within a text file
 //   - WriteTextFileTool: Create, overwrite, or append to text files
 //   - EditTextFileTool: Make precise text replacements in existing files
 //   - BashTool: Execute shell commands within a workspace
@@ -19,6 +19,7 @@
 //   - ScanKBTool: Semantic search over authorized knowledge bases with optional
 //     KB/document metadata filters (KB contents are never exposed as raw files)
 //   - ListKBDocumentsTool: List the documents of one authorized knowledge base
+//   - ReadKBEvidenceTool: Read full authorized evidence by chunk ID
 package tools
 
 import "qingqiu-world-server/internal/service/llm"
@@ -44,6 +45,11 @@ const (
 	ToolNameCopyFromJinshu                      // copy_from_jinshu
 	ToolNameScanKB                              // scan_kb
 	ToolNameListKBDocuments                     // list_kb_documents
+	ToolNameReadKBEvidence                      // read_kb_evidence
+	ToolNameUseWorkspace                        // use_workspace
+	ToolNameReadTextLines                       // read_text_lines
+	ToolNameReadTextBlock                       // read_text_block
+	ToolNameSearchTextFile                      // search_text_file
 	toolNameCount                               // Sentinel; must remain last.
 )
 
@@ -64,6 +70,11 @@ var nameStrings = map[ToolName]string{
 	ToolNameCopyFromJinshu:      "copy_from_jinshu",
 	ToolNameScanKB:              "scan_kb",
 	ToolNameListKBDocuments:     "list_kb_documents",
+	ToolNameReadKBEvidence:      "read_kb_evidence",
+	ToolNameUseWorkspace:        "use_workspace",
+	ToolNameReadTextLines:       "read_text_lines",
+	ToolNameReadTextBlock:       "read_text_block",
+	ToolNameSearchTextFile:      "search_text_file",
 }
 
 // AllToolNames returns every registered ToolName in stable enum order. It is

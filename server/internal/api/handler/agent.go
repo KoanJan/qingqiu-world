@@ -3,13 +3,13 @@ package handler
 import (
 	"fmt"
 	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/runtime"
-	"qingqiu-world-server/internal/service/workspace"
 	"strings"
 
 	"github.com/gin-gonic/gin"
@@ -49,7 +49,9 @@ func (h *Handler) CreateAgent(c *gin.Context) {
 // ListAgents handles listing all agents.
 func (h *Handler) ListAgents(c *gin.Context) {
 	skip, limit := getPagination(c)
-	entities, err := dops.GetMulti[model.AgentConfig](skip, limit)
+	var entities []model.AgentConfig
+	err := database.DB.Where("person_id IN (SELECT id FROM persons WHERE status = ?)", model.PersonStatusActive).
+		Offset(skip).Limit(limit).Find(&entities).Error
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -123,34 +125,32 @@ func (h *Handler) UpdateAgent(c *gin.Context) {
 	response.Success(c, schema.NewAgentResponse(ac, person))
 }
 
-// DeleteAgent handles deleting an agent config and its resources.
+// DeleteAgent ends an agent's activity while preserving its identity and history.
 // The ID in the URL is the person_id (frontend's "agent id").
 func (h *Handler) DeleteAgent(c *gin.Context) {
 	personID := getPathID(c)
-	person, err := dops.GetPerson(personID)
+	_, err := dops.GetPerson(personID)
 	if err != nil {
 		handleNotFound(c, "Person", personID)
 		return
 	}
 
-	if person.Avatar != "" {
-		avatarPath := getAvatarsDir() + "/" + person.Avatar
-		osRemoveIfExists(avatarPath)
-	}
-
-	sessionIDs, err := dops.DeleteAIPersonCascade(personID)
+	ac, err := dops.GetAgentConfigByPersonID(personID)
 	if err != nil {
-		applogger.Error("DeleteAgentConfig: cascade delete failed", "person_id", personID, "error", err)
-		response.InternalError(c, "Failed to delete agent config")
+		handleNotFound(c, "AgentConfig", personID)
+		return
+	}
+	changed, err := runtime.DeceaseAgent(ac.ID, personID)
+	if err != nil {
+		applogger.Error("DeleteAgent: failed to mark person deceased", "person_id", personID, "error", err)
+		response.InternalError(c, "Failed to end agent activity")
 		return
 	}
 	agent.Refresh(personID)
 
-	// Filesystem cleanup (not transactional)
-	for _, sid := range sessionIDs {
-		workspace.RemoveAac(personID, sid)
+	if changed {
+		response.SuccessMessage(c, "Agent activity ended", nil)
+	} else {
+		response.SuccessMessage(c, "Agent already deceased", nil)
 	}
-	workspace.RemoveAgentOwnedSpace(personID)
-
-	response.SuccessMessage(c, "Agent config deleted successfully", nil)
 }

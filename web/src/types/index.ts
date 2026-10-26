@@ -36,6 +36,7 @@ export interface Message {
   session_id: number;
   person_id: number;
   content: string;
+  expression_instruction: string;
   status: number;
   created_at: string;
   updated_at: string | null;
@@ -52,6 +53,44 @@ export interface LLMConfig {
   updated_at: string | null;
 }
 
+/** A provider-declared JSON Schema used to configure a TTS renderer. */
+export interface TTSProviderDefinition {
+  provider: number;
+  name: string;
+  connection_config_json_schema: string;
+  /** Provider-owned terms URL displayed before reference material is sent. */
+  terms_url: string;
+  description: string;
+}
+
+/** A user-configured TTS provider connection. Credentials are write-only. */
+export interface TTSRenderer {
+  id: number;
+  name: string;
+  provider: number;
+  description: string;
+  created_at: string;
+  updated_at: string;
+}
+
+/** Editable renderer detail. Provider credentials remain write-only. */
+export interface TTSRendererDetail extends TTSRenderer {
+  connection_config: Record<string, unknown>;
+  configured_secret_fields: string[];
+}
+
+/** One immutable version of an Agent's voice configuration. */
+export interface AgentVoice {
+  id: number;
+  person_id: number;
+  tts_renderer_id: number;
+  sample_audio_filename: string;
+  sample_transcript: string;
+  sample_locale: string;
+  created_at: string;
+  updated_at: string;
+}
+
 export interface EmbeddingConfig {
   id: number;
   name: string;
@@ -65,6 +104,7 @@ export interface EmbeddingConfig {
 
 export interface Agent {
   id: number;
+  status: number; // 1=active, 2=deceased
   name: string;
   bio: string;
   character_settings: string;
@@ -178,12 +218,15 @@ export interface SearchResult {
 export const PARTICIPANT_STATUS_IDLE = 0;
 /** Participant is currently working. */
 export const PARTICIPANT_STATUS_WORKING = 1;
+/** The person's life has ended in this world. */
+export const PERSON_STATUS_DECEASED = 2;
 
 export interface SessionAgentStatus {
   agent_id: number;
   name: string;
   avatar: string;
   status: number; // 0=idle, 1=working
+  life_status: number; // 1=active, 2=deceased
 }
 
 export interface UserProfile {
@@ -248,7 +291,48 @@ export interface ActivityEvent {
   content: string; // thinking/guidance text; empty for tool_call
   tool?: string;   // only for tool_call
   target?: string; // only for tool_call
+  tool_params?: { query?: string; start_line?: number; max_lines?: number; start_byte_offset?: number; max_bytes?: number }; // allowlisted text tool arguments
   agent_id: number;
+}
+
+/** Historical agent identity and current Focus indicator in the Activity view. */
+export interface ActivityAgent {
+  id: number;
+  name: string;
+  avatar: string;
+  status: number;
+  has_active_work: boolean;
+}
+
+/** Agent-owned workspace shown in the Activity sidebar. */
+export interface ActivityWorkspace {
+  id: number;
+  name: string;
+  purpose: string;
+  has_active_work: boolean;
+}
+
+/** Focus work associated with a workspace; explicit uses link to its default. */
+export interface ActivityWork {
+  id: number;
+  description: string;
+  status: number;
+  created_at: string;
+  updated_at: string;
+  role: number;
+  default_workspace_id: number;
+  default_workspace_name: string;
+}
+
+export interface ActivityWorkspacePage {
+  workspaces: ActivityWorkspace[];
+  has_more: boolean;
+}
+
+export interface ActivityWorkPage {
+  works: ActivityWork[];
+  has_more: boolean;
+  next_before_work_id: number;
 }
 
 /** One cursor-bounded page of chronological agent activity events. */
@@ -256,6 +340,7 @@ export interface ActivityPage {
   events: ActivityEvent[];
   has_more: boolean;
   next_before_interaction_id?: number;
+  next_after_interaction_id?: number;
 }
 
 export interface JinshuFileEntry {

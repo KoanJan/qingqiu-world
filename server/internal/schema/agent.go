@@ -27,14 +27,15 @@ type AgentUpdate struct {
 // From the frontend's perspective, the agent is the Person entity.
 // ID is the person ID; the handler layer distributes to Person and AgentConfig internally.
 type AgentResponse struct {
-	ID                int64     `json:"id"`
-	Name              string    `json:"name"`
-	Bio               string    `json:"bio"`
-	CharacterSettings string    `json:"character_settings"`
-	LLMConfigID       int64     `json:"llm_config_id"`
-	Avatar            string    `json:"avatar"`
-	CreatedAt         time.Time `json:"created_at"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	ID                int64              `json:"id"`
+	Name              string             `json:"name"`
+	Bio               string             `json:"bio"`
+	CharacterSettings string             `json:"character_settings"`
+	LLMConfigID       int64              `json:"llm_config_id"`
+	Avatar            string             `json:"avatar"`
+	Status            model.PersonStatus `json:"status"`
+	CreatedAt         time.Time          `json:"created_at"`
+	UpdatedAt         time.Time          `json:"updated_at"`
 }
 
 // NewAgentResponse converts a model.AgentConfig and model.Person to an AgentResponse.
@@ -56,6 +57,7 @@ func NewAgentResponse(m *model.AgentConfig, person *model.Person) *AgentResponse
 		CharacterSettings: m.CharacterSettings,
 		LLMConfigID:       m.LLMConfigID,
 		Avatar:            avatar,
+		Status:            person.Status,
 		CreatedAt:         m.CreatedAt,
 		UpdatedAt:         m.UpdatedAt,
 	}

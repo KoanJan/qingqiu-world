@@ -11,7 +11,9 @@ package llm
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"time"
@@ -205,11 +207,24 @@ func fromOpenAIResponse(resp *openai.ChatCompletionResponse) ToolResponse {
 
 // --- Logging helpers ---
 
-// logMessages logs input messages at debug level for traceability.
+// logMessages records full LLM inputs for DEBUG troubleshooting. The
+// fingerprint and byte count are auxiliary correlation fields; they must not
+// replace the raw content because prompt defects are only diagnosable from the
+// actual text sent to the model.
 func logMessages(messages []Message) {
 	for i, m := range messages {
-		applogger.Debug("llm input", "index", i, "role", m.Role, "content", m.Content, "tool_calls", len(m.ToolCalls), "tool_call_id", m.ToolCallID)
+		applogger.Debug("llm input", "index", i, "role", m.Role, "content_bytes", len(m.Content), "content_fingerprint", contentFingerprint(m.Content), "content", m.Content, "tool_calls", len(m.ToolCalls), "tool_call_id", m.ToolCallID)
+		for j, tc := range m.ToolCalls {
+			applogger.Debug("llm input tool_call", "message_index", i, "tool_call_index", j, "id", tc.ID, "name", tc.Function.Name, "arguments_bytes", len(tc.Function.Arguments), "arguments_fingerprint", contentFingerprint(tc.Function.Arguments), "arguments", tc.Function.Arguments)
+		}
 	}
+}
+
+// contentFingerprint identifies one payload across repeated log lines. It is
+// retained for correlation, not as a substitute for DEBUG raw content.
+func contentFingerprint(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return fmt.Sprintf("sha256:v1:%x", sum[:])
 }
 
 // --- Request builders ---
@@ -252,7 +267,7 @@ func (cm *ChatModel) Chat(ctx context.Context, messages []Message) (string, erro
 	}
 
 	content := resp.Choices[0].Message.Content
-	applogger.Debug("llm output", "model", cm.modelID, "content", content)
+	applogger.Debug("llm output", "model", cm.modelID, "content_bytes", len(content), "content_fingerprint", contentFingerprint(content), "content", content)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
@@ -297,12 +312,26 @@ func (cm *ChatModel) ChatStream(ctx context.Context, messages []Message) (*strea
 // This is the Go equivalent of the former Python focused-work client invocation, using the OpenAI Tools API.
 // (not the deprecated Functions API) for proper tool_calls support.
 func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
+	return cm.chatWithTools(ctx, messages, toolDefs, nil, nil)
+}
+
+// ChatWithRequiredTools requires a tool call when the caller's protocol has
+// no free-text continuation. It also requests one call per model response.
+func (cm *ChatModel) ChatWithRequiredTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
+	return cm.chatWithTools(ctx, messages, toolDefs, "required", false)
+}
+
+// chatWithTools sends the shared tool-call request. The public wrappers set
+// toolChoice and parallelToolCalls for their respective loop protocols.
+func (cm *ChatModel) chatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition, toolChoice, parallelToolCalls any) (ToolResponse, error) {
 	logMessages(messages)
 
 	req := openai.ChatCompletionRequest{
-		Model:    cm.modelID,
-		Messages: toOpenAIMessages(messages),
-		Tools:    toOpenAIToolDefs(toolDefs),
+		Model:             cm.modelID,
+		Messages:          toOpenAIMessages(messages),
+		Tools:             toOpenAIToolDefs(toolDefs),
+		ToolChoice:        toolChoice,
+		ParallelToolCalls: parallelToolCalls,
 	}
 
 	if cm.temperature > 0 {
@@ -314,15 +343,19 @@ func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, tool
 	latencyMs := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
+		if errors.Is(ctx.Err(), context.Canceled) {
+			applogger.Info("llm call with tools canceled", "model", cm.modelID, "latency_ms", latencyMs)
+			return ToolResponse{}, fmt.Errorf("chat completion with tools canceled: %w", err)
+		}
 		applogger.Error("llm call with tools failed", "model", cm.modelID, "latency_ms", latencyMs, "error", err)
 		return ToolResponse{}, fmt.Errorf("chat completion with tools failed: %w", err)
 	}
 
 	result := fromOpenAIResponse(&resp)
 
-	applogger.Debug("llm output", "model", cm.modelID, "content", result.Content, "tool_calls", len(result.ToolCalls))
+	applogger.Debug("llm output", "model", cm.modelID, "content_bytes", len(result.Content), "content_fingerprint", contentFingerprint(result.Content), "content", result.Content, "tool_calls", len(result.ToolCalls))
 	for i, tc := range result.ToolCalls {
-		applogger.Debug("llm output tool_call", "index", i, "id", tc.ID, "name", tc.Function.Name, "arguments", tc.Function.Arguments)
+		applogger.Debug("llm output tool_call", "index", i, "id", tc.ID, "name", tc.Function.Name, "arguments_bytes", len(tc.Function.Arguments), "arguments_fingerprint", contentFingerprint(tc.Function.Arguments), "arguments", tc.Function.Arguments)
 	}
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
@@ -420,18 +453,16 @@ func (cm *ChatModel) tryJSONSchema(ctx context.Context, messages []Message, sche
 	}
 
 	content := resp.Choices[0].Message.Content
-	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "content", content)
+	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "content_bytes", len(content), "content_fingerprint", contentFingerprint(content), "content", content)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
 	return content, nil
 }
 
-// tryFunctionCallJSON emulates structured output by wrapping the schema as a single tool definition.
-// The LLM is expected to call the tool with the structured data as arguments.
-// ToolChoice is not forced to maintain compatibility with models that restrict it
-// (e.g., DeepSeek thinking mode), relying on the model's natural behavior to use the only available tool.
-// This is the fallback for models that do not support json_schema response format.
+// tryFunctionCallJSON emulates structured output by wrapping the schema as a
+// single required tool call. A structured-output fallback that permits free
+// text is not deterministic and can silently drop runtime decisions.
 func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message, schemaDef JSONSchemaDefinition) (string, error) {
 	logMessages(messages)
 
@@ -444,9 +475,13 @@ func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model:       cm.modelID,
-		Messages:    toOpenAIMessages(messages),
-		Tools:       toOpenAIToolDefs([]FunctionDefinition{toolDef}),
+		Model:    cm.modelID,
+		Messages: toOpenAIMessages(messages),
+		Tools:    toOpenAIToolDefs([]FunctionDefinition{toolDef}),
+		ToolChoice: openai.ToolChoice{
+			Type:     openai.ToolTypeFunction,
+			Function: openai.ToolFunction{Name: schemaDef.Name},
+		},
 		Temperature: 0,
 	}
 
@@ -464,7 +499,7 @@ func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message
 	}
 
 	args := resp.Choices[0].Message.ToolCalls[0].Function.Arguments
-	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "function_call_arguments", args)
+	applogger.Debug("llm output", "model", cm.modelID, "schema", schemaDef.Name, "function_call_arguments_bytes", len(args), "function_call_arguments_fingerprint", contentFingerprint(args), "function_call_arguments", args)
 
 	logTokenUsage(latencyMs, resp.Usage, cm.modelID)
 
@@ -548,7 +583,7 @@ func (cm *ChatModel) ConsumeStream(stream *stream, handler streamHandler) (strin
 	}
 
 	latencyMs := float64(time.Since(start).Milliseconds())
-	applogger.Debug("llm output", "model", cm.modelID, "stream", true, "content", fullContent)
+	applogger.Debug("llm output", "model", cm.modelID, "stream", true, "content_bytes", len(fullContent), "content_fingerprint", contentFingerprint(fullContent), "content", fullContent)
 
 	if hasUsage {
 		logTokenUsage(latencyMs, streamUsage, cm.modelID)

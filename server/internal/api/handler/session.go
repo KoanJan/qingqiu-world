@@ -1,14 +1,17 @@
 package handler
 
 import (
+	"errors"
+
 	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/schema"
-	"qingqiu-world-server/internal/service/workspace"
 
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 )
 
 // ListSessions handles listing all sessions.
@@ -20,7 +23,9 @@ import (
 // actively participate in.
 func (h *Handler) ListSessions(c *gin.Context) {
 	skip, limit := getPagination(c)
-	entities, err := dops.GetMulti[model.Session](skip, limit)
+	var entities []model.Session
+	err := database.DB.Where("status = ?", model.SessionStatusActive).
+		Offset(skip).Limit(limit).Find(&entities).Error
 	if err != nil {
 		response.InternalError(c, err.Error())
 		return
@@ -70,6 +75,10 @@ func (h *Handler) GetSession(c *gin.Context) {
 		handleNotFound(c, "Session", id)
 		return
 	}
+	if entity.Status != model.SessionStatusActive {
+		handleNotFound(c, "Session", id)
+		return
+	}
 	sm, err := dops.GetAIPersonInSession(id)
 	if err != nil {
 		applogger.Error("failed to resolve session person", "session_id", id, "error", err)
@@ -103,7 +112,8 @@ func (h *Handler) GetSession(c *gin.Context) {
 // backwards when concurrent messages arrive.
 func (h *Handler) MarkSessionRead(c *gin.Context) {
 	id := getPathID(c)
-	if _, err := dops.GetSession(id); err != nil {
+	session, err := dops.GetSession(id)
+	if err != nil || session.Status != model.SessionStatusActive {
 		handleNotFound(c, "Session", id)
 		return
 	}
@@ -134,14 +144,25 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 		handleNotFound(c, "Session", id)
 		return
 	}
+	if entity.Status != model.SessionStatusActive {
+		handleNotFound(c, "Session", id)
+		return
+	}
 	var req schema.SessionUpdate
 	if err := c.ShouldBindJSON(&req); err != nil {
 		response.BadRequest(c, err.Error())
 		return
 	}
-	updates := req.BuildUpdates()
-	if len(updates) > 0 {
-		dops.Update(entity, updates)
+	if req.Title != nil {
+		if err := dops.UpdateActiveSessionTitle(id, *req.Title); err != nil {
+			applogger.Error("failed to update active session", "session_id", id, "error", err)
+			if errors.Is(err, gorm.ErrRecordNotFound) {
+				response.NotFound(c, "Session not found")
+			} else {
+				response.InternalError(c, "Failed to update session")
+			}
+			return
+		}
 		refreshed, err := dops.Get[model.Session](id)
 		if err != nil {
 			applogger.Error("failed to refresh session after update", "id", id, "error", err)
@@ -181,17 +202,11 @@ func (h *Handler) UpdateSession(c *gin.Context) {
 func (h *Handler) DeleteSession(c *gin.Context) {
 	id := getPathID(c)
 
-	personID, _, err := dops.DeleteSessionCascade(id)
+	_, err := dops.MarkSessionDeleted(id)
 	if err != nil {
-		applogger.Error("DeleteSession: cascade delete failed", "session_id", id, "error", err)
+		applogger.Error("DeleteSession: failed to close session", "session_id", id, "error", err)
 		response.InternalError(c, "Failed to delete session")
 		return
-	}
-
-	// Filesystem cleanup
-	if personID > 0 {
-		workspace.RemoveWorkspace(personID, id)
-		workspace.RemoveAac(personID, id)
 	}
 	response.SuccessMessage(c, "Session deleted successfully", nil)
 }

@@ -220,15 +220,16 @@ User conversation and tool interactions are stored separately:
 
 ```
 Session (id=1):
-  ├─ Messages (User Conversation):
-  │    ├─ msg_1: user "Implement feature A"
-  │    ├─ msg_2: agent "Feature A is done"
-  │    ├─ msg_3: user "Modify it slightly"
-  │    └─ msg_4: agent "Modified"
-  │
-  └─ Interactions (Tool Interactions):
-       ├─ {user_msg_id: msg_1, agent_msg_id: msg_2, iteration: 1, type: 1, data: {...}}
-       ├─ {user_msg_id: msg_1, agent_msg_id: msg_2, iteration: 1, type: 2, data: {...}}
+  └─ Messages (User Conversation):
+       ├─ msg_1: user "Implement feature A"
+       ├─ msg_2: agent "Feature A is done"
+       ├─ msg_3: user "Modify it slightly"
+       └─ msg_4: agent "Modified"
+
+Work (id=7, source Session=1):
+  └─ Interactions (Agent-World Execution):
+       ├─ {work_id: 7, iteration: 1, type: 1, data: {...}}
+       ├─ {work_id: 7, iteration: 1, type: 2, data: {...}}
        └─ ...
 ```
 
@@ -240,11 +241,9 @@ Each interaction captures one step of the ReAct loop:
 
 | Field | Description |
 |-------|-------------|
-| `session_id` | Session for cross-session queries |
-| `user_msg_id` | User message that triggered execution |
-| `agent_msg_id` | Agent message that delivers the result |
+| `work_id` | Work that produced this interaction |
 | `iteration` | Step number in the execution |
-| `type` | 1=request (to LLM), 2=response (from LLM) |
+| `type` | 1=request (to LLM), 2=response (from LLM), 3=guidance |
 | `data` | JSON payload |
 
 The `type` field uses the **agent's perspective**:
@@ -256,7 +255,7 @@ This perspective is crucial. We record what the agent "saw" and "decided," not w
 
 ### Interaction Visibility
 
-The frontend determines whether a message has interactions by querying the interactions table directly. An activity view API aggregates raw interaction records into a human-readable execution timeline, allowing the frontend to toggle between chat and activity views per message. Availability is determined by the presence of interaction records via API.
+The session Activity view finds Works that originated in that Session, then loads their Interactions through `work_id`. A Work can also originate outside any Session; its Interactions remain attached to the Work even when the session Activity view has no place to show them.
 
 ---
 

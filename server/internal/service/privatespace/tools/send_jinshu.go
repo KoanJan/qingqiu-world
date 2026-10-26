@@ -5,9 +5,9 @@ import (
 	"strings"
 
 	"qingqiu-world-server/internal/dops"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // SendJinshuTool sends files from the agent's Agent Owned Space to another
@@ -54,7 +54,7 @@ func (t *SendJinshuTool) Schema() llm.FunctionDefinition {
 				},
 				"paths": map[string]interface{}{
 					"type":        "array",
-					"description": "Use work/<session_id>/... or private/...; bare paths remain relative to private/.",
+					"description": "Use work/<directory_id>/... or private/...; bare paths remain relative to private/.",
 					"items": map[string]interface{}{
 						"type": "string",
 					},
@@ -93,7 +93,7 @@ func (t *SendJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		return "", err
 	}
 
-	files, relPaths, err := workspace.ResolveAOSFiles(t.personID, t.workDir, paths)
+	files, relPaths, err := aos.ResolveAOSFiles(t.personID, t.workDir, paths)
 	if err != nil {
 		return "", err
 	}

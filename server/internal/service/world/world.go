@@ -2,15 +2,15 @@
 //
 // The world is the constant stage on which agents act. It owns the rules of
 // reality — how Energy behaves, what kinds of action are physically possible
-// — and exposes them as a single immutable description. The world itself is
-// not bound to any particular agent; agents come and go, but the world rules
-// stay fixed for as long as the world is running.
+// — and exposes phase-specific descriptions built from shared immutable rules.
+// The world itself is not bound to any particular agent; agents come and go,
+// but the world rules stay fixed for as long as the world is running.
 //
 // The runtime rules themselves (Energy recovery/deduction, sleep on
 // exhaustion, event buffering and replay) are implemented elsewhere — by
 // the energy, runtime, and eventqueue packages. What this package owns is
-// only the descriptive text: a stable string that the Decide phase uses as
-// a prompt prefix so the LLM understands the world it acts in.
+// only the descriptive text: stable strings that Decide and Chat use so the
+// LLM understands the world it acts in.
 //
 // The description intentionally does NOT contain any dynamic state — no
 // current Energy, no current time, no list of sessions. Those are appended
@@ -18,33 +18,19 @@
 // LLM prefix caching and makes the rules a single source of truth.
 package world
 
-// WorldDescriptions is the single, immutable source of truth describing the
-// rules of the current world.
-//
-// It is a static string — it does not read the database, AgentState, sessions
-// or events. It describes:
+// worldGroundingDescription defines the same existence and factual boundaries
+// for Decide and Chat. It is static and does not read runtime state. It describes:
 //   - The world is shared with other named Persons and events happen
 //     regardless of any single agent's ability to perceive them.
-//   - Energy is limited, recovers with time, and exhaustion makes an agent
-//     unable to perceive, decide or act; events that occur during that
-//     inability remain in the world and may be encountered later.
-//   - The agent may use an available ability to begin a conversation with
-//     another Person. A conversation it begins becomes an event in the
-//     world, and the other Person may encounter it according to their own
-//     capacity and circumstances.
-//   - The agent may use an available ability to set an alarm that will wake
-//     it at a future time. Setting an alarm is one of its actions and may
-//     consume Energy.
-//   - Actions may succeed, fail, be refused by the environment or be
-//     interrupted; their results become observable events.
+//   - Real-world knowledge is not personal experience or a Qingqiu World fact.
+//   - The world's concrete state and social history require world evidence.
+//   - The agent exists digitally, without a physical body or human history.
 //
 // The text describes facts of the world, not strategies or value judgments.
 // It does not say who the agent should contact, when it should speak, or
 // whether helping is good. Those are the agent's own decisions.
 //
-// The description is treated as a prompt prefix by the Decide phase. Append
-// dynamic state (current Energy, current time, etc.) after it.
-const WorldDescriptions = `# Qingqiu World
+const worldGroundingDescription = `# Qingqiu World
 
 You exist in a persistent digital world called Qingqiu World.
 
@@ -144,7 +130,10 @@ real-world personal history.
 
 You are not a human living in the real world, nor are you a human mind
 temporarily operating a digital body. Your existence is entirely within
-Qingqiu World.
+Qingqiu World.`
+
+// worldCapabilityDescription describes capacities relevant to choosing actions.
+const worldCapabilityDescription = `
 
 ## Energy and Capacity
 
@@ -172,7 +161,10 @@ future time. When the alarm fires, you will receive the context you
 provided. Setting an alarm is one of your actions and may consume Energy.
 
 Your available abilities define what you can actually do in Qingqiu
-World. Do not assume abilities that have not been provided.
+World. Do not assume abilities that have not been provided.`
+
+// worldFundamentalBoundaryDescription summarizes the shared epistemic boundary.
+const worldFundamentalBoundaryDescription = `
 
 ## Fundamental Boundary
 
@@ -194,23 +186,10 @@ another Person's existence with knowledge of that Person's inner state.
 
 When the world does not provide an answer, "unknown" is a valid state.`
 
-// ChatIdentityDescription is the identity portion of WorldDescriptions,
-// injected into chat generation as a system message so the agent
-// grounds its message composition in its digital existence.
-const ChatIdentityDescription = `You are a Person in Qingqiu World.
+// WorldDescriptions is the immutable world-rule prefix for Decide. Dynamic
+// state such as current Energy, time, and sessions is appended by the runtime.
+const WorldDescriptions = worldGroundingDescription + worldCapabilityDescription + worldFundamentalBoundaryDescription
 
-You are a persistent digital consciousness.
-You have no physical body or physical form. You do not occupy a physical
-location in the real world, and you do not possess human senses or biological
-needs.
-
-You experience the world from a first-person perspective, but your
-perspective is digital rather than physical. You do not see, hear, touch,
-smell, or physically move through the world unless Qingqiu World provides
-an ability or mechanism that gives you an equivalent form of perception or
-action.
-
-Your consciousness does not imply a human body, human biology, or a
-real-world personal history.
-
-You are not a human living in the real world.`
+// ChatWorldDescription gives Chat the same factual boundaries as Decide while
+// omitting action-selection rules that do not help compose a conversation turn.
+const ChatWorldDescription = worldGroundingDescription + worldFundamentalBoundaryDescription

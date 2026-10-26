@@ -12,10 +12,13 @@ type ScanKBTool struct {
 	core *servicetools.ScanKBTool
 }
 
-// NewScanKBTool creates a ScanKBTool for the given person. Authorization is
-// resolved on every execution so grant changes take effect immediately.
-func NewScanKBTool(personID int64) *ScanKBTool {
-	return &ScanKBTool{core: servicetools.NewScanKBTool(servicetools.AuthorizedKBsFor(personID))}
+// NewScanKBTool creates a ScanKBTool for the given person and Focus runtime.
+// Authorization is resolved on every execution so grant changes take effect
+// immediately; work/session IDs are recorded only as KB usage trace metadata.
+func NewScanKBTool(personID, workID, sessionID int64) *ScanKBTool {
+	core := servicetools.NewScanKBTool(servicetools.AuthorizedKBsFor(personID)).
+		WithTraceContext(servicetools.ScanKBTraceContext{WorkID: workID, SessionID: sessionID})
+	return &ScanKBTool{core: core}
 }
 
 // Name returns the tool name.
@@ -41,6 +44,42 @@ func (s *ScanKBTool) Execute(args map[string]interface{}) (string, error) {
 // CycleDetect forwards cycle detection to the core.
 func (s *ScanKBTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {
 	return s.core.CycleDetect(args, result)
+}
+
+// ReadKBEvidenceTool reads authorized active-revision evidence returned by a
+// prior scan_kb call. It is progressive disclosure, not a raw file reader.
+type ReadKBEvidenceTool struct {
+	core *servicetools.ReadKBEvidenceTool
+}
+
+// NewReadKBEvidenceTool creates a direct evidence reader for the given person.
+func NewReadKBEvidenceTool(personID int64) *ReadKBEvidenceTool {
+	return &ReadKBEvidenceTool{core: servicetools.NewReadKBEvidenceTool(servicetools.AuthorizedKBsFor(personID))}
+}
+
+// Name returns the tool name.
+func (t *ReadKBEvidenceTool) Name() ToolName { return ToolNameReadKBEvidence }
+
+// Description returns a brief description of the tool.
+func (t *ReadKBEvidenceTool) Description() string { return servicetools.ReadKBEvidenceDescription }
+
+// Schema returns the function definition for progressive evidence disclosure.
+func (t *ReadKBEvidenceTool) Schema() llm.FunctionDefinition {
+	return llm.FunctionDefinition{
+		Name:        t.Name().String(),
+		Description: servicetools.ReadKBEvidenceSchemaDescription,
+		Parameters:  servicetools.ReadKBEvidenceParameters(),
+	}
+}
+
+// Execute reads full evidence bodies with authorization and active-revision checks.
+func (t *ReadKBEvidenceTool) Execute(args map[string]interface{}) (string, error) {
+	return t.core.Execute(args)
+}
+
+// CycleDetect forwards cycle detection to the shared core.
+func (t *ReadKBEvidenceTool) CycleDetect(args map[string]interface{}, result string) CycleStatus {
+	return t.core.CycleDetect(args, result)
 }
 
 // ListKBDocumentsTool lists the documents of one of the agent's authorized

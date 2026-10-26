@@ -2,20 +2,23 @@ import { useState, useEffect, useCallback } from 'react';
 import type { CSSProperties } from 'react';
 import { Tooltip, Spin, message } from 'antd';
 import { DownOutlined } from '@ant-design/icons';
+import { MessageCircle, Settings, Timeline, User } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import useScrolling from './hooks/useScrolling';
 import useAppearance, { getBackgroundUrl } from './hooks/useAppearance';
 import SessionList from './components/SessionList';
 import ChatWindow from './components/ChatWindow';
+import ActivityView from './components/ActivityView';
 import LLMConfigList from './components/LLMConfigList';
+import TTSRendererList from './components/TTSRendererList';
 import EmbeddingConfigForm from './components/EmbeddingConfigForm';
 import AgentConfig from './components/AgentConfig';
+import AgentDetail from './components/AgentDetail';
 import SearchConfigForm from './components/SearchConfigForm';
 import UserProfileForm from './components/UserProfileForm';
 import AppearancePanel from './components/AppearancePanel';
 import ResizableCard from './components/ResizableCard';
 import PanelDetail from './components/PanelDetail';
-import NappingCatButton from './components/NappingCatButton';
 import KnowledgeBaseList from './components/KnowledgeBaseList';
 import KnowledgeBaseDetail from './components/KnowledgeBaseDetail';
 import PublicExperienceList from './components/PublicExperienceList';
@@ -25,18 +28,21 @@ import ConfigIcon from './components/ConfigIcon';
 import { versionApi, userProfileApi, embeddingConfigApi, systemLLMConfigApi, initApiClient, sessionApi } from './services/api';
 import { logger } from './logger';
 import type { IconType } from './components/ConfigIcon';
-import type { Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
+import type { Agent, Session, LLMConfig, KnowledgeBase, PublicExperience } from './types';
 import { useUserSSE } from './hooks/useUserSSE';
 import { CLIENT_NOTIFICATION_TYPES, subscribeClientNotifications, type ClientNotification } from './services/clientNotifications';
 import { TEMP_SESSION_ID } from './types';
 import './App.css';
 
-// Big view ring: each click of the switch button advances to the next view.
-// To add a new big view, append its identifier to this array.
-const RING = ['chat', 'mine', 'settings'] as const;
+// Directly selectable top-level views, kept mounted to preserve browsing state.
+const VIEWS = ['chat', 'activity', 'mine', 'settings'] as const;
+type ViewKey = typeof VIEWS[number];
 
-// Identifier of a big view in the ring.
-type RingKey = typeof RING[number];
+// Position inactive pages on the side they should enter from on the next switch.
+function viewPosition(view: ViewKey, activeView: ViewKey): string {
+  if (view === activeView) return 'is-active';
+  return VIEWS.indexOf(view) < VIEWS.indexOf(activeView) ? 'is-before' : 'is-after';
+}
 
 // Settings sub-view identifiers (navigation within the settings big view).
 // 'overview' is gone — the two-pane layout keeps a persistent left nav, so
@@ -47,11 +53,13 @@ type RingKey = typeof RING[number];
 // The user profile entry lives in the mine big view, not here.
 type SettingsSubview =
   | 'agent'
+  | 'agent-detail'
   | 'kb'
   | 'experience'
   | 'kb-detail'
   | 'exp-detail'
   | 'llm'
+  | 'tts'
   | 'embedding'
   | 'search'
   | 'custom';
@@ -62,6 +70,7 @@ const SETTINGS_CARDS: { key: SettingsSubview; iconType: IconType }[] = [
   { key: 'kb', iconType: 'kb' },
   { key: 'experience', iconType: 'exp' },
   { key: 'llm', iconType: 'llm' },
+  { key: 'tts', iconType: 'tts' },
   { key: 'embedding', iconType: 'embedding' },
   { key: 'search', iconType: 'search' },
   { key: 'custom', iconType: 'custom' },
@@ -78,21 +87,7 @@ const MINE_CHILDREN: MineSubview[] = ['jinshu-received', 'jinshu-sent'];
 function App() {
   const { t } = useTranslation();
   const [currentSession, setCurrentSession] = useState<Session | null>(null);
-  // Big view ring index. Starts at 0 (chat).
-  const [viewIndex, setViewIndex] = useState(0);
-  // Whether a slide animation is in progress. Prevents overlapping clicks.
-  const [sliding, setSliding] = useState(false);
-  // Temporarily disables the CSS transition so we can instantly re-order
-  // panels after a slide completes (resetting for the next one-directional slide).
-  const [noTransition, setNoTransition] = useState(false);
-  // Visual order of panels in the track. The current panel is always on the
-  // left (order 1) so that translateX(-100%) slides it out to the left
-  // and reveals the next panel from the right.
-  const [panelOrder, setPanelOrder] = useState<Record<RingKey, number>>({
-    chat: 1,
-    mine: 2,
-    settings: 3,
-  });
+  const [activeView, setActiveView] = useState<ViewKey>('chat');
   // Current subview within the settings big view. Defaults to 'agent' — always
   // available (no embedding dependency), a neutral entry point.
   const [settingsSubview, setSettingsSubview] = useState<SettingsSubview>('agent');
@@ -103,9 +98,11 @@ function App() {
   const [refreshKey, setRefreshKey] = useState(0);
   const [showCreateAgent, setShowCreateAgent] = useState(false);
   const [showCreateLLM, setShowCreateLLM] = useState(false);
+  const [showCreateTTSRenderer, setShowCreateTTSRenderer] = useState(false);
   const [showCreateKB, setShowCreateKB] = useState(false);
   const [showIngestExp, setShowIngestExp] = useState(false);
   const [selectedKB, setSelectedKB] = useState<KnowledgeBase | null>(null);
+  const [selectedAgent, setSelectedAgent] = useState<Agent | null>(null);
   const [selectedExp, setSelectedExp] = useState<PublicExperience | null>(null);
   const [version, setVersion] = useState<string>('');
   const [isMacElectron, setIsMacElectron] = useState(false);
@@ -155,6 +152,7 @@ function App() {
   // Sync appearance CSS custom properties to :root so they cascade to all elements.
   useEffect(() => {
     document.documentElement.style.setProperty('--glass-opacity', String(appearance.glassOpacity));
+    document.documentElement.style.setProperty('--glass-opacity-percent', `${appearance.glassOpacity * 100}%`);
     document.documentElement.style.setProperty('--glass-blur', `${appearance.glassBlur}px`);
   }, [appearance.glassOpacity, appearance.glassBlur]);
 
@@ -283,11 +281,13 @@ function App() {
 
   const settingsLabelMap: Record<SettingsSubview, string> = {
     agent: t('settings.agentConfig'),
+    'agent-detail': '',
     kb: t('settings.kbConfig'),
     experience: t('settings.publicExperience'),
     'kb-detail': '',
     'exp-detail': '',
     llm: t('settings.llmConfig'),
+    tts: t('settings.ttsConfig'),
     embedding: t('settings.embeddingConfig'),
     search: t('settings.searchConfig'),
     custom: t('settings.custom'),
@@ -297,39 +297,6 @@ function App() {
     'jinshu-received': t('jinshu.received'),
     'jinshu-sent': t('jinshu.sent'),
     user: t('settings.userProfile'),
-  };
-
-  // Advance to the next big view in the ring. Always slides left.
-  const handleSwitchBigView = () => {
-    if (sliding) return;
-    setSliding(true);
-    setViewIndex(prev => (prev + 1) % RING.length);
-  };
-
-  // After the slide finishes, silently reset: move the now-current panel to
-  // the left (order 1) and snap translateX back to 0 — all without animation.
-  // The user sees no change (current panel stays in place); the track is just
-  // prepared for the next one-directional slide.
-  const handleTrackTransitionEnd = (e: React.TransitionEvent) => {
-    if (e.propertyName !== 'transform') return;
-    if (!sliding) return;
-    setSliding(false);
-    setNoTransition(true);
-    // Put the now-current view at order 1 (left) and the next view at order 2
-    // (right); the remaining view sits further right, off-screen. This resets
-    // the track so the next switch is another leftward slide.
-    const nextOrder = {} as Record<RingKey, number>;
-    for (let i = 0; i < RING.length; i++) {
-      nextOrder[RING[(viewIndex + i) % RING.length]] = i + 1;
-    }
-    setPanelOrder(nextOrder);
-    // Use double rAF to ensure the noTransition frame is painted before
-    // re-enabling transitions.
-    requestAnimationFrame(() => {
-      requestAnimationFrame(() => {
-        setNoTransition(false);
-      });
-    });
   };
 
   const renderPersonalizationPanel = () => (
@@ -368,9 +335,24 @@ function App() {
         showCreate={showCreateAgent}
         onCreateClose={() => setShowCreateAgent(false)}
         onAgentCreated={handleAgentCreated}
+        onSelectAgent={(agent) => {
+          setSelectedAgent(agent);
+          setSettingsSubview('agent-detail');
+        }}
       />
     </PanelDetail>
   );
+
+  const renderAgentDetailPanel = () => selectedAgent ? (
+    <PanelDetail
+      onBack={() => {
+        setSelectedAgent(null);
+        setSettingsSubview('agent');
+      }}
+    >
+      <AgentDetail agent={selectedAgent} onUpdated={setSelectedAgent} />
+    </PanelDetail>
+  ) : null;
 
   const renderKBPanel = () => (
     <PanelDetail
@@ -396,7 +378,7 @@ function App() {
       onAddTooltip={t('systemLLMRequired.message_1')}
     >
       <PublicExperienceList
-        active={RING[viewIndex] === 'settings' && settingsSubview === 'experience'}
+        active={activeView === 'settings' && settingsSubview === 'experience'}
         showIngest={showIngestExp}
         onIngestClose={() => setShowIngestExp(false)}
         onSelectExp={(exp) => {
@@ -469,6 +451,18 @@ function App() {
     </PanelDetail>
   );
 
+  const renderTTSPanel = () => (
+    <PanelDetail
+      title={t('settings.ttsConfig')}
+      onAdd={() => setShowCreateTTSRenderer(true)}
+    >
+      <TTSRendererList
+        showCreate={showCreateTTSRenderer}
+        onCreateClose={() => setShowCreateTTSRenderer(false)}
+      />
+    </PanelDetail>
+  );
+
   const renderSearchPanel = () => (
     <PanelDetail title={t('settings.searchConfig')}>
       <SearchConfigForm />
@@ -477,11 +471,13 @@ function App() {
 
   const settingsPanelMap: Record<string, () => React.ReactNode> = {
     agent: renderAgentPanel,
+    'agent-detail': renderAgentDetailPanel,
     kb: renderKBPanel,
     experience: renderExpPanel,
     'kb-detail': renderKBDetailPanel,
     'exp-detail': renderExpDetailPanel,
     llm: renderLLMPanel,
+    tts: renderTTSPanel,
     embedding: renderEmbeddingPanel,
     search: renderSearchPanel,
     custom: renderPersonalizationPanel,
@@ -501,10 +497,10 @@ function App() {
       );
     }
     if (mineSubview === 'jinshu-received') {
-      return <JinshuPanel direction="received" active={RING[viewIndex] === 'mine'} />;
+      return <JinshuPanel direction="received" active={activeView === 'mine'} />;
     }
     if (mineSubview === 'jinshu-sent') {
-      return <JinshuPanel direction="sent" active={RING[viewIndex] === 'mine'} />;
+      return <JinshuPanel direction="sent" active={activeView === 'mine'} />;
     }
     return null;
   };
@@ -567,26 +563,25 @@ function App() {
           </div>
         </Tooltip>
         <div className="app-header-actions">
-          <NappingCatButton onClick={handleSwitchBigView} disabled={sliding} />
+          <nav className="app-view-switch" aria-label={t('app.navigation')}>
+            <span className="app-view-thumb" aria-hidden="true" style={{ transform: `translateX(${VIEWS.indexOf(activeView) * 32}px)` }} />
+            {VIEWS.map(view => {
+              const label = view === 'chat' ? t('viewTabs.chat') : view === 'activity' ? t('viewTabs.activities') : view === 'mine' ? t('mine.title') : t('settings.title');
+              const Icon = view === 'chat' ? MessageCircle : view === 'activity' ? Timeline : view === 'mine' ? User : Settings;
+              return <Tooltip key={view} title={label} placement="bottom">
+                <button type="button" className={`app-view-option${activeView === view ? ' selected' : ''}`} aria-label={label} aria-current={activeView === view ? 'page' : undefined} onClick={() => setActiveView(view)}><Icon size={16} /></button>
+              </Tooltip>;
+            })}
+          </nav>
         </div>
       </header>
 
       <div className="app-body">
-        {/* Viewport: clips the track so only one big view is visible. */}
+        {/* Keep views mounted and slide directly to the selected page. */}
         <div className="app-bigview-viewport">
-          {/* Track: holds all big views side by side. Slides left on each
-              switch. After the slide, order is silently reset so the next
-              switch also slides left (one-directional). */}
-          <div
-            className="app-bigview-track"
-            style={{
-              transform: sliding ? 'translateX(-100%)' : 'translateX(0)',
-              transition: noTransition ? 'none' : undefined,
-            }}
-            onTransitionEnd={handleTrackTransitionEnd}
-          >
+          <div className="app-bigview-track">
             {/* Chat big view: session list + chat window. */}
-            <div className="app-bigview-chat" style={{ order: panelOrder.chat }}>
+            <div className={`app-bigview-chat app-bigview-page ${viewPosition('chat', activeView)}`} aria-hidden={activeView !== 'chat'}>
               <ResizableCard
                 defaultWidth={280}
                 minWidth={200}
@@ -617,9 +612,13 @@ function App() {
               </div>
             </div>
 
+            <div className={`app-bigview-activity app-bigview-page ${viewPosition('activity', activeView)}`} aria-hidden={activeView !== 'activity'}>
+              <ActivityView active={activeView === 'activity'} />
+            </div>
+
             {/* Mine big view: two-pane (left nav + right detail), mirroring
                 the settings big view's sidebar/content treatment. */}
-            <div className="app-bigview-mine" style={{ order: panelOrder.mine }}>
+            <div className={`app-bigview-mine app-bigview-page ${viewPosition('mine', activeView)}`} aria-hidden={activeView !== 'mine'}>
               <ResizableCard
                 defaultWidth={220}
                 minWidth={180}
@@ -679,7 +678,7 @@ function App() {
                 detail), each wrapped in a ResizableCard so they read as
                 distinct floating cards — mirroring the chat big view's
                 sidebar/content card treatment. */}
-            <div className="app-bigview-settings" style={{ order: panelOrder.settings }}>
+            <div className={`app-bigview-settings app-bigview-page ${viewPosition('settings', activeView)}`} aria-hidden={activeView !== 'settings'}>
               <ResizableCard
                 defaultWidth={220}
                 minWidth={180}

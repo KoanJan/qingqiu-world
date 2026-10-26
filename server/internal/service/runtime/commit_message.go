@@ -28,26 +28,48 @@ func (r *agentRuntime) handleMessageCommits(ctx context.Context) {
 
 // commitRequest carries the data needed to commit a message.
 type commitRequest struct {
-	sessionID int64
-	content   string
+	actionID              int64
+	sessionID             int64
+	content               string
+	expressionInstruction string
 }
 
-// commitMessage atomically creates a message record and performs all
-// post-commit side effects: participant session update, session title
-// fill, memory event recording, A2A notification, and SSE push.
+// commitMessage atomically creates the message, Event, Action effect and
+// sender observation, then publishes derived data and notifications.
 func (r *agentRuntime) commitMessage(req *commitRequest) {
 	if req == nil {
 		applogger.Error("commitMessage called with nil commitRequest")
 		return
 	}
+	if req.actionID <= 0 {
+		applogger.Error("commitMessage called without persisted Action ID", "session_id", req.sessionID)
+		return
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			if err := endAction(req.actionID); err != nil {
+				applogger.Error("commitMessage: failed to end unsuccessful action", "action_id", req.actionID, "error", err)
+			}
+		}
+	}()
 
 	tx := database.DB.Begin()
 	defer tx.Rollback()
+	if err := dops.RequireActivePersonTx(tx, r.agentPersonID); err != nil {
+		applogger.Error("commitMessage: sender unavailable", "person_id", r.agentPersonID, "error", err)
+		return
+	}
+	if err := dops.RequireActiveSessionTx(tx, req.sessionID); err != nil {
+		applogger.Error("commitMessage: session unavailable", "session_id", req.sessionID, "error", err)
+		return
+	}
 
 	msg := &model.Message{
-		SessionID: req.sessionID,
-		PersonID:  r.agentPersonID,
-		Content:   req.content,
+		SessionID:             req.sessionID,
+		PersonID:              r.agentPersonID,
+		Content:               req.content,
+		ExpressionInstruction: req.expressionInstruction,
 	}
 	if err := tx.Create(msg).Error; err != nil {
 		applogger.Error("commitMessage: failed to create message",
@@ -56,15 +78,26 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 		)
 		return
 	}
+	eventID, err := memory.RecordReferencedEventTx(tx, model.EventTypeMessage, msg.ID)
+	if err != nil {
+		applogger.Error("commitMessage: failed to create message Event", "action_id", req.actionID, "error", err)
+		return
+	}
+	if err := recordActionEffect(tx, req.actionID, model.ActionEffectMessage, msg.ID); err != nil {
+		applogger.Error("commitMessage: failed to record message source", "action_id", req.actionID, "error", err)
+		return
+	}
+	if err := tx.Model(&model.Action{}).Where("id = ?", req.actionID).
+		Update("status", model.ActionStatusEnded).Error; err != nil {
+		applogger.Error("commitMessage: failed to finish action", "action_id", req.actionID, "error", err)
+		return
+	}
 
-	// Update agent's last_active_at and last_read_message_id.
+	// Sending is an action, not comprehension of preceding incoming messages.
+	// The read boundary advances only with a persisted chat Decision.
 	if err := tx.Model(&model.ParticipantSession{}).
-		Where("session_id = ? AND participant_id = ? AND last_read_message_id < ?",
-			req.sessionID, r.agentPersonID, msg.ID).
-		Updates(map[string]interface{}{
-			"last_active_at":       time.Now(),
-			"last_read_message_id": msg.ID,
-		}).Error; err != nil {
+		Where("session_id = ? AND participant_id = ?", req.sessionID, r.agentPersonID).
+		Update("last_active_at", time.Now()).Error; err != nil {
 		applogger.Error("commitMessage: failed to update participant session",
 			"session_id", req.sessionID, "error", err)
 		return
@@ -83,35 +116,37 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 			"session_id", req.sessionID, "error", err)
 		// Non-fatal: the message is already committed; title is cosmetic.
 	}
+	obsID, err := memory.CreateObservationTx(tx, r.agentPersonID, eventID)
+	if err != nil {
+		applogger.Error("commitMessage: failed to create self-observation", "person_id", r.agentPersonID, "event_id", eventID, "error", err)
+		return
+	}
 
 	if err := tx.Commit().Error; err != nil {
 		applogger.Error("commitMessage: failed to commit tx",
 			"session_id", req.sessionID, "error", err)
 		return
 	}
+	committed = true
+	if obsID > 0 {
+		applogger.Debug("Observation created", "person_id", r.agentPersonID, "event_id", eventID, "obs_id", obsID)
+	}
+	refreshMemorySource(model.MemorySourceEvent, eventID)
+	refreshMemorySource(model.MemorySourceAction, req.actionID)
 
 	applogger.Info("Message committed",
 		"message_id", msg.ID,
 		"session_id", req.sessionID,
 	)
 
-	// Memory: produce event record (sync) + consume self-observation.
-	eventID, err := memory.RecordMessageEvent(msg.ID, msg.Content)
-	if err != nil {
-		applogger.Error("failed to record memory event for agent message",
-			"message_id", msg.ID, "error", err)
-	} else {
-		if err := memory.CreateObservation(r.agentPersonID, eventID); err != nil {
-			applogger.Error("failed to create self-observation",
-				"person_id", r.agentPersonID, "event_id", eventID, "error", err)
-		}
-	}
+	// Vectorization follows the committed Message/Event fact.
+	memory.EnqueueEventEmbedding(eventID, msg.Content)
 
 	// Notify other AI participants in the session.
 	r.notifyOtherAIParticipants(req.sessionID, msg.ID, req.content, eventID)
 
 	// Push message event to SSE clients.
-	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content})
+	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content, ExpressionInstruction: msg.ExpressionInstruction})
 }
 
 // notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to

@@ -24,7 +24,7 @@ import (
 // eventQueue — the stateful event bus
 // ---------------------------------------------------------------------------
 
-const channelSize = 64 // Per-agent event channel buffer size
+const channelSize = 1024 // Per-agent event channel buffer size; burst capacity, not durable delivery.
 
 // eventQueue is a stateful, in-process event bus that maintains per-agent
 // event channels.  It is the single routing point between event producers

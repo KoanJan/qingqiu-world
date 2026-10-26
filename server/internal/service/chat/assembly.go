@@ -38,7 +38,7 @@ Recent conversation:
 
 %s%s%s%s%sYou are talking to %s. Address them directly. Use the same language as the conversation.
 
-Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
+Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. This is one conversational turn, not a document: make it natural to read or hear, and do not paste a full report, table, or file into the message. Acknowledge feelings, small talk, and jokes in context; ask about a specific missing reference only if you cannot otherwise continue. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
 
 // Template for simple context without background story (V < N case).
 // Used when there are not enough messages to generate a summary.
@@ -51,7 +51,7 @@ const oneBigMessageNoStoryTemplate = `%s%sConversation record:
 
 %s%s%s%s%sYou are talking to %s. Address them directly. Use the same language as the conversation.
 
-Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
+Your listener can see the conversation above — they already know what was said. Only say what they genuinely need to hear from you right now. Keep your reply brief — use the fewest words needed to express what you mean. Express yourself naturally in your character's voice; don't restate facts or greetings the listener already has. Do not use parenthetical action descriptions or non-verbal content. This is one conversational turn, not a document: make it natural to read or hear, and do not paste a full report, table, or file into the message. Acknowledge feelings, small talk, and jokes in context; ask about a specific missing reference only if you cannot otherwise continue. Everything you say must be grounded in facts. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.`
 
 // FocusedWorkResultForAssembly represents the focused-work result for context assembly.
 // Mirrors Python's FocusedWorkResult DTO used in context assembly.
@@ -266,7 +266,7 @@ func assembleContext(
 	}
 
 	messages := []llm.Message{
-		{Role: "system", Content: world.ChatIdentityDescription},
+		{Role: "system", Content: world.ChatWorldDescription},
 		{Role: "user", Content: oneBigMessage},
 	}
 

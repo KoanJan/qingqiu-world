@@ -61,9 +61,10 @@ func (r *Router) publishMessageCommitted(item notification.MessageCommitted) {
 		SessionID:  item.SessionID,
 		ResourceID: item.MessageID,
 		Data: map[string]interface{}{
-			"message_id": item.MessageID,
-			"person_id":  item.PersonID,
-			"content":    item.Content,
+			"message_id":             item.MessageID,
+			"person_id":              item.PersonID,
+			"content":                item.Content,
+			"expression_instruction": item.ExpressionInstruction,
 		},
 	})
 	if item.PersonID == humanPersonID {

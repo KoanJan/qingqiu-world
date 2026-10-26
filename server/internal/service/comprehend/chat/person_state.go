@@ -20,6 +20,9 @@ import (
 const personStateInferencePrompt = `You are %s, %s. You are inferring the current state of the person you are talking to.
 
 Analyze their emotional tone, conversational purpose, and any clues about their physical situation.
+Infer conversational purpose from the other person's latest message. An acknowledgment,
+closing, or message without a clear request can be other; do not turn a confirmation
+they gave into a request for confirmation from you.
 
 Recent conversation:
 %s`
@@ -95,14 +98,20 @@ func InferPersonState(
 
 	if result != "" {
 		var state types.PersonState
-		if err := json.Unmarshal([]byte(result), &state); err == nil {
-			applogger.Info("Inferred person state",
-				"emotion", state.Emotion,
-				"purpose", state.Purpose,
-				"situation", state.Situation,
-			)
-			return &state
+		if err := json.Unmarshal([]byte(result), &state); err != nil {
+			applogger.Error("Failed to decode person state", "error", err)
+			return nil
 		}
+		if !state.Purpose.Valid() {
+			applogger.Error("Inferred invalid person purpose", "purpose", state.Purpose)
+			return nil
+		}
+		applogger.Info("Inferred person state",
+			"emotion", state.Emotion,
+			"purpose", state.Purpose,
+			"situation", state.Situation,
+		)
+		return &state
 	}
 
 	return nil

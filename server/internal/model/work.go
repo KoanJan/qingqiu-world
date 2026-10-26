@@ -13,6 +13,23 @@ const (
 	WorkStatusAbandoned WorkStatus = -1 // Work was abandoned (e.g., user correction, cancellation)
 )
 
+// Label describes a Work status for agent-facing history without exposing its
+// persisted integer value as a narrative fact.
+func (s WorkStatus) Label() string {
+	switch s {
+	case WorkStatusRunning:
+		return "running"
+	case WorkStatusCompleted:
+		return "completed"
+	case WorkStatusFailed:
+		return "failed"
+	case WorkStatusAbandoned:
+		return "abandoned"
+	default:
+		return "unknown"
+	}
+}
+
 // Focus phase constants provide a compact runtime checkpoint on the existing
 // Work lifecycle record without adding another persistent entity.
 type FocusPhase int
@@ -25,7 +42,27 @@ const (
 	FocusPhaseCancelled
 )
 
-// Work represents a unit of work for an agent within a session.
+// Label describes the Focus checkpoint in a recalled Work without exposing
+// the persisted enum number as if it were narrative content.
+func (p FocusPhase) Label() string {
+	switch p {
+	case FocusPhaseExecuting:
+		return "executing"
+	case FocusPhasePaused:
+		return "paused"
+	case FocusPhaseCompleted:
+		return "completed"
+	case FocusPhaseFailed:
+		return "failed"
+	case FocusPhaseCancelled:
+		return "cancelled"
+	default:
+		return "unknown"
+	}
+}
+
+// Work represents a sustained task for an agent. SessionID identifies an
+// optional originating conversation; zero is valid for other event sources.
 //
 // A Work is created when an agent decides to act on an event, and it may
 // absorb subsequent events (e.g., user corrections) during its execution.
@@ -35,7 +72,7 @@ const (
 type Work struct {
 	ID          int64      `gorm:"primaryKey;autoIncrement" json:"id"`
 	PersonID    int64      `gorm:"not null;index:idx_person_status" json:"person_id"`
-	SessionID   int64      `gorm:"not null" json:"session_id"`
+	SessionID   int64      `gorm:"not null;index:idx_works_session" json:"session_id"`
 	Description string     `gorm:"type:text;not null" json:"description"`                   // Natural language description for semantic routing and recovery
 	Status      WorkStatus `gorm:"not null;default:0;index:idx_agent_status" json:"status"` // 0=running, 1=completed, -1=abandoned
 	FocusPhase  FocusPhase `gorm:"not null;default:0" json:"focus_phase"`                   // Runtime-owned Focus phase

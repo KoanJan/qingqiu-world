@@ -74,6 +74,9 @@ func (m *indexManager) Load() error {
 		if err := m.loadHNSWGraph(); err != nil {
 			applogger.Error("Failed to load HNSW graph, falling back to flat", "kb_id", m.kbID, "error", err)
 			m.indexType = model.KnowledgeBaseIndexTypeFlat
+			if result := database.DB.Model(&model.KnowledgeBase{}).Where("id = ? AND index_type = ?", m.kbID, model.KnowledgeBaseIndexTypeHNSW).Update("index_type", model.KnowledgeBaseIndexTypeFlat); result.Error != nil {
+				applogger.Error("failed to persist HNSW fallback to flat", "kb_id", m.kbID, "error", result.Error)
+			}
 		}
 	}
 
@@ -186,7 +189,7 @@ func (m *indexManager) buildHNSWIndex() {
 	defer func() {
 		if r := recover(); r != nil {
 			applogger.Error("HNSW build panic", "kb_id", m.kbID, "panic", r)
-			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		}
 	}()
 
@@ -194,14 +197,14 @@ func (m *indexManager) buildHNSWIndex() {
 
 	if m.vectorsDB == nil {
 		applogger.Error("HNSW build: vectorsDB not initialized", "kb_id", m.kbID)
-		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		return
 	}
 
 	entries, err := m.loadAllVectors()
 	if err != nil {
 		applogger.Error("Failed to load vectors for HNSW build", "kb_id", m.kbID, "error", err)
-		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		return
 	}
 	applogger.Info("HNSW build: vectors loaded", "kb_id", m.kbID, "count", len(entries))
@@ -214,13 +217,13 @@ func (m *indexManager) buildHNSWIndex() {
 
 	if dimStats.nanCount > 0 {
 		applogger.Error("HNSW build: found NaN/Inf in embeddings, aborting", "kb_id", m.kbID, "count", dimStats.nanCount)
-		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		return
 	}
 	if dimStats.minDim != dimStats.maxDim {
 		applogger.Error("HNSW build: inconsistent embedding dimensions",
 			"kb_id", m.kbID, "min_dim", dimStats.minDim, "max_dim", dimStats.maxDim)
-		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		return
 	}
 
@@ -242,7 +245,7 @@ func (m *indexManager) buildHNSWIndex() {
 			applogger.Error("HNSW build: invalid embedding",
 				"kb_id", m.kbID, "index", i, "total", len(entries),
 				"chunk_id", e.ChunkID, "embedding_len", len(e.Embedding))
-			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 			return
 		}
 		if err := safeAddToGraph(sg, uint64(e.ChunkID), e.Embedding); err != nil {
@@ -251,7 +254,7 @@ func (m *indexManager) buildHNSWIndex() {
 				"kb_id", m.kbID, "index", i, "total", len(entries),
 				"chunk_id", e.ChunkID, "embedding_len", len(e.Embedding),
 				"sample", sample, "error", err)
-			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 			return
 		}
 		addedChunkIDs[uint64(e.ChunkID)] = true
@@ -276,7 +279,7 @@ func (m *indexManager) buildHNSWIndex() {
 			applogger.Error("HNSW build: invalid pending embedding",
 				"kb_id", m.kbID, "index", i, "total_pending", len(pending),
 				"chunk_id", pv.ChunkID, "embedding_len", len(pv.Embedding))
-			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 			return
 		}
 		if err := safeAddToGraph(sg, pv.ChunkID, pv.Embedding); err != nil {
@@ -285,7 +288,7 @@ func (m *indexManager) buildHNSWIndex() {
 				"kb_id", m.kbID, "index", i, "total_pending", len(pending),
 				"chunk_id", pv.ChunkID, "embedding_len", len(pv.Embedding),
 				"sample", sample, "error", err)
-			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+			m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 			return
 		}
 		addedChunkIDs[pv.ChunkID] = true
@@ -296,7 +299,7 @@ func (m *indexManager) buildHNSWIndex() {
 
 	if err := saveGraph(sg); err != nil {
 		applogger.Error("Failed to save HNSW graph", "kb_id", m.kbID, "error", err)
-		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeSwitching)
+		m.casIndexType(model.KnowledgeBaseIndexTypeSwitching, model.KnowledgeBaseIndexTypeFlat)
 		return
 	}
 

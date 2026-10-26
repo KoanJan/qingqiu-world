@@ -6,8 +6,10 @@ import (
 	"time"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
+	"qingqiu-world-server/internal/service/memory"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -20,34 +22,48 @@ import (
 // cleanly without firing.
 var alarmRegistry = &alarmRegistryType{}
 
+// alarmRegistryType serializes registration and cancellation of alarm waiters.
 type alarmRegistryType struct {
 	mu     sync.Mutex
-	alarms map[int64]context.CancelFunc // scheduledEventID -> cancel
+	alarms map[int64]*alarmRegistration // scheduledEventID -> current waiter
 }
 
-// register stores a cancel function for an alarm goroutine.
-func (r *alarmRegistryType) register(eventID int64, cancel context.CancelFunc) {
+// alarmRegistration identifies the exact waiter that owns a scheduled alarm.
+type alarmRegistration struct {
+	cancel   context.CancelFunc
+	personID int64
+}
+
+// register stores a cancel function only if this alarm has no waiter yet.
+func (r *alarmRegistryType) register(eventID int64, registration *alarmRegistration) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.alarms == nil {
-		r.alarms = make(map[int64]context.CancelFunc)
+		r.alarms = make(map[int64]*alarmRegistration)
 	}
-	r.alarms[eventID] = cancel
+	if _, exists := r.alarms[eventID]; exists {
+		return false
+	}
+	r.alarms[eventID] = registration
+	return true
 }
 
-// unregister removes an alarm from the registry (after it fires or is cancelled).
-func (r *alarmRegistryType) unregister(eventID int64) {
+// unregister removes only the waiter that actually exited; an old cancelled
+// goroutine cannot remove a newer waiter registered during a quick restart.
+func (r *alarmRegistryType) unregister(eventID int64, registration *alarmRegistration) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	delete(r.alarms, eventID)
+	if r.alarms[eventID] == registration {
+		delete(r.alarms, eventID)
+	}
 }
 
 // cancelAll cancels all registered alarm goroutines. Called on server shutdown.
 func (r *alarmRegistryType) cancelAll() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	for id, cancel := range r.alarms {
-		cancel()
+	for id, registration := range r.alarms {
+		registration.cancel()
 		delete(r.alarms, id)
 	}
 }
@@ -56,6 +72,18 @@ func (r *alarmRegistryType) cancelAll() {
 // via runtime.StopAll().
 func CancelAlarms() {
 	alarmRegistry.cancelAll()
+}
+
+// CancelAlarmsForPerson stops only one deceased person's timer goroutines.
+func CancelAlarmsForPerson(personID int64) {
+	alarmRegistry.mu.Lock()
+	defer alarmRegistry.mu.Unlock()
+	for id, registration := range alarmRegistry.alarms {
+		if registration.personID == personID {
+			registration.cancel()
+			delete(alarmRegistry.alarms, id)
+		}
+	}
 }
 
 // registerAlarmGoroutine spawns a goroutine that waits until the scheduled
@@ -69,10 +97,15 @@ func CancelAlarms() {
 //  4. Sends an EventTypeScheduled event through eventqueue
 func registerAlarmGoroutine(event *model.ScheduledEvent) {
 	alarmCtx, alarmCancel := context.WithCancel(context.Background())
-	alarmRegistry.register(event.ID, alarmCancel)
+	registration := &alarmRegistration{cancel: alarmCancel, personID: event.PersonID}
+	if !alarmRegistry.register(event.ID, registration) {
+		alarmCancel()
+		applogger.Info("Scheduled event already armed", "event_id", event.ID)
+		return
+	}
 
 	go func() {
-		defer alarmRegistry.unregister(event.ID)
+		defer alarmRegistry.unregister(event.ID, registration)
 
 		until := time.Until(event.TriggerAt)
 		applogger.Info("Scheduled event goroutine waiting",
@@ -120,13 +153,38 @@ func registerAlarmGoroutine(event *model.ScheduledEvent) {
 // the eventqueue. Used for both normal goroutine triggering and overdue
 // recovery during startup.
 func fireScheduledEvent(event *model.ScheduledEvent) {
-	if err := database.DB.Model(&model.ScheduledEvent{}).
-		Where("id = ?", event.ID).
-		Update("status", model.ScheduledEventStatusTriggered).Error; err != nil {
+	tx := database.DB.Begin()
+	if tx.Error != nil {
+		applogger.Error("fireScheduledEvent: failed to begin transaction", "event_id", event.ID, "error", tx.Error)
+		return
+	}
+	defer tx.Rollback()
+	if err := dops.RequireActivePersonTx(tx, event.PersonID); err != nil {
+		applogger.Info("fireScheduledEvent: deceased person cannot receive alarm", "event_id", event.ID, "person_id", event.PersonID)
+		return
+	}
+	updated := tx.Model(&model.ScheduledEvent{}).
+		Where("id = ? AND status = ?", event.ID, model.ScheduledEventStatusPending).
+		Update("status", model.ScheduledEventStatusTriggered)
+	if err := updated.Error; err != nil {
 		applogger.Error("fireScheduledEvent: failed to mark as triggered",
 			"event_id", event.ID, "error", err)
 		return
 	}
+	if updated.RowsAffected == 0 {
+		applogger.Info("fireScheduledEvent: alarm already handled", "scheduled_event_id", event.ID)
+		return
+	}
+	eventID, err := memory.RecordReferencedEventTx(tx, model.EventTypeScheduled, event.ID)
+	if err != nil {
+		applogger.Error("fireScheduledEvent: failed to record durable Event", "scheduled_event_id", event.ID, "error", err)
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		applogger.Error("fireScheduledEvent: failed to commit alarm and Event", "scheduled_event_id", event.ID, "error", err)
+		return
+	}
+	refreshMemorySource(model.MemorySourceEvent, eventID)
 
 	applogger.Info("Scheduled event fired, sending to eventqueue",
 		"event_id", event.ID,
@@ -151,11 +209,13 @@ func fireScheduledEvent(event *model.ScheduledEvent) {
 	eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
 		Type:      eventqueue.EventTypeScheduled,
 		SessionID: event.SessionID,
+		EventID:   eventID,
 		Payload: &eventqueue.ScheduledEventPayload{
-			ScheduledEventID: event.ID,
-			Message:          event.Message,
-			Action:           event.Action,
-			ActionContent:    event.ActionContent,
+			ScheduledEventID:      event.ID,
+			Message:               event.Message,
+			Action:                event.Action,
+			ActionContent:         event.ActionContent,
+			ExpressionInstruction: event.ExpressionInstruction,
 		},
 	})
 }
@@ -175,6 +235,11 @@ func armScheduledEvent(eventID int64) {
 	if event.Status != model.ScheduledEventStatusPending {
 		applogger.Info("armScheduledEvent: event not pending, skipping",
 			"event_id", eventID, "status", event.Status)
+		return
+	}
+	person, err := dops.GetPerson(event.PersonID)
+	if err != nil || person.Status != model.PersonStatusActive {
+		applogger.Info("armScheduledEvent: person unavailable", "event_id", event.ID, "person_id", event.PersonID, "error", err)
 		return
 	}
 
@@ -199,7 +264,7 @@ func armScheduledEvent(eventID int64) {
 // Called during runtime startup, after eventqueue.Init() and runtime.Start().
 func recoverScheduledEvents() {
 	var pendingEvents []*model.ScheduledEvent
-	if err := database.DB.Where("status = ?", model.ScheduledEventStatusPending).
+	if err := database.DB.Where("status = ? AND person_id IN (SELECT id FROM persons WHERE status = ?)", model.ScheduledEventStatusPending, model.PersonStatusActive).
 		Order("trigger_at ASC").Find(&pendingEvents).Error; err != nil {
 		applogger.Error("recoverScheduledEvents: failed to load pending events", "error", err)
 		return

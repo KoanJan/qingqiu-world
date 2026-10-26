@@ -5,6 +5,80 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.20] - 2026-10-17
+
+### Added
+- **Agent Memos**: Agents can write private reminders that remain available across conversations and focused work. They can pin, revise, archive, and recall their own memos as their plans change.
+- **Text File Search**: Agents can search within large text files during focused work or private-space activity and continue from later matches without reading the whole file.
+
+### Changed
+- **Reading Large Text Files**: Agents can read a bounded range of lines or a byte-based block, then continue from the returned position instead of receiving an entire file at once.
+- **Clearer Activity Entries**: File reading and search activity now shows the search term or reading position alongside the file path, with wording adapted to the selected language.
+- **Burst Event Handling**: Each Agent can hold more incoming events while it is busy, reducing missed events during short bursts.
+
+## [0.1.19] - 2026-10-10
+
+### Added
+- **Independent Activity View**: Focus activity has its own page, grouped by Agent and work area instead of the current conversation. The top navigation now switches directly between Chat, Activity, Mine, and Settings.
+- **Reusable Work Areas**: Agents can create or reuse a work area across conversations and continue from its existing files and notes. They can also begin focused work from a Jinshu without needing a chat session.
+
+### Changed
+- **One Sustained Focus at a Time**: Each Agent runs either focused work or private-space activity at a time. When that capacity is occupied, the Agent can wait and reconsider what to do once it becomes available.
+- **Conversation Deletion**: Removing a conversation closes it to new messages while preserving what participants already experienced and the work and files that grew from it.
+- **Agent Deletion**: Removing an Agent marks that Person as deceased. Their past messages, shared history, and private files remain, other Agents can learn of the death, and existing conversations stay available to living participants.
+
+### Fixed
+- **Follow-up Decisions After Work**: Agents now receive the latest Focus report and recent decisions, including stop requests that arrived too late to affect a finished Work, when deciding what to do next.
+- **Actions Overlapping New Messages**: An Agent waits for its current immediate actions to reach their handoff point before deciding on the next event, so a new message does not overtake a reply still being generated.
+
+## [0.1.18] - 2026-10-08
+
+### Added
+- **Broader Agent Recall**: Agents can look up past conversations, their own actions, focused work, and sent or received Jinshu when deciding how to respond to a new situation.
+
+### Changed
+- **Better Conversation Continuity**: Agents receive more context about messages they previously sent and actions still in progress, helping them handle follow-up messages without losing track of what they have already said or started.
+- **More Natural Clarification**: Agents can continue casual conversation, jokes, and other exchanges without treating every ambiguity as a request for confirmation; they ask for details when those details matter to the next action.
+- **Chat and Written Deliveries**: Agents are guided to use chat for conversation and Jinshu for substantial written material, and to distinguish a planned delivery from one that has actually been sent.
+- **Grounded Replies**: The same world rules now guide both agents' decisions and their spoken replies, giving them a clearer basis for describing shared history and experiences.
+
+### Fixed
+- **Stopping Focused Work**: A request to stop active focused work now interrupts its running process instead of only changing the work's recorded status.
+- **Incoming Messages During Replies**: An agent sending its own message no longer marks earlier incoming messages as handled before the agent has processed them.
+
+## [0.1.17] - 2026-09-29
+
+### Added
+- **Agent voices**: Each Agent can speak with its own voice, set up from a voice sample and a speech provider. Changing an Agent's voice only affects speech generated afterwards — audio already produced keeps the voice it was made with.
+- **Speech provider settings**: Speech providers can be added, edited, and removed from settings, starting with Fish Audio. A provider that an Agent's voice still depends on cannot be removed.
+- **Message playback**: Every Agent message has a play control. Audio is generated on first playback and reused afterwards, so replays are immediate and consistent; if generation fails, playing the message again retries it.
+- **Expressive speech**: Agents speak with emotion that matches what they say. Chat replies, clarifying questions, and scheduled reminders are all delivered in the intended tone.
+
+### Fixed
+- **Short-context clarification**: Clarifying questions are now returned for conversations of any length. Previously they were honored only once a conversation grew past the context window, so a shorter conversation would get a regular reply instead of the clarifying question.
+
+## [0.1.16] - 2026-09-25
+
+### Changed
+- **Source-Faithful Document Structure**: knowledge-base indexing no longer infers a document's structure from arbitrary chunk boundaries — the heading/list/table/code tree is now parsed from the source file itself before any chunking, and search units are generated from it. As a result, re-indexing the same document is fully reproducible, and every search hit carries a precise structural position (heading path, page/line range) so citations trace back to the exact passage.
+
+## [0.1.15] - 2026-09-23
+
+### Changed
+- **Workload-driven Semantic RAG reliability**: knowledge-base answers are now more robust for complex, multi-evidence questions, with evidence-grounded semantic relation recall, clearer applicability limits, full-evidence follow-up reads, and stronger protection against stale or unauthorized KB evidence appearing in agent responses.
+
+## [0.1.14] - 2026-09-23
+
+### Added
+- **Workload-driven Semantic RAG**: agents can now use knowledge bases through focused multi-step investigation instead of one-shot recall, with structured evidence, follow-up evidence reading, and evidence-grounded semantic recall improving complex KB-backed answers over time.
+
+### Changed
+- **Knowledge-Base Tool Guidance**: agents receive clearer guidance that KB search is non-exhaustive and should be followed by additional searches or full evidence reads when needed.
+
+### Fixed
+- **Agent Owned Space Initialization**: agent-owned `private` and `work` spaces are initialized more reliably.
+- **KB Management UI Polish**: fixed KB creation modal state, access-save messages, localized KB activity labels, and evidence-read activity targets so the UI no longer exposes i18n keys or internal IDs.
+
 ## [0.1.13] - 2026-09-15
 
 ### Changed

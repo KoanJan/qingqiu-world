@@ -18,6 +18,7 @@ type Publisher interface{ Publish(context.Context, Intent) }
 type MessageCommitted struct {
 	SessionID, MessageID, PersonID int64
 	Content                        string
+	ExpressionInstruction          string
 }
 
 func (MessageCommitted) isNotificationIntent() {}

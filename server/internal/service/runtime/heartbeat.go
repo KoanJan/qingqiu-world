@@ -31,11 +31,6 @@ const (
 // enough Energy for an active action (CostActive), the heartbeat builds a
 // self-observation Description and calls Decide.
 func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
-	if len(r.activeWorks) > 0 {
-		// Agent is busy — no heartbeat processing needed
-		return
-	}
-
 	r.heartbeatTick++
 	r.idleTicks++
 
@@ -81,9 +76,19 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 	// Build the heartbeat Situation directly — no event, no Comprehend.
 	description := buildHeartbeatDescription(r.agentPersonID)
 	situation := buildHeartbeatSituation(description, state.Energy, "")
+	populateGeneralSituation(r.agentPersonID, situation)
+	situation.Subject.ExecutionSlotSummary = r.executionSlotSummary()
 
 	// Decide will fetch agent info via agent.GetAgent when it needs it.
 	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
+	if !d.Accepted {
+		applogger.Error("heartbeat: Decide produced no accepted result", "person_id", r.agentPersonID)
+		return
+	}
+	if _, err := persistDecision(r.agentPersonID, situation, &d); err != nil {
+		applogger.Error("heartbeat: failed to persist decision", "person_id", r.agentPersonID, "error", err)
+		return
+	}
 	if len(d.Actions) > 0 {
 		if err := energy.DeductEnergy(r.agentPersonID, energyCost(situation.Source)); err != nil {
 			applogger.Error("failed to deduct energy", "person_id", r.agentPersonID, "error", err)
@@ -109,8 +114,8 @@ func (r *agentRuntime) checkMemoryDensity(ctx context.Context) {
 	}
 }
 
-// checkReflection scans all sessions for the agent and triggers experience
-// extraction via LLM reflection for sessions whose notes have changed since
+// checkReflection scans the agent's Workspace notes and triggers experience
+// extraction via LLM reflection for notes that have changed since
 // the last reflection.
 func (r *agentRuntime) checkReflection(ctx context.Context) {
 	experience.CheckReflection(ctx, r.agentPersonID)

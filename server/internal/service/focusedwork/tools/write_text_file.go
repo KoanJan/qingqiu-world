@@ -1,8 +1,8 @@
 package tools
 
 import (
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
@@ -13,12 +13,12 @@ type WriteTextFileTool struct {
 	core *servicetools.WriteFileTool
 }
 
-// NewWriteTextFileTool creates a WriteTextFileTool for the given person and session.
-func NewWriteTextFileTool(personID, sessionID int64) *WriteTextFileTool {
+// NewWriteTextFileTool uses the selected Workspace directory.
+func NewWriteTextFileTool(personID int64, workspaceDir string) *WriteTextFileTool {
 	return &WriteTextFileTool{
 		core: servicetools.NewWriteFileTool(
-			workspace.GetAgentOwnedSpacePath(personID),
-			workspace.GetOutputDir(personID, sessionID),
+			aos.GetAgentOwnedSpacePath(personID),
+			workspaceDir,
 		),
 	}
 }

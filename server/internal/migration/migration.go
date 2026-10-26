@@ -74,6 +74,26 @@ var migrations = []migration{
 		description: "Copy legacy workspace and private-space data into Agent Owned Space",
 		fn:          migrate_0_1_13,
 	},
+	{
+		version:     "0.1.14",
+		description: "Add canonical document revisions and content-node mappings for knowledge bases",
+		fn:          migrate_0_1_14,
+	},
+	{
+		version:     "0.1.15",
+		description: "Add natural-language applicability notes to knowledge-base relations",
+		fn:          migrate_0_1_15,
+	},
+	{
+		version:     "0.1.17",
+		description: "Add agent voice, TTS renderer, speech history, and message/alarm expression fields",
+		fn:          migrate_0_1_17,
+	},
+	{
+		version:     "0.1.19",
+		description: "Register historical Workspaces, remove redundant Interaction Session IDs, and compact retired Jinshu types",
+		fn:          migrate_0_1_19,
+	},
 }
 
 // Run executes incremental migration scripts based on the current database
@@ -88,11 +108,35 @@ var migrations = []migration{
 //  4. Record the final version in db_versions.
 func Run() {
 	currentVersion := getDBVersion()
+	// Development databases may already carry the 0.1.19 version marker from
+	// before these final schema and enum changes. Finish them without replaying
+	// Workspace registration or moving files.
+	if currentVersion != "" && !semverLess(currentVersion, "0.1.19") {
+		if err := removeLegacyInteractionSessionColumn(); err != nil {
+			panic(fmt.Sprintf("0.1.19: remove obsolete Interaction Session column: %v", err))
+		}
+		if err := migrateRetiredJinshuTypes(); err != nil {
+			panic(fmt.Sprintf("0.1.19: compact retired Jinshu types: %v", err))
+		}
+		if err := migrateDurableEventTypes(); err != nil {
+			panic(fmt.Sprintf("0.1.19: compact durable Event types: %v", err))
+		}
+	}
 
 	if currentVersion == "" || semverLess(currentVersion, minDataVersion) {
 		applogger.Info("DB version below minimum for incremental migration, performing full init",
 			"current", currentVersion, "minimum", minDataVersion)
 		database.ClearAndInit()
+		// Fresh databases already use the compact enums. Record the marker now
+		// so a later restart never shifts newly written Action or buffer types.
+		if !semverLess(config.AppVersion, "0.1.19") {
+			if err := migrateRetiredJinshuTypes(); err != nil {
+				panic(fmt.Sprintf("0.1.19: mark compact Jinshu types on fresh database: %v", err))
+			}
+			if err := migrateDurableEventTypes(); err != nil {
+				panic(fmt.Sprintf("0.1.19: mark compact Event types on fresh database: %v", err))
+			}
+		}
 		recordVersion(config.AppVersion, "Full init (version below migration threshold)")
 		return
 	}
@@ -100,7 +144,7 @@ func Run() {
 	// Incremental migration: run all scripts with version > currentVersion
 	var pending []migration
 	for _, m := range migrations {
-		if semverLess(currentVersion, m.version) {
+		if semverLess(currentVersion, m.version) && !semverLess(config.AppVersion, m.version) {
 			pending = append(pending, m)
 		}
 	}
@@ -148,6 +192,7 @@ func recordVersion(version, description string) {
 		Description: description,
 	}).Error; err != nil {
 		applogger.Error("failed to record DB version", "version", version, "error", err)
+		panic(fmt.Sprintf("failed to record DB version %s: %v", version, err))
 	}
 }
 

@@ -36,6 +36,10 @@ const (
 	candidateFetchFactor = 4
 	// maxFilteredFetchK caps the enlarged fetch to bound latency on large KBs.
 	maxFilteredFetchK = 200
+	// maxConcurrentKBSearchWorkers bounds one multi-KB request. Without this
+	// pool, a caller-selected KB list could create one embedding/index search
+	// goroutine per KB and exhaust local runtime resources.
+	maxConcurrentKBSearchWorkers = 4
 
 	// DefaultKeywordRatio is the default weight (alpha) of the keyword (BM25)
 	// score in hybrid retrieval when a KB has no explicit configuration.
@@ -136,7 +140,11 @@ func searchOneKB(ctx context.Context, kbID int64, query string, topK int, docIDs
 	merged := blendHybrid(vecCandidates, kwCandidates, alpha)
 
 	if len(docIDs) > 0 {
-		merged = filterCandidatesByDocuments(merged, docIDs)
+		filtered, err := filterCandidatesByDocuments(merged, docIDs)
+		if err != nil {
+			return nil, fmt.Errorf("filter candidates by document metadata: %w", err)
+		}
+		merged = filtered
 	}
 	if len(merged) > topK {
 		merged = merged[:topK]
@@ -168,7 +176,12 @@ func blendHybrid(vec, kw []searchCandidate, alpha float64) []searchCandidate {
 	for chunkID, score := range merged {
 		results = append(results, searchCandidate{ChunkID: chunkID, Score: score})
 	}
-	sort.Slice(results, func(i, j int) bool { return results[i].Score > results[j].Score })
+	sort.Slice(results, func(i, j int) bool {
+		if results[i].Score == results[j].Score {
+			return results[i].ChunkID < results[j].ChunkID
+		}
+		return results[i].Score > results[j].Score
+	})
 	return results
 }
 
@@ -241,18 +254,18 @@ func resolveDocumentIDs(kbID int64, documentTitle string) ([]int64, error) {
 
 // filterCandidatesByDocuments keeps only candidates whose chunk belongs to one
 // of the given documents. Chunk membership is resolved with a single query.
-// On query failure it logs and returns the unfiltered candidates instead of
-// silently returning empty results.
-func filterCandidatesByDocuments(candidates []searchCandidate, docIDs []int64) []searchCandidate {
+// A metadata-filter failure must fail closed: returning an unfiltered result
+// would violate the caller's explicit document scope.
+func filterCandidatesByDocuments(candidates []searchCandidate, docIDs []int64) ([]searchCandidate, error) {
 	if len(candidates) == 0 || len(docIDs) == 0 {
-		return nil
+		return nil, nil
 	}
 	var chunkIDs []int64
 	if err := database.DB.Model(&model.DocumentChunk{}).
-		Where("document_id IN ?", docIDs).
+		Where("document_id IN ? AND deleted = 0", docIDs).
 		Pluck("id", &chunkIDs).Error; err != nil {
-		applogger.Error("failed to load chunk IDs for document filter, keeping unfiltered candidates", "doc_ids", docIDs, "error", err)
-		return candidates
+		applogger.Error("failed to load chunk IDs for document filter", "doc_ids", docIDs, "error", err)
+		return nil, err
 	}
 	set := make(map[int64]struct{}, len(chunkIDs))
 	for _, id := range chunkIDs {
@@ -264,7 +277,7 @@ func filterCandidatesByDocuments(candidates []searchCandidate, docIDs []int64) [
 			filtered = append(filtered, c)
 		}
 	}
-	return filtered
+	return filtered, nil
 }
 
 // searchMultiKB searches multiple knowledge bases concurrently.
@@ -284,33 +297,51 @@ func searchMultiKB(ctx context.Context, kbIDs []int64, query string, topK int, d
 	}
 
 	ch := make(chan kbResult, len(kbIDs))
+	jobs := make(chan int64)
 	var wg sync.WaitGroup
-
-	for _, kbID := range kbIDs {
-		wg.Add(1)
-		go func(id int64) {
-			defer wg.Done()
-
-			var docIDs []int64
-			if documentTitle != "" {
-				ids, err := resolveDocumentIDs(id, documentTitle)
-				if err != nil {
-					applogger.Error("multiSearch: failed to resolve document filter", "kb_id", id, "document", documentTitle, "error", err)
-					ch <- kbResult{err: err, kbID: id}
-					return
-				}
-				if len(ids) == 0 {
-					// No matching document in this KB: contribute nothing.
-					ch <- kbResult{kbID: id}
-					return
-				}
-				docIDs = ids
-			}
-
-			results, err := searchOneKB(ctx, id, query, topK, docIDs)
-			ch <- kbResult{results: results, err: err, kbID: id}
-		}(kbID)
+	workerCount := maxConcurrentKBSearchWorkers
+	if len(kbIDs) < workerCount {
+		workerCount = len(kbIDs)
 	}
+	for worker := 0; worker < workerCount; worker++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for id := range jobs {
+				var docIDs []int64
+				if documentTitle != "" {
+					ids, err := resolveDocumentIDs(id, documentTitle)
+					if err != nil {
+						applogger.Error("multiSearch: failed to resolve document filter", "kb_id", id, "document", documentTitle, "error", err)
+						ch <- kbResult{err: err, kbID: id}
+						continue
+					}
+					if len(ids) == 0 {
+						// No matching document in this KB: contribute nothing.
+						ch <- kbResult{kbID: id}
+						continue
+					}
+					docIDs = ids
+				}
+
+				results, err := searchOneKB(ctx, id, query, topK, docIDs)
+				ch <- kbResult{results: results, err: err, kbID: id}
+			}
+		}()
+	}
+	go func() {
+		defer close(jobs)
+		submitted := 0
+		for _, kbID := range kbIDs {
+			select {
+			case jobs <- kbID:
+				submitted++
+			case <-ctx.Done():
+				applogger.Warn("multiSearch: request cancelled before all KB jobs were submitted", "submitted_kb_count", submitted, "requested_kb_count", len(kbIDs))
+				return
+			}
+		}
+	}()
 
 	go func() {
 		wg.Wait()
@@ -326,12 +357,26 @@ func searchMultiKB(ctx context.Context, kbIDs []int64, query string, topK int, d
 		allResults = append(allResults, res.results...)
 	}
 
-	// Each KB returns its own top-K hits: rank them globally by score and
-	// truncate to topK so the combined result has the same shape and
-	// relevance ordering as a single-KB search, regardless of how many KBs
-	// were searched. Scores are comparable across KBs because every KB uses
-	// the same embedding model and similarity metric.
-	sort.Slice(allResults, func(i, j int) bool { return allResults[i].Score > allResults[j].Score })
+	// Each KB returns its own top-K hits, then the established baseline ranks
+	// the combined set deterministically. Hybrid scores are normalized within
+	// each KB, so their cross-KB comparability is an implementation baseline,
+	// not a semantic guarantee; benchmark evaluation must validate it before a
+	// different federation policy replaces this order.
+	sort.Slice(allResults, func(i, j int) bool {
+		if allResults[i].Score != allResults[j].Score {
+			return allResults[i].Score > allResults[j].Score
+		}
+		if allResults[i].KnowledgeBaseID != allResults[j].KnowledgeBaseID {
+			return allResults[i].KnowledgeBaseID < allResults[j].KnowledgeBaseID
+		}
+		if allResults[i].DocumentID != allResults[j].DocumentID {
+			return allResults[i].DocumentID < allResults[j].DocumentID
+		}
+		if allResults[i].RevisionID != allResults[j].RevisionID {
+			return allResults[i].RevisionID < allResults[j].RevisionID
+		}
+		return allResults[i].ChunkID < allResults[j].ChunkID
+	})
 	if len(allResults) > topK {
 		allResults = allResults[:topK]
 	}
@@ -356,16 +401,26 @@ func candidatesToResults(candidates []searchCandidate, kbID int64) []schema.Sear
 		}
 
 		var doc model.Document
-		if err := database.DB.Select("id, title").First(&doc, chunk.DocumentID).Error; err != nil {
+		if err := database.DB.Select("id, title, status, active_revision_id").First(&doc, chunk.DocumentID).Error; err != nil {
 			applogger.Error("failed to find document in retriever", "document_id", chunk.DocumentID, "error", err)
 			continue
+		}
+		if doc.Status != model.DocumentStatusReady || doc.ActiveRevisionID == 0 || chunk.RevisionID != doc.ActiveRevisionID {
+			// Serving indexes can temporarily contain pending or superseded units.
+			// The document pointer is the only visibility truth at return time.
+			continue
+		}
+		content := chunk.DisplayText
+		if content == "" {
+			content = chunk.Content
 		}
 
 		results = append(results, schema.SearchResult{
 			ChunkID:         int64(c.ChunkID),
 			DocumentID:      chunk.DocumentID,
+			RevisionID:      chunk.RevisionID,
 			DocumentTitle:   doc.Title,
-			Content:         chunk.Content,
+			Content:         content,
 			Score:           c.Score,
 			KnowledgeBaseID: kbID,
 		})

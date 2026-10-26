@@ -1,0 +1,23 @@
+[
+  {
+    "id": "h1-structure-boundaries",
+    "kind": "adaptive_segmentation",
+    "query": "section structure",
+    "expected_status": 0,
+    "expected_evidence_ids": [1]
+  },
+  {
+    "id": "h2-relation-expanded-partial",
+    "kind": "relation_expansion",
+    "query": "dependency chain",
+    "expected_status": 1,
+    "expected_evidence_ids": [10, 20]
+  },
+  {
+    "id": "h2-insufficient-evidence",
+    "kind": "scan",
+    "query": "unsupported assertion",
+    "expected_status": 2,
+    "expected_evidence_ids": []
+  }
+]

@@ -1,8 +1,8 @@
 package tools
 
 import (
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 
 	servicetools "qingqiu-world-server/internal/service/tools"
 )
@@ -13,12 +13,12 @@ type EditTextFileTool struct {
 	core *servicetools.EditFileTool
 }
 
-// NewEditTextFileTool creates an EditTextFileTool for the given person and session.
-func NewEditTextFileTool(personID, sessionID int64) *EditTextFileTool {
+// NewEditTextFileTool uses the selected Workspace directory.
+func NewEditTextFileTool(personID int64, workspaceDir string) *EditTextFileTool {
 	return &EditTextFileTool{
 		core: servicetools.NewEditFileTool(
-			workspace.GetAgentOwnedSpacePath(personID),
-			workspace.GetOutputDir(personID, sessionID),
+			aos.GetAgentOwnedSpacePath(personID),
+			workspaceDir,
 		),
 	}
 }
@@ -31,7 +31,7 @@ func (e *EditTextFileTool) Description() string {
 func (e *EditTextFileTool) Schema() llm.FunctionDefinition {
 	return llm.FunctionDefinition{
 		Name:        e.Name().String(),
-		Description: "Edit an existing file by replacing old_str with new_str. Uses exact substring matching — copy old_str EXACTLY from read_text_file output. Can only modify existing files; use write_text_file to create new files.",
+		Description: "Edit an existing file by replacing old_str with new_str. Uses exact substring matching — copy old_str EXACTLY from read_text_lines or read_text_block output. Can only modify existing files; use write_text_file to create new files.",
 		Parameters: map[string]interface{}{
 			"type": "object",
 			"properties": map[string]interface{}{
@@ -41,7 +41,7 @@ func (e *EditTextFileTool) Schema() llm.FunctionDefinition {
 				},
 				"old_str": map[string]interface{}{
 					"type":        "string",
-					"description": "The exact text to find in the file. Must match precisely. Copy this from read_text_file output.",
+					"description": "The exact text to find in the file. Must match precisely. Copy this from read_text_lines or read_text_block output.",
 				},
 				"new_str": map[string]interface{}{
 					"type":        "string",

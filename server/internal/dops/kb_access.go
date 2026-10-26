@@ -95,17 +95,6 @@ func RevokeKBAccess(kbID, personID int64) error {
 	return nil
 }
 
-// DeleteAccessByKB removes all grants referencing the given KB. Called when
-// a KB is deleted (application-level cascade — no FK constraints allowed).
-// Returns the number of removed rows.
-func DeleteAccessByKB(kbID int64) (int64, error) {
-	result := database.DB.Where("kb_id = ?", kbID).Delete(&model.KBAccess{})
-	if result.Error != nil {
-		return 0, fmt.Errorf("delete KB access by KB %d: %w", kbID, result.Error)
-	}
-	return result.RowsAffected, nil
-}
-
 // DeleteAccessByPerson removes all grants referencing the given person.
 // Called when an AI person is deleted (application-level cascade).
 // Accepts a transaction handle so it participates in the caller's deletion

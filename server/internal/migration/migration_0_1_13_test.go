@@ -7,18 +7,18 @@ import (
 
 	"qingqiu-world-server/internal/config"
 	applogger "qingqiu-world-server/internal/logger"
-	"qingqiu-world-server/internal/service/workspace"
+	"qingqiu-world-server/internal/service/aos"
 )
 
-// TestLegacyOwnedSpaceMigrationIsRegistered verifies an upgrade to the current
-// release executes the filesystem migration through migration.Run.
+// TestLegacyOwnedSpaceMigrationIsRegistered verifies the filesystem migration
+// remains in the ordered upgrade history, independent of the current release.
 func TestLegacyOwnedSpaceMigrationIsRegistered(t *testing.T) {
 	for _, item := range migrations {
-		if item.version == config.AppVersion && item.fn != nil {
+		if item.version == "0.1.13" && item.fn != nil {
 			return
 		}
 	}
-	t.Fatalf("no migration registered for current version %s", config.AppVersion)
+	t.Fatal("legacy owned space migration is not registered")
 }
 
 // TestMigrateLegacyOwnedSpaceCopiesWithoutDeletingOrOverwriting verifies the
@@ -53,10 +53,10 @@ func TestMigrateLegacyOwnedSpaceCopiesWithoutDeletingOrOverwriting(t *testing.T)
 	if err := migrateLegacyOwnedSpace(); err != nil {
 		t.Fatalf("migrate legacy owned space: %v", err)
 	}
-	assertMigrationFile(t, filepath.Join(workspace.GetWorkspacePath(personID, sessionID), "artifact.txt"), "resource")
-	assertMigrationFile(t, filepath.Join(workspace.GetMetaDir(personID, sessionID), "notes.jsonl"), "metadata\n")
-	assertMigrationFile(t, filepath.Join(workspace.GetPrivateSpacePath(personID), "idea.txt"), "idea")
-	assertMigrationFile(t, filepath.Join(workspace.GetPrivateMetaDir(personID), "log.jsonl"), "entry\n")
+	assertMigrationFile(t, filepath.Join(legacySessionWorkspacePath(personID, sessionID), "artifact.txt"), "resource")
+	assertMigrationFile(t, filepath.Join(legacySessionMetaDir(personID, sessionID), "notes.jsonl"), "metadata\n")
+	assertMigrationFile(t, filepath.Join(aos.GetPrivateSpacePath(personID), "idea.txt"), "idea")
+	assertMigrationFile(t, filepath.Join(aos.GetPrivateMetaDir(personID), "log.jsonl"), "entry\n")
 
 	// The source must remain a complete recovery copy after the migration.
 	assertMigrationFile(t, filepath.Join(legacySession, "artifact.txt"), "resource")
@@ -64,14 +64,14 @@ func TestMigrateLegacyOwnedSpaceCopiesWithoutDeletingOrOverwriting(t *testing.T)
 
 	// Even if a previous process stopped before retaining its completion marker,
 	// the copy-only primitive must never overwrite newer AOS data.
-	writeMigrationFixture(t, filepath.Join(workspace.GetWorkspacePath(personID, sessionID), "artifact.txt"), "newer-resource")
-	if err := os.Remove(filepath.Join(workspace.GetMetaDir(personID, sessionID), "legacy_workspace_imported")); err != nil {
+	writeMigrationFixture(t, filepath.Join(legacySessionWorkspacePath(personID, sessionID), "artifact.txt"), "newer-resource")
+	if err := os.Remove(filepath.Join(legacySessionMetaDir(personID, sessionID), "legacy_workspace_imported")); err != nil {
 		t.Fatalf("remove workspace migration marker: %v", err)
 	}
 	if err := migrateLegacyOwnedSpace(); err != nil {
 		t.Fatalf("repeat legacy owned-space migration: %v", err)
 	}
-	assertMigrationFile(t, filepath.Join(workspace.GetWorkspacePath(personID, sessionID), "artifact.txt"), "newer-resource")
+	assertMigrationFile(t, filepath.Join(legacySessionWorkspacePath(personID, sessionID), "artifact.txt"), "newer-resource")
 }
 
 func writeMigrationFixture(t *testing.T, path, content string) {

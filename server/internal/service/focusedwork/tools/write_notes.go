@@ -5,30 +5,31 @@ import (
 	"strings"
 	"time"
 
+	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // WriteNotesTool implements an append-only, structured notes system for persisting agent's working memory.
 //
-// Notes are stored as JSONL (notes.jsonl) via the workspace package.
+// Notes are stored as JSONL (notes.jsonl) in Workspace AOS metadata.
 // The tool is a thin adapter: it parses LLM tool arguments, constructs a
-// workspace.NoteEntry, and delegates storage to workspace.AppendNote.
+// aos.NoteEntry, and delegates storage to aos.AppendNote.
 //
 // Rendering (markdown format for LLM consumption) is handled by this tool,
 // not by the storage layer — different callers may want different formats.
 type WriteNotesTool struct {
 	personID      int64
-	sessionID     int64
+	metaDir       string // Runtime-owned metadata paired with the selected Workspace.
 	notesMaxChars int
 	CycleDetector // Embedded: cycle detection on (args, result) pairs
 }
 
-// NewWriteNotesTool creates a WriteNotesTool bound to the given person and session.
-func NewWriteNotesTool(personID, sessionID int64, notesMaxChars int) *WriteNotesTool {
+// NewWriteNotesTool creates a WriteNotesTool bound to one Workspace's metadata.
+func NewWriteNotesTool(personID int64, notesMaxChars int, metaDir string) *WriteNotesTool {
 	return &WriteNotesTool{
 		personID:      personID,
-		sessionID:     sessionID,
+		metaDir:       metaDir,
 		notesMaxChars: notesMaxChars,
 	}
 }
@@ -51,7 +52,7 @@ func (w *WriteNotesTool) Schema() llm.FunctionDefinition {
 			"Skip trivial or obvious information. " +
 			"Focus on key facts that future steps MUST know — " +
 			"critical discoveries, important decisions, and essential state. " +
-			"When in doubt, ask: would losing this information hurt a later continuation of this FocusedWork? " +
+			"When in doubt, ask: would losing this information make later work in this Workspace harder? " +
 			"If not, skip it." +
 			"\n\n" +
 			"Entry types:\n" +
@@ -125,12 +126,12 @@ func (w *WriteNotesTool) Execute(args map[string]interface{}) (string, error) {
 	}
 
 	// Convert LLM-provided string type to NoteType at the API boundary.
-	noteType, err := workspace.ParseNoteType(entryTypeStr)
+	noteType, err := aos.ParseNoteType(entryTypeStr)
 	if err != nil {
 		return "", fmt.Errorf("invalid entry_type: %w", err)
 	}
 
-	entry := workspace.NoteEntry{
+	entry := aos.NoteEntry{
 		Timestamp:     time.Now().Format(time.RFC3339),
 		Type:          noteType,
 		Content:       content,
@@ -138,7 +139,7 @@ func (w *WriteNotesTool) Execute(args map[string]interface{}) (string, error) {
 		ConflictsWith: conflictsWith,
 	}
 
-	if err := workspace.AppendNote(w.personID, w.sessionID, entry); err != nil {
+	if err := aos.AppendNote(w.metaDir, entry); err != nil {
 		return "", fmt.Errorf("failed to write note: %w", err)
 	}
 
@@ -155,7 +156,7 @@ func (w *WriteNotesTool) Execute(args map[string]interface{}) (string, error) {
 // ReadNotes returns the full notes content rendered as markdown for LLM consumption.
 // The FocusedLoop calls this to include notes in the system prompt.
 func (w *WriteNotesTool) ReadNotes() string {
-	entries := workspace.ReadAllNotes(w.personID, w.sessionID)
+	entries := aos.ReadAllNotes(w.metaDir)
 	if len(entries) == 0 {
 		return ""
 	}
@@ -176,7 +177,7 @@ func (w *WriteNotesTool) ReadNotes() string {
 // TrimNotes truncates the notes file if the rendered content exceeds the limit.
 // Removes oldest entries until under the limit.
 func (w *WriteNotesTool) TrimNotes() {
-	entries := workspace.ReadAllNotes(w.personID, w.sessionID)
+	entries := aos.ReadAllNotes(w.metaDir)
 	if len(entries) == 0 {
 		return
 	}
@@ -195,11 +196,14 @@ func (w *WriteNotesTool) TrimNotes() {
 		}
 	}
 
-	workspace.RewriteNotes(w.personID, w.sessionID, entries)
+	if err := aos.RewriteNotes(w.metaDir, entries); err != nil {
+		applogger.Error("write_notes: failed to trim notes", "person_id", w.personID, "meta_dir", w.metaDir, "error", err)
+		return
+	}
 }
 
 // renderNoteEntry renders a single NoteEntry as a markdown section.
-func renderNoteEntry(e workspace.NoteEntry) string {
+func renderNoteEntry(e aos.NoteEntry) string {
 	ts := e.DisplayTimestamp()
 
 	var sb strings.Builder
@@ -223,7 +227,7 @@ func renderNoteEntry(e workspace.NoteEntry) string {
 }
 
 // renderNoteEntries converts a slice of NoteEntry to markdown.
-func renderNoteEntries(entries []workspace.NoteEntry) string {
+func renderNoteEntries(entries []aos.NoteEntry) string {
 	parts := make([]string, len(entries))
 	for i, e := range entries {
 		parts[i] = renderNoteEntry(e)

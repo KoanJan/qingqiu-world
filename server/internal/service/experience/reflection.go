@@ -13,8 +13,8 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // reflectionTimeout bounds one reflection LLM call. The reflection output is
@@ -35,13 +35,12 @@ type reflectOutput struct {
 	Skip        bool   `json:"skip" jsonschema:"description=Set to true if nothing worth extracting"`
 }
 
-// CheckReflection iterates all sessions owned by the agent and triggers
-// reflection for sessions whose notes.jsonl has changed since the last
-// successful reflection.
+// CheckReflection scans registered Workspace notes, including historical
+// directories registered during migration, and reflects changed content.
 //
-// Dedup is file-based: <workspace>/.meta/fingerprint.txt stores the SHA-256
+// Dedup is file-based: <workspace metadata>/fingerprint.txt stores the SHA-256
 // hash of notes.jsonl as it was at the end of the last reflection. If the
-// current notes.jsonl hash matches, the session is skipped. If fingerprint.txt
+// current notes.jsonl hash matches, the Workspace is skipped. If fingerprint.txt
 // is missing (first reflection) or differs, reflection runs.
 //
 // This is the public entry point called from the agent heartbeat.
@@ -50,91 +49,49 @@ func CheckReflection(ctx context.Context, personID int64) {
 	if embeddingSvc == nil {
 		return
 	}
-
-	var sessions []model.Session
-	if err := database.DB.
-		Joins("JOIN participant_sessions ps ON ps.session_id = sessions.id").
-		Where("ps.participant_id = ?", personID).
-		Group("sessions.id").
-		Find(&sessions).Error; err != nil {
-		applogger.Error("CheckReflection: failed to list sessions", "person_id", personID, "error", err)
+	var workspaces []model.Workspace
+	if err := database.DB.Where("person_id = ?", personID).Find(&workspaces).Error; err != nil {
+		applogger.Error("CheckReflection: failed to list Workspaces", "person_id", personID, "error", err)
 		return
 	}
-
-	for _, sess := range sessions {
-		// Check whether this session has any focused-work interactions.
-		// If not, notes.jsonl is not expected to exist — skip without error.
-		hasInteractions, err := dops.HasInteractions(sess.ID)
+	for _, record := range workspaces {
+		metaDir, err := aos.GetWorkspaceMetaDir(record)
 		if err != nil {
-			applogger.Error("CheckReflection: failed to check interactions",
-				"session_id", sess.ID, "error", err)
+			applogger.Error("CheckReflection: Workspace metadata unavailable", "person_id", personID, "workspace_id", record.ID, "error", err)
 			continue
 		}
-		if !hasInteractions {
-			applogger.Info("CheckReflection: session has no focused-work interactions, skipping",
-				"session_id", sess.ID)
-			continue
-		}
-
-		// Verify personID is a participant in this session.
-		// Agent config references a Person record; workspace
-		// paths are keyed by person_id.
-		var participantCount int64
-		if err := database.DB.Model(&model.ParticipantSession{}).
-			Where("session_id = ? AND participant_id = ?", sess.ID, personID).
-			Count(&participantCount).Error; err != nil || participantCount == 0 {
-			applogger.Info("CheckReflection: agent person not a participant in session, skipping",
-				"person_id", personID, "session_id", sess.ID)
-			continue
-		}
-		metaDir := workspace.GetMetaDir(personID, sess.ID)
-		fpFile := filepath.Join(metaDir, "fingerprint.txt")
-
-		// Session has interactions, so notes.jsonl should exist.
-		// Any read error here is a real problem — log as ERROR.
-		currentFingerprint, err := workspace.NotesFingerprint(personID, sess.ID)
-		if err != nil {
-			applogger.Error("CheckReflection: failed to read notes file",
-				"person_id", personID,
-				"session_id", sess.ID,
-				"error", err,
-			)
-			continue
-		}
-		if currentFingerprint == "" {
-			continue
-		}
-
-		// Compare against the last reflection's fingerprint.
-		// Missing file → first reflection, run it.
-		// Matching fingerprint → no change since last reflection, skip.
-		// Differing fingerprint → notes changed, run again.
-		lastFingerprintBytes, err := os.ReadFile(fpFile)
-		if os.IsNotExist(err) {
-			// File does not exist — first reflection for this session, proceed.
-		} else if err != nil {
-			applogger.Error("CheckReflection: failed to read fingerprint file",
-				"file", fpFile,
-				"error", err,
-			)
-			continue
-		} else if string(lastFingerprintBytes) == currentFingerprint {
-			// No change since the last reflection — skip.
-			continue
-		}
-
-		// Read all notes and format as markdown for the reflection prompt.
-		// The reflection pipeline decides its own format — simple markdown
-		// with timestamp and type headers, joined by separators.
-		notesContent := formatNotesForReflection(workspace.ReadAllNotes(personID, sess.ID))
-		if notesContent == "" {
-			continue
-		}
-		go reflectSession(ctx, personID, sess.ID, notesContent, currentFingerprint, fpFile)
+		checkNotesReflection(ctx, personID, model.AgentExperienceSourceWorkspaceReflection, record.ID, metaDir)
 	}
 }
 
-// reflectSession runs the LLM reflection for a single session's notes and
+// checkNotesReflection applies the same fingerprint rule to either source.
+// A missing notes file is normal for a Workspace that has never been used.
+func checkNotesReflection(ctx context.Context, personID int64, source model.AgentExperienceSource, sourceID int64, metaDir string) {
+	fingerprint, err := aos.NotesFingerprint(metaDir)
+	if err != nil {
+		applogger.Error("CheckReflection: failed to read notes", "person_id", personID, "source", source, "source_id", sourceID, "error", err)
+		return
+	}
+	if fingerprint == "" {
+		return
+	}
+	fpFile := filepath.Join(metaDir, "fingerprint.txt")
+	last, err := os.ReadFile(fpFile)
+	if err != nil && !os.IsNotExist(err) {
+		applogger.Error("CheckReflection: failed to read fingerprint", "file", fpFile, "error", err)
+		return
+	}
+	if err == nil && string(last) == fingerprint {
+		return
+	}
+	content := formatNotesForReflection(aos.ReadAllNotes(metaDir))
+	if content == "" {
+		return
+	}
+	go reflectNotes(ctx, personID, source, sourceID, content, fingerprint, fpFile)
+}
+
+// reflectNotes runs the LLM reflection for one Workspace's notes and
 // writes the new fingerprint to fpFile on success (including skip), so the
 // next heartbeat will not re-trigger reflection for unchanged notes.
 //
@@ -143,7 +100,7 @@ func CheckReflection(ctx context.Context, personID int64) {
 //
 // On LLM or parse failure, the fingerprint is NOT written, so the next
 // heartbeat will retry.
-func reflectSession(ctx context.Context, personID, sessionID int64, notesContent, currentFingerprint, fpFile string) {
+func reflectNotes(ctx context.Context, personID int64, source model.AgentExperienceSource, sourceID int64, notesContent, currentFingerprint, fpFile string) {
 	ctx, cancel := context.WithTimeout(ctx, reflectionTimeout)
 	defer cancel()
 
@@ -168,9 +125,9 @@ func reflectSession(ctx context.Context, personID, sessionID int64, notesContent
 	// would bloat the context as the experience library grows. Instead, the
 	// LLM is given the option to return update_exp_id from its own knowledge
 	// of exp_ids it has seen during focused-work execution (via scan/recall tools).
-	prompt := `Distill transferable experience from a completed focused-work log.
+	prompt := `Distill transferable experience from notes about work in one Workspace.
 
-The log below records what happened in one specific focused-work run. Extract only the abstract knowledge that could help with a completely different future work — do not summarize or reorganize the log itself.
+The notes below may cover several Works that used the same file environment. Extract only the abstract knowledge that could help with a completely different future work — do not summarize or reorganize the notes themselves.
 
 Strip work-identifying details (project names, person names, specific file paths) and host-environment coupling (system-specific tools like write_notes/wake_me_when, internal APIs, system config) — these are not transferable. Keep concrete technical details (domain APIs like Canvas/fillText, library names, function signatures, algorithm steps) — they are the actionable value, not host coupling.
 
@@ -218,7 +175,7 @@ skip: true only if the log contains nothing transferable.
 	}
 
 	if output.Skip {
-		applogger.Info("Reflection: nothing worth extracting", "person_id", personID, "session_id", sessionID)
+		applogger.Info("Reflection: nothing worth extracting", "person_id", personID, "source", source, "source_id", sourceID)
 		writeFingerprint(fpFile, currentFingerprint)
 		return
 	}
@@ -249,15 +206,16 @@ skip: true only if the log contains nothing transferable.
 		applogger.Info("Reflection: experience updated",
 			"person_id", personID,
 			"exp_id", output.UpdateExpID,
-			"session_id", sessionID,
+			"source", source,
+			"source_id", sourceID,
 		)
 		writeFingerprint(fpFile, currentFingerprint)
 		return
 	}
 
-	// source_id = session_id: the reflection pipeline can only pinpoint
-	// provenance down to the session granularity.
-	if _, err := createExperience(ctx, personID, model.AgentExperienceSourceReflection, sessionID,
+	// The source points to the historical Session or registered Workspace that
+	// owns these notes; it never assigns shared notes to an individual Work.
+	if _, err := createExperience(ctx, personID, source, sourceID,
 		output.Title, output.Description, output.WhenToUse, output.Guidelines, output.Pitfalls, output.Procedure); err != nil {
 		applogger.Error("Reflection: failed to save experience", "person_id", personID, "error", err)
 		return
@@ -265,7 +223,8 @@ skip: true only if the log contains nothing transferable.
 
 	applogger.Info("Reflection: experience created",
 		"person_id", personID,
-		"session_id", sessionID,
+		"source", source,
+		"source_id", sourceID,
 	)
 	writeFingerprint(fpFile, currentFingerprint)
 }
@@ -286,7 +245,7 @@ func writeFingerprint(fpFile, fingerprint string) {
 // formatNotesForReflection renders note entries as markdown for the reflection
 // LLM prompt. The reflection pipeline uses its own format — full content with
 // timestamp and type headers — independent of how other callers format notes.
-func formatNotesForReflection(entries []workspace.NoteEntry) string {
+func formatNotesForReflection(entries []aos.NoteEntry) string {
 	if len(entries) == 0 {
 		return ""
 	}

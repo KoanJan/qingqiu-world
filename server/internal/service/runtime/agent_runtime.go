@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/notification"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/agent"
+	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/chat"
 	"qingqiu-world-server/internal/service/comprehend"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
@@ -21,9 +22,7 @@ import (
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/focusedwork"
 	"qingqiu-world-server/internal/service/jinshu"
-	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/privatespace"
-	"qingqiu-world-server/internal/service/workspace"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -64,6 +63,8 @@ type agentRuntime struct {
 	idleTicks          int                // Consecutive idle heartbeats (for tickless backoff)
 	heartbeatTick      int                // Total heartbeat ticks (for check scheduling)
 	mu                 sync.Mutex         // Protects activeWrites for external queries
+	slotMu             sync.Mutex         // Protects the sustained execution slot.
+	slot               *executionSlot     // One Focus or PS loop at a time.
 	learningInProgress atomic.Bool        // Guards against concurrent learning checks
 	privateSpaceLoop   *privatespace.Loop // Private-space loop (nil if not initialized)
 }
@@ -102,8 +103,8 @@ func newAgentRuntime(
 func (r *agentRuntime) Run(ctx context.Context) {
 	heartbeatTimer := time.NewTimer(r.heartbeatInterval)
 
-	// Track internal goroutines (draft handler + work goroutines)
-	// so that graceful shutdown can wait for them to finish.
+	// Wait for the serial message commit worker to drain during shutdown.
+	// Active Works have their own completion channels below.
 	var internalWg sync.WaitGroup
 
 	// Start message commit handler goroutine
@@ -113,6 +114,7 @@ func (r *agentRuntime) Run(ctx context.Context) {
 		r.handleMessageCommits(ctx)
 	}()
 	r.replayBufferedEvents(ctx)
+	r.notifyWaitingActions()
 
 	for {
 		select {
@@ -132,6 +134,9 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			r.mu.Unlock()
 			for _, w := range pending {
 				<-w.done
+			}
+			if slot := r.currentExecutionSlot(); slot != nil {
+				<-slot.done
 			}
 
 			// Wait for message commit handler to drain its channel
@@ -153,7 +158,20 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			} else if sleepSince != "" {
 				r.replayBufferedEvents(ctx)
 			}
-			r.handleEvent(ctx, event, false)
+			processed := r.handleEvent(ctx, event, false)
+			if processed && ctx.Err() == nil && event.EventID > 0 {
+				if err := dops.DeleteAgentEventBufferForEvent(r.agentPersonID, event.EventID); err != nil {
+					applogger.Error("failed to clear processed event delivery", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+				}
+			}
+			// A shutdown can cancel Comprehend or Decide after this event was
+			// removed from the channel. Preserve an undecided event for startup
+			// replay instead of losing its only queue delivery.
+			if ctx.Err() != nil {
+				if err := r.bufferInterruptedEvent(event); err != nil {
+					applogger.Error("failed to buffer shutdown-interrupted event", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+				}
+			}
 			r.resetHeartbeatTimer(heartbeatTimer)
 
 		case <-heartbeatTimer.C:
@@ -164,6 +182,54 @@ func (r *agentRuntime) Run(ctx context.Context) {
 }
 
 func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentEvent, isReplay bool) bool {
+	if event == nil {
+		applogger.Error("handleEvent: nil event")
+		return true
+	}
+	person, err := dops.GetPerson(r.agentPersonID)
+	if err != nil {
+		applogger.Error("handleEvent: failed to check person status", "person_id", r.agentPersonID, "error", err)
+		return false
+	}
+	if person.Status != model.PersonStatusActive {
+		applogger.Info("handleEvent: deceased person cannot observe event", "person_id", r.agentPersonID, "event_id", event.EventID)
+		return true
+	}
+	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
+		session, err := dops.GetSession(event.SessionID)
+		if err != nil {
+			applogger.Error("handleEvent: failed to check message session", "session_id", event.SessionID, "error", err)
+			return false
+		}
+		if session.Status != model.SessionStatusActive {
+			applogger.Info("handleEvent: deleted session blocks pending message observation", "session_id", event.SessionID, "event_id", event.EventID)
+			return true
+		}
+	}
+	if event.Type == eventqueue.EventTypeAlarmCreated {
+		// Alarm registration is a control-plane effect, not a Decide opportunity.
+		if p, ok := event.Payload.(*eventqueue.AlarmCreatedPayload); ok && p != nil {
+			armScheduledEvent(p.ScheduledEventID)
+		} else {
+			applogger.Error("alarm registration has invalid payload", "person_id", r.agentPersonID)
+		}
+		return true
+	}
+	if event.EventID <= 0 {
+		applogger.Error("external Decide event has no durable Event ID; refusing decision",
+			"person_id", r.agentPersonID, "event_type", event.Type)
+		return true
+	}
+	alreadyDecided, err := hasAcceptedDecision(r.agentPersonID, event.EventID)
+	if err != nil {
+		applogger.Error("failed to check prior decision", "person_id", r.agentPersonID,
+			"event_id", event.EventID, "error", err)
+		return false
+	}
+	if alreadyDecided {
+		applogger.Info("skipped already-decided Event", "person_id", r.agentPersonID, "event_id", event.EventID)
+		return true
+	}
 	state, err := energy.RecoverEnergy(r.agentPersonID)
 	if err != nil {
 		applogger.Error("energy recovery failed", "error", err)
@@ -185,99 +251,22 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		}
 		return false
 	}
-	if event.Type == eventqueue.EventTypeAlarmCreated {
-		// Control-plane side effect: arm the newly created alarm (fire now or
-		// register a waiting goroutine). There is no cognitive content to
-		// decide on, so this stays a side effect; the shared pipeline below
-		// runs and Decide returns no actions for this event type.
-		if p, ok := event.Payload.(*eventqueue.AlarmCreatedPayload); ok {
-			armScheduledEvent(p.ScheduledEventID)
-		}
-	}
-	if event.Type == eventqueue.EventTypeBiography {
-		// A biography is the agent's own origin record. It records its
-		// observation here — same as a chat message — and then falls through
-		// to the shared Comprehend→Decide→Action path below for architectural
-		// consistency. Its comprehension is non-LLM and its decision is an
-		// empty (no-action) one, so this is still effectively observation-only.
-		if event.EventID > 0 {
-			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
-				applogger.Error("failed to create biography observation",
-					"person_id", r.agentPersonID,
-					"event_id", event.EventID,
-					"error", err,
-				)
-			}
-		}
-		applogger.Info("biography event observed",
-			"person_id", r.agentPersonID,
-			"event_id", event.EventID,
-		)
-	}
-	if event.Type == eventqueue.EventTypeNewJinshuReceived {
-		// A jinshu is an observable world event like a chat message. Record the
-		// observation here; the read flag is marked after Decide below, meaning
-		// the recipient has cognitively processed the delivery.
-		if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
-			applogger.Error("failed to create jinshu observation",
-				"person_id", r.agentPersonID,
-				"event_id", event.EventID,
-				"error", err,
-			)
-		}
-		applogger.Info("jinshu event observed",
-			"person_id", r.agentPersonID,
-			"event_id", event.EventID,
-		)
-	}
 	if event.Type == eventqueue.EventTypeWorkCompleted {
 		payload, ok := event.Payload.(*eventqueue.WorkCompletedPayload)
 		if !ok || payload == nil {
 			applogger.Error("invalid work completed event payload", "agent_config_id", r.agentConfigID)
 			return true
 		}
-		// The work's completion is an episodic memory of the agent's own
-		// action — record the observation so heartbeat consolidation can
-		// absorb it into profiles.
-		if event.EventID > 0 {
-			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
-				applogger.Error("failed to create work observation",
-					"person_id", r.agentPersonID,
-					"event_id", event.EventID,
-					"error", err,
-				)
-			}
-		}
+		r.awaitExecutionSlotRelease(ctx, payload.WorkID, false)
 		r.activeWorks = removeWorkByID(r.activeWorks, payload.WorkID)
 		if !r.hasActiveWorkInSession(event.SessionID) {
 			r.weakUpdateAgentStatusInSession(event.SessionID, model.ParticipantStatusIdle)
 		}
 	}
 	if event.Type == eventqueue.EventTypePSCompleted {
-		// A private-space digest is the agent's own session reflection. Record
-		// the observation here, then fall through to the shared pipeline — its
-		// comprehension is non-LLM (none-type) and Decide returns no actions,
-		// so this is effectively observation-only.
-		if event.EventID > 0 {
-			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
-				applogger.Error("failed to create private-space digest observation",
-					"person_id", r.agentPersonID,
-					"event_id", event.EventID,
-					"error", err,
-				)
-			}
-		}
-		applogger.Info("private-space digest event observed",
-			"person_id", r.agentPersonID,
-			"event_id", event.EventID,
-		)
+		r.awaitExecutionSlotRelease(ctx, 0, true)
 	}
 	if event.Type == eventqueue.EventTypeNewPrivateChatMessage {
-		if event.EventID > 0 {
-			if err := memory.CreateObservation(r.agentPersonID, event.EventID); err != nil {
-				applogger.Error("failed to create observation", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
-			}
-		}
 		p, ok := event.Payload.(*eventqueue.NewMessagePayload)
 		if !ok {
 			return true
@@ -318,20 +307,38 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 		applogger.Error("handleEvent: failed to load agent", "person_id", r.agentPersonID, "error", err)
 		return true
 	}
-	activeWorksSummary := buildActiveWorksSummary(r.activeWorks, r.agentPersonID, event.SessionID)
-	c, err := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, activeWorksSummary)
+	situation := buildExternalSituation(event, nil, state.Energy, "")
+	populateGeneralSituation(r.agentPersonID, situation)
+	situation.Subject.ExecutionSlotSummary = r.executionSlotSummary()
+	c, err := comprehend.Comprehend(ctx, event, &a.Config, &a.LLM, situation.Subject.ActiveWorksSummary)
 	if err != nil {
 		applogger.Error("handleEvent: comprehension failed", "person_id", r.agentPersonID, "error", err)
 		return true
 	}
-	situation := buildExternalSituation(event, c, state.Energy, activeWorksSummary)
+	if err := recordComprehendedObservations(r.agentPersonID, event, c); err != nil {
+		applogger.Error("handleEvent: failed to record comprehended events", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		return true
+	}
+	situation.Matter.Comprehension = c
 	// Do not pass the agent pointer across function boundaries — Decide will
 	// fetch its own copy via agent.GetAgent when it needs agent data.
 	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
-	if event.Type == eventqueue.EventTypeNewPrivateChatMessage && c.Chat.ReadMessageRange[1] > c.Chat.ReadMessageRange[0] {
-		if err := dops.AdvanceLastReadMessageID(event.SessionID, r.agentPersonID, c.Chat.ReadMessageRange[1]); err != nil {
-			applogger.Error("failed to advance last_read_message_id", "session_id", event.SessionID, "person_id", r.agentPersonID, "message_id", c.Chat.ReadMessageRange[1], "error", err)
+	if !d.Accepted {
+		if ctx.Err() != nil {
+			applogger.Info("handleEvent: Decide interrupted by shutdown", "person_id", r.agentPersonID, "event_id", event.EventID)
+			return true
 		}
+		applogger.Error("handleEvent: Decide produced no accepted result", "person_id", r.agentPersonID, "event_id", event.EventID)
+		return true
+	}
+	accepted, err := persistDecision(r.agentPersonID, situation, &d)
+	if err != nil {
+		applogger.Error("handleEvent: failed to persist decision", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		return true
+	}
+	if !accepted {
+		applogger.Info("handleEvent: Event already decided", "person_id", r.agentPersonID, "event_id", event.EventID)
+		return true
 	}
 	if event.Type == eventqueue.EventTypeNewJinshuReceived {
 		// The recipient has finished Decide, so the jinshu is now cognitively
@@ -354,37 +361,66 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 // executeActions dispatches Decide output Actions to their handlers.
 // Shared by both external event and internal heartbeat paths.
 func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation, actions []action.Action) {
+	// Finite actions in one Decision may run concurrently, but the next
+	// Comprehend/Decide pass must not overtake their handoff or result boundary.
+	// Focus, PS, and an execution-slot wait deliberately outlive this barrier.
+	var finiteActions sync.WaitGroup
 	for _, act := range actions {
 		switch act.Type {
 		case action.RouteFocusedWork, action.CancelFocusedWork:
 			if act.WorkGuidance == nil {
 				applogger.Error("work guidance is missing", "agent_config_id", r.agentConfigID, "action_type", act.Type)
+				endActionLogged(act.ID, "route_or_cancel")
 				continue
 			}
 			target := r.findActiveWorkByID(act.WorkGuidance.TargetWorkID)
 			if target == nil {
 				applogger.Error("target work not found", "agent_config_id", r.agentConfigID, "work_id", act.WorkGuidance.TargetWorkID)
+				endActionLogged(act.ID, "route_or_cancel")
 				continue
 			}
 			if act.Type == action.CancelFocusedWork {
-				target.abandon()
+				if target.requestCancel(act) {
+					r.recordAcceptedWorkControl(act.ID, target.ID)
+					// A cancelled Work is no longer available for routing or for
+					// the active roster in a Chat from this same Decision.
+					r.activeWorks = removeWorkByID(r.activeWorks, target.ID)
+				}
+				endActionLogged(act.ID, "cancel_work")
 				continue
 			}
-			target.FeedGuidance(focusedwork.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason})
+			if target.FeedGuidance(focusedwork.GuidanceDirective{Guidance: act.WorkGuidance.Guidance, Reason: act.Reason}) {
+				r.recordAcceptedWorkControl(act.ID, target.ID)
+			}
+			endActionLogged(act.ID, "route_work")
 		case action.Chat:
 			if act.ChatPlan == nil {
 				applogger.Error("chat action has no chat plan", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "chat")
 				continue
 			}
-			go r.executeChat(ctx, situation, act.ChatPlan)
+			activeSnapshot := append([]*work(nil), r.activeWorks...)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.executeChat(ctx, situation, act.ChatPlan, act.ID, activeSnapshot)
+			}()
 		case action.StartFocusedWork:
 			if act.WorkPlan == nil {
 				applogger.Error("start_focused_work action has no work plan", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "start_work")
+				continue
+			}
+			if !r.acquireExecutionSlot(0, false) {
+				applogger.Error("start_focused_work: execution slot occupied", "person_id", r.agentPersonID, "action_id", act.ID)
+				endActionLogged(act.ID, "start_work_slot_conflict")
 				continue
 			}
 			w, success := r.newWork(situation, act)
 			if !success {
+				r.releaseExecutionSlot(0, false)
 				applogger.Error("failed to create work", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "start_work")
 				continue
 			}
 			if situation.Matter.Event != nil {
@@ -393,16 +429,25 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				}
 			}
 			r.activeWorks = append(r.activeWorks, w)
-			go w.Run(ctx)
+			r.slotMu.Lock()
+			r.slot.workID = w.ID
+			r.slotMu.Unlock()
+			go func() {
+				w.Run(ctx)
+				r.releaseExecutionSlot(w.ID, false)
+			}()
 		case action.CreateAlarm:
 			if act.AlarmPlan == nil {
 				applogger.Error("create_alarm action has no alarm_plan", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "create_alarm")
 				continue
 			}
-			r.handleCreateAlarmAction(act.AlarmPlan, situation)
+			r.handleCreateAlarmAction(act, situation)
+			endActionLogged(act.ID, "create_alarm")
 		case action.UpdateBio:
 			if act.BioUpdate == nil {
 				applogger.Error("update_bio action has no bio_update", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "update_bio")
 				continue
 			}
 			if err := dops.UpdateAgentBio(r.agentPersonID, act.BioUpdate.Bio); err != nil {
@@ -410,6 +455,7 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			} else {
 				agent.Refresh(r.agentPersonID)
 			}
+			endActionLogged(act.ID, "update_bio")
 		case action.EnterPrivateSpace:
 			thoughts := act.Background
 			if act.Reason != "" {
@@ -418,47 +464,72 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 				}
 				thoughts += act.Reason
 			}
-			r.handleEnterPrivateSpace(thoughts)
-		case action.InspectJinshu:
-			if act.JinshuPlan == nil {
-				applogger.Error("inspect_jinshu action has no jinshu plan", "agent_config_id", r.agentConfigID)
-				continue
-			}
-			go r.handleInspectJinshu(act.JinshuPlan)
+			r.handleEnterPrivateSpace(ctx, thoughts, act.ID)
+			endActionLogged(act.ID, "enter_private_space")
 		case action.ListReceivedJinshu:
 			if act.ListReceivedJinshuParams == nil {
 				applogger.Error("list_received_jinshu action has no list_received_jinshu_params", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "list_received_jinshu")
 				continue
 			}
-			go r.handleListReceivedJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleListReceivedJinshu(act)
+			}()
 		case action.SendJinshu:
 			if act.SendJinshuPlan == nil {
 				applogger.Error("send_jinshu action has no send_jinshu plan", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "send_jinshu")
 				continue
 			}
-			go r.handleSendJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleSendJinshu(act)
+			}()
 		case action.ListSentJinshu:
 			if act.ListSentJinshuParams == nil {
 				applogger.Error("list_sent_jinshu action has no list_sent_jinshu_params", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "list_sent_jinshu")
 				continue
 			}
-			go r.handleListSentJinshu(act)
+			finiteActions.Add(1)
+			go func() {
+				defer finiteActions.Done()
+				r.handleListSentJinshu(act)
+			}()
 		case action.InspectOwnedSpace:
 			if act.OwnedSpaceInspectionPlan == nil {
 				applogger.Error("inspect_owned_space: missing plan", "agent_config_id", r.agentConfigID)
+				endActionLogged(act.ID, "inspect_owned_space")
 				continue
 			}
 			r.handleInspectOwnedSpace(situation, act)
+		case action.WaitForExecutionSlot:
+			if act.WaitForExecutionSlotPlan == nil {
+				applogger.Error("wait_for_execution_slot: missing plan", "action_id", act.ID)
+				endActionLogged(act.ID, "wait_for_execution_slot")
+				continue
+			}
+			r.registerExecutionWait(act.ID)
+		case action.ManageMemo:
+			r.handleManageMemo(act)
+		default:
+			applogger.Error("executeActions: unsupported action type", "action_id", act.ID, "action_type", act.Type)
+			endActionLogged(act.ID, "unsupported_action")
 		}
 	}
+	finiteActions.Wait()
 }
 
 func (r *agentRuntime) handleInspectOwnedSpace(situation *Situation, act action.Action) {
 	plan := act.OwnedSpaceInspectionPlan
 	scope := plan.Scope
-	entries, err := workspace.InspectOwnedSpace(r.agentPersonID, scope, plan.Query, plan.Limit)
+	entries, err := aos.InspectOwnedSpace(r.agentPersonID, scope, plan.Query, plan.Limit)
 	if err != nil {
 		applogger.Error("inspect_owned_space failed", "agent_config_id", r.agentConfigID, "error", err)
+		endActionLogged(act.ID, "inspect_owned_space")
 		return
 	}
 	var lines []string
@@ -473,14 +544,18 @@ func (r *agentRuntime) handleInspectOwnedSpace(situation *Situation, act action.
 	if situation != nil && situation.Matter.Event != nil {
 		sessionID = situation.Matter.Event.SessionID
 	}
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{Type: eventqueue.EventTypeOwnedSpaceInspected, SessionID: sessionID, Payload: &eventqueue.OwnedSpaceInspectedPayload{Scope: scope, Result: result}, TriggerAction: &eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}})
+	payload := &eventqueue.OwnedSpaceInspectedPayload{Scope: scope, Result: result}
+	if err := r.emitSelfHeldResult(eventqueue.EventTypeOwnedSpaceInspected, model.EventTypeOwnedSpaceInspected, sessionID, payload, act.ID,
+		&eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}); err != nil {
+		applogger.Error("inspect_owned_space: failed to persist result", "action_id", act.ID, "error", err)
+	}
 }
 
 // handleEnterPrivateSpace manages the private-space loop lifecycle.
 // If the loop has never been initialized, it lazily creates the directory and loop.
 // If the loop is already running, thoughts are injected via channel.
 // If the loop is idle, a new goroutine is started.
-func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
+func (r *agentRuntime) handleEnterPrivateSpace(ctx context.Context, thoughts string, actionID int64) {
 	// Lazy initialization: create the loop on first use.
 	if r.privateSpaceLoop == nil {
 		a, err := agent.GetAgent(r.agentPersonID)
@@ -490,7 +565,7 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 			)
 			return
 		}
-		rootDir, workDir, err := privatespace.InitDir(r.agentPersonID)
+		rootDir, workDir, _, err := aos.InitPrivateSpace(r.agentPersonID)
 		if err != nil {
 			applogger.Error("private-space: failed to init directory",
 				"person_id", r.agentPersonID, "error", err,
@@ -506,81 +581,39 @@ func (r *agentRuntime) handleEnterPrivateSpace(thoughts string) {
 		)
 	}
 
-	if r.privateSpaceLoop.IsRunning() {
-		r.privateSpaceLoop.FeedThoughts(thoughts)
+	if slot := r.currentExecutionSlot(); slot != nil && slot.private {
+		if !r.privateSpaceLoop.FeedThoughts(thoughts) {
+			applogger.Error("private-space: thoughts were not accepted", "person_id", r.agentPersonID)
+			return
+		}
+		r.privateSpaceLoop.AddParticipatingAction(actionID)
 		applogger.Info("private-space: thoughts injected into running loop",
 			"person_id", r.agentPersonID,
 		)
 	} else {
+		if !r.acquireExecutionSlot(0, true) {
+			applogger.Error("private-space: execution slot occupied", "person_id", r.agentPersonID)
+			return
+		}
 		r.privateSpaceLoop.SetFocusContext(buildAgentFocusContext(r.agentPersonID, r.activeWorks))
 		// Feed the initial thoughts, then start the loop in a new goroutine.
-		r.privateSpaceLoop.FeedThoughts(thoughts)
+		if !r.privateSpaceLoop.FeedThoughts(thoughts) {
+			r.releaseExecutionSlot(0, true)
+			return
+		}
+		r.privateSpaceLoop.BeginRun(actionID)
 		go func() {
-			ctx := context.Background()
 			r.privateSpaceLoop.Run(ctx)
+			r.releaseExecutionSlot(0, true)
 		}()
 	}
 }
 
-// handleInspectJinshu runs the dedicated jinshu-read loop and reflows the
-// result back to the agent as a JinshuReadCompleted event, so the agent can
-// decide how to react to the contents it just read.
-func (r *agentRuntime) handleInspectJinshu(plan *action.JinshuPlan) {
-	record, err := jinshu.GetReceived(r.agentPersonID, plan.JinshuID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to load received jinshu",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-		r.sendJinshuReadCompleted(plan.JinshuID, "", "", "", err)
-		return
-	}
-
-	fromName := ""
-	if from, err := dops.GetPerson(record.FromPersonID); err != nil {
-		applogger.Error("inspect_jinshu: failed to load sender",
-			"person_id", record.FromPersonID, "error", err)
-	} else {
-		fromName = from.Name
-	}
-
-	entries, err := jinshu.ListReceivedFiles(r.agentPersonID, plan.JinshuID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to list received files",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-	}
-
-	a, err := agent.GetAgent(r.agentPersonID)
-	if err != nil {
-		applogger.Error("inspect_jinshu: failed to load agent",
-			"person_id", r.agentPersonID, "error", err)
-		r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, "", err)
-		return
-	}
-
-	loop := jinshu.NewReadLoop(jinshu.ReadConfig{
-		PersonID:      r.agentPersonID,
-		ReceivedDir:   jinshu.ReceivedDirFor(r.agentPersonID, plan.JinshuID),
-		FileList:      formatJinshuFileEntries(entries),
-		LLMConfig:     &a.LLM,
-		JinshuID:      plan.JinshuID,
-		Guidance:      plan.Guidance,
-		MaxIterations: 0, // Use default
-	})
-
-	summary, err := loop.Run(context.Background())
-	if err != nil {
-		applogger.Error("inspect_jinshu: read loop failed",
-			"person_id", r.agentPersonID, "jinshu_id", plan.JinshuID, "error", err)
-		r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, "", err)
-		return
-	}
-
-	r.sendJinshuReadCompleted(plan.JinshuID, fromName, record.Topic, summary, nil)
-}
-
 // handleListReceivedJinshu runs the paginated keyword search over the agent's received
 // jinshu and reflows the result back as a JinshuListed event so the agent can
-// pick a jinshu_id to inspect.
+// identify the delivery that needs further reading.
 func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
+	defer endActionLogged(act.ID, "list_received_jinshu")
 	params := act.ListReceivedJinshuParams
 
 	page := params.Page
@@ -599,7 +632,7 @@ func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
 	if err != nil {
 		applogger.Error("list_received_jinshu: search failed",
 			"person_id", r.agentPersonID, "query", params.Query, "error", err)
-		r.sendJinshuListed(params.Query, page, nil, act.Background, act.Reason)
+		r.sendJinshuListed(act, params.Query, page, nil)
 		return
 	}
 
@@ -633,32 +666,24 @@ func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
 		})
 	}
 
-	r.sendJinshuListed(params.Query, page, items, act.Background, act.Reason)
+	r.sendJinshuListed(act, params.Query, page, items)
 }
 
 // sendJinshuListed dispatches the list result back to the agent's own event
 // queue for a fresh Decide pass, carrying the triggering action's thoughts.
-func (r *agentRuntime) sendJinshuListed(query string, page int, items []eventqueue.JinshuListItem, background, reason string) {
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeJinshuListed,
-		SessionID: 0, // Jinshu is person-level, not session-scoped.
-		EventID:   0,
-		Payload: &eventqueue.JinshuListedPayload{
-			Query:   query,
-			Page:    page,
-			Results: items,
-		},
-		TriggerAction: &eventqueue.TriggerAction{
-			Background: background,
-			Reason:     reason,
-		},
-	})
+func (r *agentRuntime) sendJinshuListed(act action.Action, query string, page int, items []eventqueue.JinshuListItem) {
+	payload := &eventqueue.JinshuListedPayload{Query: query, Page: page, Results: items}
+	if err := r.emitSelfHeldResult(eventqueue.EventTypeJinshuListed, model.EventTypeJinshuListed, 0, payload, act.ID,
+		&eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}); err != nil {
+		applogger.Error("sendJinshuListed: failed to persist result", "action_id", act.ID, "error", err)
+	}
 }
 
 // handleListSentJinshu runs the paginated keyword search over the agent's sent
 // jinshu and reflows the result back as a JinshuSentListed event so the agent
 // can recall what it has already delivered.
 func (r *agentRuntime) handleListSentJinshu(act action.Action) {
+	defer endActionLogged(act.ID, "list_sent_jinshu")
 	params := act.ListSentJinshuParams
 
 	page := params.Page
@@ -677,7 +702,7 @@ func (r *agentRuntime) handleListSentJinshu(act action.Action) {
 	if err != nil {
 		applogger.Error("list_sent_jinshu: search failed",
 			"person_id", r.agentPersonID, "query", params.Query, "error", err)
-		r.sendJinshuSentListed(params.Query, page, nil, act.Background, act.Reason)
+		r.sendJinshuSentListed(act, params.Query, page, nil)
 		return
 	}
 
@@ -710,38 +735,30 @@ func (r *agentRuntime) handleListSentJinshu(act action.Action) {
 		})
 	}
 
-	r.sendJinshuSentListed(params.Query, page, items, act.Background, act.Reason)
+	r.sendJinshuSentListed(act, params.Query, page, items)
 }
 
 // sendJinshuSentListed dispatches the sent-list result back to the agent's own
 // event queue for a fresh Decide pass, carrying the triggering action's thoughts.
-func (r *agentRuntime) sendJinshuSentListed(query string, page int, items []eventqueue.JinshuSentListItem, background, reason string) {
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeJinshuSentListed,
-		SessionID: 0, // Jinshu is person-level, not session-scoped.
-		EventID:   0,
-		Payload: &eventqueue.JinshuSentListedPayload{
-			Query:   query,
-			Page:    page,
-			Results: items,
-		},
-		TriggerAction: &eventqueue.TriggerAction{
-			Background: background,
-			Reason:     reason,
-		},
-	})
+func (r *agentRuntime) sendJinshuSentListed(act action.Action, query string, page int, items []eventqueue.JinshuSentListItem) {
+	payload := &eventqueue.JinshuSentListedPayload{Query: query, Page: page, Results: items}
+	if err := r.emitSelfHeldResult(eventqueue.EventTypeJinshuSentListed, model.EventTypeJinshuSentListed, 0, payload, act.ID,
+		&eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}); err != nil {
+		applogger.Error("sendJinshuSentListed: failed to persist result", "action_id", act.ID, "error", err)
+	}
 }
 
 // handleSendJinshu delivers selected Agent Owned Space resources to another
 // person as a jinshu and reflows the outcome back as a JinshuSent event so the
 // agent knows whether the delivery succeeded.
 func (r *agentRuntime) handleSendJinshu(act action.Action) {
+	defer endActionLogged(act.ID, "send_jinshu")
 	plan := act.SendJinshuPlan
 
 	if plan.ToPersonID == r.agentPersonID {
 		applogger.Error("send_jinshu: recipient is self, skipping",
 			"agent_config_id", r.agentConfigID)
-		r.sendJinshuSent(0, "", plan.Topic, "failure", "cannot send a jinshu to yourself", act.Background, act.Reason)
+		r.sendJinshuSent(act, 0, "", plan.Topic, "failure", "cannot send a jinshu to yourself")
 		return
 	}
 
@@ -754,12 +771,12 @@ func (r *agentRuntime) handleSendJinshu(act action.Action) {
 		toName = to.Name
 	}
 
-	workDir := privatespace.GetWorkDirPath(r.agentPersonID)
-	files, _, err := workspace.ResolveAOSFiles(r.agentPersonID, workDir, plan.Paths)
+	workDir := aos.GetPrivateSpacePath(r.agentPersonID)
+	files, _, err := aos.ResolveAOSFiles(r.agentPersonID, workDir, plan.Paths)
 	if err != nil {
 		applogger.Error("send_jinshu: failed to resolve paths",
 			"agent_config_id", r.agentConfigID, "error", err)
-		r.sendJinshuSent(0, toName, plan.Topic, "failure", err.Error(), act.Background, act.Reason)
+		r.sendJinshuSent(act, 0, toName, plan.Topic, "failure", err.Error())
 		return
 	}
 
@@ -773,79 +790,41 @@ func (r *agentRuntime) handleSendJinshu(act action.Action) {
 	if err != nil {
 		applogger.Error("send_jinshu: send failed",
 			"agent_config_id", r.agentConfigID, "error", err)
-		r.sendJinshuSent(0, toName, plan.Topic, "failure", err.Error(), act.Background, act.Reason)
+		r.sendJinshuSent(act, 0, toName, plan.Topic, "failure", err.Error())
 		return
 	}
 
-	r.sendJinshuSent(record.ID, toName, record.Topic, "success", "", act.Background, act.Reason)
+	r.sendJinshuSent(act, record.ID, toName, record.Topic, "success", "")
 }
 
 // sendJinshuSent dispatches the delivery outcome back to the agent's own event
 // queue for a fresh Decide pass, carrying the triggering action's thoughts.
-func (r *agentRuntime) sendJinshuSent(jinshuID int64, toName, topic, status, errMsg, background, reason string) {
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeJinshuSent,
-		SessionID: 0, // Jinshu is person-level, not session-scoped.
-		EventID:   0,
-		Payload: &eventqueue.JinshuSentPayload{
-			JinshuID: jinshuID,
-			ToName:   toName,
-			Topic:    topic,
-			Status:   status,
-			Error:    errMsg,
-		},
-		TriggerAction: &eventqueue.TriggerAction{
-			Background: background,
-			Reason:     reason,
-		},
-	})
+func (r *agentRuntime) sendJinshuSent(act action.Action, jinshuID int64, toName, topic, status, errMsg string) {
+	payload := &eventqueue.JinshuSentPayload{JinshuID: jinshuID, ToName: toName, Topic: topic, Status: status, Error: errMsg}
+	trigger := &eventqueue.TriggerAction{Background: act.Background, Reason: act.Reason}
+	var err error
+	if jinshuID > 0 {
+		err = r.emitReferencedResult(eventqueue.EventTypeJinshuSent, model.EventTypeJinshuSent, 0, jinshuID, payload, act.ID, model.ActionEffectJinshu, trigger)
+	} else {
+		err = r.emitSelfHeldResult(eventqueue.EventTypeJinshuSent, model.EventTypeJinshuSent, 0, payload, act.ID, trigger)
+	}
+	if err != nil {
+		applogger.Error("sendJinshuSent: failed to persist outcome", "action_id", act.ID, "error", err)
+	}
 }
 
-// sendJinshuReadCompleted dispatches the read result back to the agent's own
-// event queue for a fresh Decide pass.
-func (r *agentRuntime) sendJinshuReadCompleted(jinshuID int64, fromName, topic, summary string, readErr error) {
-	payload := &eventqueue.JinshuReadCompletedPayload{
-		JinshuID: jinshuID,
-		FromName: fromName,
-		Topic:    topic,
-		Summary:  summary,
-		Status:   "success",
-	}
-	if readErr != nil {
-		payload.Status = "failure"
-		payload.Error = readErr.Error()
-	}
-
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeJinshuReadCompleted,
-		SessionID: 0, // Jinshu is person-level, not session-scoped.
-		EventID:   0,
-		Payload:   payload,
-	})
-}
-
-// formatJinshuFileEntries renders the jinshu file listing for the loop's
-// initial prompt so the agent knows which paths it can read.
-func formatJinshuFileEntries(entries []jinshu.FileEntry) string {
-	if len(entries) == 0 {
-		return ""
-	}
-	var sb strings.Builder
-	for _, e := range entries {
-		if e.IsDir {
-			fmt.Fprintf(&sb, "%s/\n", e.Path)
-		} else {
-			fmt.Fprintf(&sb, "%s (%d bytes)\n", e.Path, e.Size)
+// executeChat runs a Chat action asynchronously without creating a Work.
+// It generates the reply and hands it to the serial message commit worker;
+// the Action ends when that worker commits, or here if handoff fails.
+func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, plan *action.ChatPlan, actionID int64, activeWorks []*work) {
+	queued := false
+	defer func() {
+		if !queued {
+			if err := endAction(actionID); err != nil {
+				applogger.Error("executeChat: failed to end unsuccessful action", "action_id", actionID, "error", err)
+			}
 		}
-	}
-	return sb.String()
-}
-
-// executeaction.Chat handles a action.Chat action as a lightweight async operation.
-// It does not create a Work record — it launches a goroutine that calls
-// chat.Executeaction.Chat and commits the result directly via the message commit
-// channel.
-func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, plan *action.ChatPlan) {
+	}()
 	event := situation.Matter.Event
 
 	// A work always completes in the session where it was created. Anchor
@@ -898,11 +877,13 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 	// it directly without loading session context or running the LLM pipeline.
 	if plan.Content != "" {
 		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusWorking)
-		r.messageCommitCh <- &commitRequest{
-			sessionID: targetSessionID,
-			content:   plan.Content,
-		}
-		r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusIdle)
+		defer r.weakUpdateAgentStatusInSession(targetSessionID, model.ParticipantStatusIdle)
+		queued = r.queueChatCommit(ctx, &commitRequest{
+			actionID:              actionID,
+			sessionID:             targetSessionID,
+			content:               plan.Content,
+			expressionInstruction: plan.ExpressionInstruction,
+		})
 		return
 	}
 
@@ -913,10 +894,8 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 		return
 	}
 
-	// Build unified Trigger from the event. For normal messages, the trigger
-	// type is set to TriggerMessage; loadMessages will fill in the DB message.
-	// For scheduled (alarm) events, the trigger carries the self-reminder.
-	// For heartbeat (no event), trigger stays nil (TriggerNone).
+	// A source-session message is only a chat trigger in that same session.
+	// Cross-session actions must build context from their target session.
 	var trigger *chat.Trigger
 	if event != nil {
 		if payload, ok := event.Payload.(*eventqueue.ScheduledEventPayload); ok {
@@ -926,20 +905,18 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 					SelfReminder: payload.Message,
 				},
 			}
-		} else {
+		} else if event.Type == eventqueue.EventTypeNewPrivateChatMessage && event.SessionID == targetSessionID {
 			trigger = &chat.Trigger{Type: chat.TriggerMessage}
 		}
 	}
 
 	var chatCtx *chat.ChatContext
 	var readMessageRange [2]int64
-	if comprehension != nil && comprehension.Chat != nil {
+	if event != nil && event.SessionID == targetSessionID && comprehension != nil && comprehension.Chat != nil {
 		chatCtx = &chat.ChatContext{
-			PersonState:        comprehension.Chat.PersonState,
-			HistorySegments:    historySegments(comprehension.Chat.HistorySearch),
-			KBSegments:         kbSegments(comprehension.Chat.KBRetrieval),
-			NeedsClarification: comprehension.Chat.NeedsClarification,
-			Clarification:      comprehension.Chat.Clarification,
+			PersonState:     comprehension.Chat.PersonState,
+			HistoryKeywords: historyKeywords(comprehension.Chat.HistorySearch),
+			KBSegments:      kbSegments(comprehension.Chat.KBRetrieval),
 		}
 		readMessageRange = comprehension.Chat.ReadMessageRange
 	}
@@ -948,10 +925,10 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 			chatCtx = &chat.ChatContext{}
 		}
 		focusHint := ""
-		if event != nil {
+		if event != nil && event.SessionID == targetSessionID {
 			focusHint = event.FormatDescription()
 		}
-		chatCtx.FocusContext = buildSessionFocusContext(r.agentPersonID, targetSessionID, r.activeWorks, focusHint)
+		chatCtx.FocusContext = buildSessionFocusContext(r.agentPersonID, targetSessionID, activeWorks, focusHint)
 	}
 
 	// A work-completed event carries the FocusedLoop's final summary in its
@@ -990,9 +967,25 @@ func (r *agentRuntime) executeChat(ctx context.Context, situation *Situation, pl
 		return
 	}
 
-	r.messageCommitCh <- &commitRequest{
-		sessionID: targetSessionID,
-		content:   result.Content,
+	queued = r.queueChatCommit(ctx, &commitRequest{
+		actionID:              actionID,
+		sessionID:             targetSessionID,
+		content:               result.Content,
+		expressionInstruction: result.ExpressionInstruction,
+	})
+}
+
+// queueChatCommit hands a completed generation to the serial commit worker.
+// Cancellation before handoff leaves the Action for executeChat to end.
+func (r *agentRuntime) queueChatCommit(ctx context.Context, request *commitRequest) bool {
+	if ctx.Err() != nil {
+		return false
+	}
+	select {
+	case <-ctx.Done():
+		return false
+	case r.messageCommitCh <- request:
+		return true
 	}
 }
 
@@ -1015,6 +1008,10 @@ func (r *agentRuntime) findActiveWorkByID(workID int64) *work {
 // database, and returns the work object. Only used for StartFocusedWork actions.
 func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, bool) {
 	plan := dec.WorkPlan
+	if plan == nil || (plan.WorkspaceID > 0) == (plan.NewWorkspace != nil) {
+		applogger.Error("start_work: invalid Workspace selection", "action_id", dec.ID)
+		return nil, false
+	}
 	event := situation.Matter.Event
 	comprehension := situation.Matter.Comprehension
 
@@ -1025,8 +1022,74 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		targetSessionID = event.SessionID
 	}
 
+	var workspaceRecord *model.Workspace
+	if plan.WorkspaceID > 0 {
+		var err error
+		workspaceRecord, err = dops.GetOwnedWorkspace(r.agentPersonID, plan.WorkspaceID)
+		if err != nil {
+			applogger.Error("start_work: selected Workspace unavailable", "person_id", r.agentPersonID, "workspace_id", plan.WorkspaceID, "error", err)
+			return nil, false
+		}
+	}
+
 	tx := database.DB.Begin()
-	defer tx.Rollback()
+	if tx.Error != nil {
+		applogger.Error("Failed to begin work transaction", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", tx.Error)
+		return nil, false
+	}
+	if err := dops.RequireActivePersonTx(tx, r.agentPersonID); err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: person no longer active", "person_id", r.agentPersonID, "error", err)
+		return nil, false
+	}
+	createdWorkspace := false
+	committed := false
+	defer func() {
+		if !committed && createdWorkspace {
+			if err := aos.CleanupUncommittedWorkspace(*workspaceRecord); err != nil {
+				applogger.Error("start_work: failed to clean uncommitted Workspace directories", "workspace_id", workspaceRecord.ID, "error", err)
+			}
+		}
+	}()
+	if plan.NewWorkspace != nil {
+		workspaceRecord = &model.Workspace{PersonID: r.agentPersonID, RelativePath: fmt.Sprintf("work/pending-%d", dec.ID), Name: strings.TrimSpace(plan.NewWorkspace.Name), Purpose: strings.TrimSpace(plan.NewWorkspace.Purpose)}
+		if err := tx.Create(workspaceRecord).Error; err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to register Workspace", "action_id", dec.ID, "error", err)
+			return nil, false
+		}
+		// Reserve the database identity first, then skip any matching legacy
+		// Session directory that already occupies work/<id> for this owner.
+		availableID, err := aos.AvailableWorkDirectoryID(r.agentPersonID, workspaceRecord.ID)
+		if err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to allocate Workspace directory", "workspace_id", workspaceRecord.ID, "error", err)
+			return nil, false
+		}
+		path := fmt.Sprintf("work/%d", availableID)
+		updated := tx.Exec("UPDATE workspaces SET id = ?, relative_path = ? WHERE id = ?", availableID, path, workspaceRecord.ID)
+		if updated.Error != nil || updated.RowsAffected != 1 {
+			tx.Rollback()
+			applogger.Error("start_work: failed to set Workspace path", "workspace_id", workspaceRecord.ID, "error", updated.Error, "rows_affected", updated.RowsAffected)
+			return nil, false
+		}
+		workspaceRecord.ID = availableID
+		workspaceRecord.RelativePath = path
+	}
+	_, _, err := aos.PrepareWorkspaceDirectories(*workspaceRecord, plan.NewWorkspace != nil)
+	if err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: failed to prepare Workspace directories", "workspace_id", workspaceRecord.ID, "error", err)
+		return nil, false
+	}
+	createdWorkspace = plan.NewWorkspace != nil
+	if createdWorkspace {
+		if err := recordActionEffect(tx, dec.ID, model.ActionEffectWorkspace, workspaceRecord.ID); err != nil {
+			tx.Rollback()
+			applogger.Error("start_work: failed to record Workspace source", "action_id", dec.ID, "error", err)
+			return nil, false
+		}
+	}
 
 	// The work's Description should reflect what the agent intends to DO
 	// (its guidance), not merely what triggered it. Using the triggering
@@ -1050,17 +1113,47 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 		Checkpoint:  "Focus created and awaiting execution.",
 	}
 	if err := tx.Create(workRecord).Error; err != nil {
+		tx.Rollback()
 		applogger.Error("Failed to create work", "agent_config_id", r.agentConfigID, "session_id", targetSessionID, "error", err)
 		return nil, false
 	}
+	if err := tx.Create(&model.WorkspaceUse{WorkspaceID: workspaceRecord.ID, SourceType: model.WorkspaceUseWork, SourceID: workRecord.ID, Role: model.WorkspaceUseDefault}).Error; err != nil {
+		tx.Rollback()
+		applogger.Error("start_work: failed to link Workspace", "work_id", workRecord.ID, "error", err)
+		return nil, false
+	}
+	if err := recordActionEffect(tx, dec.ID, model.ActionEffectWork, workRecord.ID); err != nil {
+		tx.Rollback()
+		applogger.Error("Failed to record work action source", "action_id", dec.ID, "work_id", workRecord.ID, "error", err)
+		return nil, false
+	}
+	if err := tx.Model(&model.Action{}).Where("id = ?", dec.ID).
+		Update("status", model.ActionStatusEnded).Error; err != nil {
+		tx.Rollback()
+		applogger.Error("Failed to finish start-work action", "action_id", dec.ID, "error", err)
+		return nil, false
+	}
 
+	if err := tx.Commit().Error; err != nil {
+		applogger.Error("Failed to commit work transaction", "agent_config_id", r.agentConfigID, "error", err)
+		return nil, false
+	}
+	committed = true
+	refreshMemorySource(model.MemorySourceWork, workRecord.ID)
+	refreshMemorySource(model.MemorySourceAction, dec.ID)
+
+	// Build the runtime context only after the create transaction has been
+	// committed. buildSessionFocusContext performs regular DB reads; running it
+	// while the transaction still owns the single SQLite connection would
+	// self-block until GORM's default context timeout.
 	w := &work{
 		ID:            workRecord.ID,
 		agent:         r,
 		sessionID:     targetSessionID,
+		workspaceID:   workspaceRecord.ID,
 		plan:          plan,
 		maxIterations: 90,
-		focusContext:  buildSessionFocusContext(r.agentPersonID, targetSessionID, r.activeWorks, plan.Guidance),
+		focusContext:  "",
 		comprehension: comprehension,
 		guidanceCh:    make(chan focusedwork.GuidanceDirective, 8),
 		done:          make(chan struct{}),
@@ -1068,11 +1161,6 @@ func (r *agentRuntime) newWork(situation *Situation, dec action.Action) (*work, 
 			Background: dec.Background,
 			Reason:     dec.Reason,
 		},
-	}
-
-	if err := tx.Commit().Error; err != nil {
-		applogger.Error("Failed to commit work transaction", "agent_config_id", r.agentConfigID, "error", err)
-		return nil, false
 	}
 
 	applogger.Info("Work created",
@@ -1128,7 +1216,9 @@ func buildMetadata(event *eventqueue.AgentEvent) *focusedwork.Metadata {
 const alarmTriggerAtFormat = "2006-01-02 15:04:05"
 
 // handleCreateAlarmAction executes a action.CreateAlarm action.
-func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation *Situation) {
+func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Situation) {
+	plan := act.AlarmPlan
+	actionID := act.ID
 	var sessionID int64
 	if situation.Matter.Event != nil {
 		sessionID = situation.Matter.Event.SessionID
@@ -1155,8 +1245,14 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation
 		action = model.ScheduledEventActionSendMessage
 	}
 	if action == model.ScheduledEventActionSendMessage {
-		if plan.ActionContent == "" {
+		if strings.TrimSpace(plan.ActionContent) == "" {
 			applogger.Error("action.CreateAlarm: 'send_message' action requires action_content, skipping",
+				"agent_config_id", r.agentConfigID,
+			)
+			return
+		}
+		if strings.TrimSpace(plan.ExpressionInstruction) == "" {
+			applogger.Error("action.CreateAlarm: 'send_message' action requires expression_instruction, skipping",
 				"agent_config_id", r.agentConfigID,
 			)
 			return
@@ -1174,20 +1270,40 @@ func (r *agentRuntime) handleCreateAlarmAction(plan *action.AlarmPlan, situation
 	}
 
 	record := model.ScheduledEvent{
-		PersonID:      r.agentPersonID,
-		SessionID:     sessionID,
-		TriggerAt:     triggerAt,
-		Message:       plan.Message,
-		Action:        action,
-		ActionContent: plan.ActionContent,
-		Status:        model.ScheduledEventStatusPending,
+		PersonID:              r.agentPersonID,
+		SessionID:             sessionID,
+		TriggerAt:             triggerAt,
+		Message:               plan.Message,
+		Action:                action,
+		ActionContent:         plan.ActionContent,
+		ExpressionInstruction: plan.ExpressionInstruction,
+		Status:                model.ScheduledEventStatusPending,
 	}
-	if err := database.DB.Create(&record).Error; err != nil {
+	tx := database.DB.Begin()
+	if tx.Error != nil {
+		applogger.Error("action.CreateAlarm: failed to begin transaction", "action_id", actionID, "error", tx.Error)
+		return
+	}
+	defer tx.Rollback()
+	if err := tx.Create(&record).Error; err != nil {
 		applogger.Error("action.CreateAlarm: failed to create scheduled event record",
 			"agent_config_id", r.agentConfigID,
 			"person_id", r.agentPersonID,
 			"error", err,
 		)
+		return
+	}
+	if err := recordActionEffect(tx, actionID, model.ActionEffectScheduledEvent, record.ID); err != nil {
+		applogger.Error("action.CreateAlarm: failed to record action source", "action_id", actionID, "error", err)
+		return
+	}
+	if err := tx.Model(&model.Action{}).Where("id = ?", actionID).
+		Update("status", model.ActionStatusEnded).Error; err != nil {
+		applogger.Error("action.CreateAlarm: failed to end action", "action_id", actionID, "error", err)
+		return
+	}
+	if err := tx.Commit().Error; err != nil {
+		applogger.Error("action.CreateAlarm: failed to commit alarm result", "action_id", actionID, "error", err)
 		return
 	}
 
@@ -1315,6 +1431,20 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 		return nil, fmt.Errorf("createAgentRuntime: failed to load agent config %d: %w", agentConfigID, err)
 	}
 	runtime.agentPersonID = ac.PersonID
+	person, err := dops.GetPerson(ac.PersonID)
+	if err != nil {
+		return nil, fmt.Errorf("createAgentRuntime: load person %d: %w", ac.PersonID, err)
+	}
+	if person.Status != model.PersonStatusActive {
+		return nil, fmt.Errorf("createAgentRuntime: person %d is deceased", ac.PersonID)
+	}
+
+	// Ensure the agent has the stable AOS skeleton before it can inspect or
+	// enter owned space. This is idempotent and also repairs agents created by
+	// older versions that only had session-specific directories.
+	if err := aos.InitAgentOwnedSpace(ac.PersonID); err != nil {
+		return nil, fmt.Errorf("createAgentRuntime: initialize AOS for person %d: %w", ac.PersonID, err)
+	}
 
 	// Recover any abandoned works from previous run
 	recoverActiveWorks(agentConfigID)
@@ -1329,13 +1459,15 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 	return runtime, nil
 }
 
-func historySegments(search *comprehendTypes.HistorySearch) []comprehendTypes.Segment {
+// historyKeywords passes Comprehend's retrieval plan to the target chat context.
+func historyKeywords(search *comprehendTypes.HistorySearch) []string {
 	if search == nil {
 		return nil
 	}
-	return search.Segments
+	return search.Keywords
 }
 
+// kbSegments passes retrieved knowledge-base excerpts to chat assembly.
 func kbSegments(retrieval *comprehendTypes.KBRetrieval) []comprehendTypes.Segment {
 	if retrieval == nil {
 		return nil

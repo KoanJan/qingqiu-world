@@ -13,24 +13,26 @@ type MessageCreate struct {
 
 // MessageResponse represents the API response for a message.
 type MessageResponse struct {
-	ID        int64     `json:"id"`
-	SessionID int64     `json:"session_id"`
-	PersonID  int64     `json:"person_id"`
-	Content   string    `json:"content"`
-	Status    int       `json:"status"`
-	CreatedAt time.Time `json:"created_at"`
-	UpdatedAt time.Time `json:"updated_at"`
+	ID                    int64     `json:"id"`
+	SessionID             int64     `json:"session_id"`
+	PersonID              int64     `json:"person_id"`
+	Content               string    `json:"content"`
+	ExpressionInstruction string    `json:"expression_instruction"`
+	Status                int       `json:"status"`
+	CreatedAt             time.Time `json:"created_at"`
+	UpdatedAt             time.Time `json:"updated_at"`
 }
 
 // NewMessageResponse converts a model.Message to a MessageResponse.
 func NewMessageResponse(m *model.Message) *MessageResponse {
 	return &MessageResponse{
-		ID:        m.ID,
-		SessionID: m.SessionID,
-		PersonID:  m.PersonID,
-		Content:   m.Content,
-		CreatedAt: m.CreatedAt,
-		UpdatedAt: m.UpdatedAt,
+		ID:                    m.ID,
+		SessionID:             m.SessionID,
+		PersonID:              m.PersonID,
+		Content:               m.Content,
+		ExpressionInstruction: m.ExpressionInstruction,
+		CreatedAt:             m.CreatedAt,
+		UpdatedAt:             m.UpdatedAt,
 	}
 }
 

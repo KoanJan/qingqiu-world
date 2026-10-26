@@ -5,6 +5,8 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // CreateJinshu inserts a jinshu record and returns it with its auto-increment
@@ -17,7 +19,15 @@ func CreateJinshu(fromPersonID, toPersonID int64, topic, description string) (*m
 		Topic:        topic,
 		Description:  description,
 	}
-	if err := database.DB.Create(&record).Error; err != nil {
+	if err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := RequireActivePersonTx(tx, fromPersonID); err != nil {
+			return err
+		}
+		if err := RequireActivePersonTx(tx, toPersonID); err != nil {
+			return err
+		}
+		return tx.Create(&record).Error
+	}); err != nil {
 		return nil, fmt.Errorf("create jinshu: %w", err)
 	}
 	return &record, nil

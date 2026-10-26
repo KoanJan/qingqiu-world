@@ -5,7 +5,7 @@
 // world interaction (e.g., file operations, web searches, code execution).
 //
 // The main entry point is Execute, which:
-//  1. Initializes the session workspace structure
+//  1. Resolves the Work's selected Workspace and execution metadata
 //  2. Builds the system prompt and tool list
 //  3. Creates the context manager with iteration window
 //  4. Runs the ReAct FocusedLoop to completion
@@ -28,10 +28,12 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/aos"
 	focusedworkcontext "qingqiu-world-server/internal/service/focusedwork/context"
 	"qingqiu-world-server/internal/service/focusedwork/tools"
 	"qingqiu-world-server/internal/service/llm"
-	"qingqiu-world-server/internal/service/workspace"
+
+	"gorm.io/gorm"
 )
 
 // FocusedWorkResult represents the outcome of focused-work execution.
@@ -51,8 +53,8 @@ type FocusedWorkResult struct {
 // (Guidance) and the cognitive context explaining why (Reason).
 //
 // This struct is passed through the guidance channel instead of a bare string,
-// so the FocusedLoop's LLM can understand the full context of a route or cancel
-// decision — not just the "what" but also the "why".
+// so the FocusedLoop's LLM can understand the context of a route decision.
+// Cancellation uses the Work's context instead of this channel.
 type GuidanceDirective struct {
 	Guidance string // What to do: the executable directive
 	Reason   string // Why: user's original message, inferred intent, and Decide's reasoning
@@ -67,6 +69,7 @@ type RunFocusedWorkParams struct {
 	SessionID    int64
 	PersonID     int64 // Person ID of the executing agent
 	WorkID       int64
+	WorkspaceID  int64            // Default registered Workspace; zero supports legacy direct callers.
 	Guidance     string           // Execution intent from Decide phase (replaces Rewrite)
 	Background   string           // Full context from Decide phase: trigger event, participants, comprehension
 	FocusContext string           // Runtime-selected related Focus handoffs and shared notes
@@ -97,7 +100,11 @@ func RunFocusedWork(params RunFocusedWorkParams) *FocusedWorkResult {
 	// Load search config for web search tool
 	var searchConfig model.SearchConfig
 	if err := database.DB.Where("is_active = ?", true).First(&searchConfig).Error; err != nil {
-		applogger.Error("failed to load active search config, proceeding without search", "error", err)
+		if err == gorm.ErrRecordNotFound {
+			applogger.Warn("no active search config, web search disabled for task")
+		} else {
+			applogger.Error("failed to load active search config, proceeding without search", "error", err)
+		}
 	}
 
 	return ExecuteFocusedWork(FocusedWorkParams{
@@ -113,6 +120,7 @@ func RunFocusedWork(params RunFocusedWorkParams) *FocusedWorkResult {
 		SessionID:              params.SessionID,
 		PersonID:               params.PersonID,
 		WorkID:                 params.WorkID,
+		WorkspaceID:            params.WorkspaceID,
 		SearchConfig:           &searchConfig,
 		Ctx:                    params.Ctx,
 		GuidanceCh:             params.GuidanceCh,
@@ -130,9 +138,10 @@ type FocusedWorkParams struct {
 	Metadata               *Metadata                // System-generated traceability info from work creation
 	LLMConfig              *model.LLMConfig         // LLM configuration for focused work
 	MaxIterations          int                      // Override for max loop iterations (0 = use default)
-	SessionID              int64                    // Session ID for interaction records and workspace
+	SessionID              int64                    // Optional originating Session ID for interaction context
 	PersonID               int64                    // Person ID for tools that need person context (e.g., wake_me_when)
 	WorkID                 int64                    // Work ID for interaction record association
+	WorkspaceID            int64                    // Default registered Workspace; independent of SessionID
 	SearchConfig           *model.SearchConfig      // Search configuration for web search tool
 	Ctx                    context.Context          // Cancellation context from the caller
 	GuidanceCh             <-chan GuidanceDirective // Channel for receiving new guidance during execution
@@ -154,17 +163,31 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 		"max_iterations", maxIterations,
 	)
 
-	ws := workspace.InitWorkspace(params.PersonID, params.SessionID)
-
+	if params.WorkID <= 0 || params.WorkspaceID <= 0 {
+		applogger.Error("FocusedWorkExecutor: Work requires a registered Workspace", "work_id", params.WorkID, "workspace_id", params.WorkspaceID)
+		return &FocusedWorkResult{Status: "failure", Error: "Work requires a registered Workspace"}
+	}
+	record, err := dops.GetOwnedWorkspace(params.PersonID, params.WorkspaceID)
+	if err != nil {
+		return &FocusedWorkResult{Status: "failure", Error: err.Error()}
+	}
+	ws, err := aos.ResolveRegisteredPath(*record)
+	if err != nil {
+		return &FocusedWorkResult{Status: "failure", Error: err.Error()}
+	}
+	metaDir, err := aos.GetWorkspaceMetaDir(*record)
+	if err != nil {
+		return &FocusedWorkResult{Status: "failure", Error: err.Error()}
+	}
 	settings := config.Get()
 	iterationWindow := settings.MinIterationWindow
 	maxIterationWindow := settings.MaxIterationWindow
 	notesMaxChars := settings.NotesMaxChars
 
-	writeNotesTool := tools.NewWriteNotesTool(params.PersonID, params.SessionID, notesMaxChars)
+	writeNotesTool := tools.NewWriteNotesTool(params.PersonID, notesMaxChars, metaDir)
 	notesContent := writeNotesTool.ReadNotes()
 
-	toolList := buildToolList(params.SessionID, params.PersonID, params.SearchConfig, notesMaxChars)
+	toolList := buildToolList(params.SessionID, params.PersonID, params.WorkID, params.SearchConfig, notesMaxChars, ws, metaDir)
 
 	// Build tool descriptions string (moved to last user message for cache optimization).
 	toolDescLines := []string{"Available tools:"}
@@ -178,23 +201,19 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 		params.FocusContext,
 		params.Metadata,
 		buildKBSection(params.PersonID),
-		workspace.GetAgentOwnedSpacePath(params.PersonID),
-		workspace.GetOutputDir(params.PersonID, params.SessionID),
+		aos.GetAgentOwnedSpacePath(params.PersonID),
+		ws,
 		params.WorkID,
 		params.FocusPhase,
 		params.Checkpoint,
 	)
-
-	workspaceDir := workspace.GetWorkspacePath(params.PersonID, params.SessionID)
-	outputDir := workspace.GetOutputDir(params.PersonID, params.SessionID)
 
 	contextManager := focusedworkcontext.NewContextManager(
 		systemPrompt,
 		iterationWindow,
 		maxIterationWindow,
 		notesContent,
-		workspaceDir,
-		outputDir,
+		ws,
 		toolDescStr,
 	)
 
@@ -228,12 +247,10 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 
 	finalNotes := writeNotesTool.ReadNotes()
 
-	// Note: <workspace>/.meta/fingerprint.txt is no longer written here.
-	// Its responsibility moved to the reflection pipeline (reflectSession),
-	// which writes it at the end of each reflection to mark "this is what
-	// notes.jsonl looked like when I last processed it". The heartbeat then
-	// compares the current notes.jsonl hash against this file to decide whether
-	// to re-trigger reflection.
+	// The Workspace metadata fingerprint is written by reflection, after it
+	// processes notes; completing an individual Work does not claim reflection.
+	// The heartbeat compares that fingerprint with notes.jsonl to decide
+	// whether the Workspace notes need another reflection.
 
 	result := &FocusedWorkResult{
 		Workspace: ws,
@@ -258,10 +275,19 @@ func ExecuteFocusedWork(params FocusedWorkParams) *FocusedWorkResult {
 		} else {
 			result.Error = "Unknown error"
 		}
-		applogger.Error("FocusedWorkExecutor failed",
-			"session_id", params.SessionID,
-			"error", result.Error,
-		)
+		if params.Ctx.Err() != nil {
+			// The Work runtime owns the terminal state: an explicit Cancel Action
+			// becomes abandoned, while other interruptions retain their cause.
+			applogger.Info("FocusedWorkExecutor interrupted",
+				"session_id", params.SessionID,
+				"cause", params.Ctx.Err(),
+			)
+		} else {
+			applogger.Error("FocusedWorkExecutor failed",
+				"session_id", params.SessionID,
+				"error", result.Error,
+			)
+		}
 	}
 
 	return result
@@ -313,50 +339,55 @@ func buildSystemPrompt(background, focusContext string, metadata *Metadata, kbSe
 
 	parts = append(parts,
 		"",
+		"KNOWLEDGE-BASE EVIDENCE RULES:",
+		"- scan_kb is semantic retrieval, not exhaustive traversal. Treat its evidence as a subset and state findings as based on retrieved evidence.",
+		"- When calling scan_kb, provide a short reason that states the knowledge gap for that query; this reason is query-intent trace, not KB evidence.",
+		"- relation_paths returned by scan_kb are provenance hints explaining how evidence was expanded, not facts or conclusions. Never cite a relation path as a fact in your answer; first read the supporting evidence via read_kb_evidence, and preserve any applicability_note limits when you use it.",
+		"- list_kb_documents is an inventory only; its chunk count does not mean those chunks were read.",
+		"- Never claim complete coverage, all contents, or unsupported facts unless a tool explicitly establishes that coverage.",
+		"",
 		"CRITICAL: Before calling any tool, you MUST first explain your reasoning",
 		"in the content field. Describe what you plan to do and why.",
 		"Only after explaining your thought process, make the tool call.",
 		"",
 		"Always verify your actions by checking the results.",
 		"",
-		"WORKSPACE ORGANIZATION:",
+		"WORKSPACE ACCESS:",
 		fmt.Sprintf("- Your Agent Owned Space resource root is %s. You may read and write any resource beneath it.", aosRoot),
-		fmt.Sprintf("- This FocusedWork defaults to %s. Other work/<session_id>/ directories and private/ remain available when useful.", defaultDir),
+		fmt.Sprintf("- This FocusedWork defaults to %s. Other owned Workspaces and private/ remain available when useful; declare another registered Workspace with use_aos.", defaultDir),
 		"- Runtime metadata is outside Agent Owned Space and is not a file resource you can access.",
-		"- Before creating files, consider whether this Focus relates to an existing project:",
-		"  - If starting a new project (e.g., building an app, writing a report), create a dedicated subdirectory for it",
-		"  - If continuing or modifying existing work, first check what subdirectories exist and work within the appropriate one",
-		"- This keeps your workspace organized but is not enforced — use your judgment",
 		"",
 		"COMPLETION OUTPUT:",
-		"Remember: the recipient cannot see your output/ directory. If they need any of your output files, you must use send_jinshu to send them before summarizing.",
+		"Remember: the recipient cannot see files in your Agent Owned Space. If they need a file, use send_jinshu to deliver it before summarizing.",
 		"- Deliver whole directories (e.g., paths: [\"my-project\"]) rather than individual files.",
-		"- Verify what you produced with `ls output/` or `find output/ -type f` first.",
+		"- Verify the exact files or directory you intend to send with `ls -la` or `find . -type f` first.",
 		"",
 		"- Accomplishments: what was achieved, with specific details",
 		"- Verification: how correctness was confirmed (test results, checks, etc.)",
 		"- Status: if partially completed, state exactly what's done and what remains",
 		"",
-		"- Do NOT list raw file paths from your output/ directory — delivered files are already in the recipient's jinshu received area",
+		"- Do NOT present local AOS paths as files the recipient can access — delivered files are in their jinshu received area",
 		"- Never fabricate or guess file paths — verify with `pwd` or `ls` if needed",
 		"",
 		"[Understanding Current State]",
 		"To understand the current project state:",
-		"- Use read_text_file to read file contents",
+		"- Use read_text_lines to read bounded numbered lines; search_text_file locates exact text within a known file",
 		"- Use 'ls -la' to list files in your working directory",
 		"- Use 'find . -type f' to discover all files",
 		"- Check your NOTES (provided above) for previous progress",
 		"",
 		"FILE OPERATIONS:",
-		"- read_text_file: Read file contents with line offset/limit. Preferred over bash cat.",
+		"- read_text_lines: Read bounded numbered lines. Continue after the last complete line; if a line is truncated, use read_text_block at its end byte offset.",
+		"- read_text_block: Read bounded text from a byte offset, including a search match or a truncated line.",
+		"- search_text_file: Find exact text within a specified file and page with next_byte_offset.",
 		"- write_text_file: Create, overwrite, or append to files. Preferred over bash echo/heredoc.",
 		"- edit_text_file: Make precise text replacements in existing files. Preferred for modifying files.",
-		"  - Copy old_str EXACTLY from read_text_file output, preserving indentation and special characters",
+		"  - Copy old_str EXACTLY from read_text_lines or read_text_block output, preserving indentation and special characters",
 		"  - Keep old_str concise but unique enough to match exactly one location",
 		"- bash: Use for system commands (mkdir, find, git, build, etc.) and directory operations",
 		"",
 		"[NOTES Usage Guide]",
-		"The write_notes tool appends structured entries to your notes.",
+		"The write_notes tool appends structured entries to this Workspace's notes. Earlier entries may come from prior Works; compare dated progress with the current task and files.",
 		"",
 		"Entry types:",
 		"- observation: Something you discovered",
@@ -411,7 +442,7 @@ func focusPhaseLabel(phase model.FocusPhase) string {
 
 // buildKBSection renders the authorized knowledge base inventory for the FocusedWork
 // system prompt. KB contents are reachable only through scan_kb /
-// list_kb_documents (retrieval, never raw file reads). Returns an empty string
+// read_kb_evidence / list_kb_documents (retrieval, never raw file reads). Returns an empty string
 // when the agent has no authorized KBs so the section is omitted entirely.
 func buildKBSection(personID int64) string {
 	kbs, err := dops.ListAuthorizedKBs(personID)
@@ -425,7 +456,7 @@ func buildKBSection(personID int64) string {
 
 	var b strings.Builder
 	b.WriteString("[Knowledge Bases]\n")
-	b.WriteString("Authorized knowledge bases (use scan_kb to search them, list_kb_documents to list their documents):\n")
+	b.WriteString("Authorized knowledge bases (use list_kb_documents for inventory, scan_kb for non-exhaustive semantic retrieval, and read_kb_evidence for returned chunk IDs):\n")
 	for _, k := range kbs {
 		if k.Description != "" {
 			b.WriteString(fmt.Sprintf("- KB #%d %q: %s\n", k.ID, k.Name, k.Description))
@@ -437,28 +468,34 @@ func buildKBSection(personID int64) string {
 }
 
 // buildToolList creates the list of available tools for the FocusedLoop.
-// Always includes read_text_file, write_text_file, edit_text_file, bash,
-// write_notes, scan_my_experience, recall_my_experience, scan_kb and
-// list_kb_documents; adds web_search if search config is available.
+// Always includes the three bounded text tools, write_text_file, edit_text_file, bash,
+// write_notes, scan_my_experience, recall_my_experience, scan_kb,
+// read_kb_evidence and list_kb_documents; adds web_search if search config is
+// available.
 //
 // Note: wake_me_when was promoted to a top-level Action (ActionCreateAlarm)
 // in 0.1.3 — setting an alarm is a world action, not a workspace operation.
 // It is no longer registered as a FocusedLoop tool.
-func buildToolList(sessionID, personID int64, searchConfig *model.SearchConfig, notesMaxChars int) []tools.Tool {
+func buildToolList(sessionID, personID, workID int64, searchConfig *model.SearchConfig, notesMaxChars int, workspaceDir, metaDir string) []tools.Tool {
+	bashTool := tools.NewBashToolForWork(personID, workID, workspaceDir)
 	toolList := []tools.Tool{
-		tools.NewReadTextFileTool(personID, sessionID),
-		tools.NewWriteTextFileTool(personID, sessionID),
-		tools.NewEditTextFileTool(personID, sessionID),
-		tools.NewBashTool(personID, sessionID),
-		tools.NewWriteNotesTool(personID, sessionID, notesMaxChars),
+		tools.NewReadTextLinesTool(personID, workspaceDir),
+		tools.NewReadTextBlockTool(personID, workspaceDir),
+		tools.NewSearchTextFileTool(personID, workspaceDir),
+		tools.NewWriteTextFileTool(personID, workspaceDir),
+		tools.NewEditTextFileTool(personID, workspaceDir),
+		bashTool,
+		tools.NewWriteNotesTool(personID, notesMaxChars, metaDir),
 		tools.NewScanExperienceTool(personID),
 		tools.NewRecallExperienceTool(personID),
-		tools.NewSendJinshuTool(personID, sessionID),
+		tools.NewSendJinshuTool(personID, sessionID, workspaceDir),
 		tools.NewSearchChatHistoriesTool(personID),
 		tools.NewScanJinshuTool(personID),
 		tools.NewReadJinshuTool(personID),
-		tools.NewCopyFromJinshuTool(personID, sessionID),
-		tools.NewScanKBTool(personID),
+		tools.NewCopyFromJinshuTool(personID, sessionID, workspaceDir),
+		tools.NewUseWorkspaceTool(personID, workID),
+		tools.NewScanKBTool(personID, workID, sessionID),
+		tools.NewReadKBEvidenceTool(personID),
 		tools.NewListKBDocumentsTool(personID),
 	}
 

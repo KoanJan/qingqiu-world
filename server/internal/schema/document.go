@@ -49,23 +49,13 @@ func NewDocumentResponseList(entities []model.Document) []*DocumentResponse {
 	return result
 }
 
-// SearchRequest represents a search request within a knowledge base.
-type SearchRequest struct {
-	Query string `json:"query" binding:"required"`
-	TopK  int    `json:"top_k"`
-}
-
-// MultiKBSearchRequest represents a search request across multiple knowledge bases.
-type MultiKBSearchRequest struct {
-	KBIDs []int64 `json:"kb_ids" binding:"required"`
-	Query string  `json:"query" binding:"required"`
-	TopK  int     `json:"top_k"`
-}
-
 // SearchResult represents a single search result chunk.
 type SearchResult struct {
-	ChunkID         int64   `json:"chunk_id"`
-	DocumentID      int64   `json:"document_id"`
+	ChunkID    int64 `json:"chunk_id"`
+	DocumentID int64 `json:"document_id"`
+	// RevisionID is retrieval-internal provenance. It must not change the
+	// established KB search response contract.
+	RevisionID      int64   `json:"-"`
 	DocumentTitle   string  `json:"document_title"`
 	Content         string  `json:"content"`
 	Score           float64 `json:"score"`

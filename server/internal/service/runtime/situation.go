@@ -1,15 +1,21 @@
 package runtime
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
+	"qingqiu-world-server/internal/service/aos"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
-	"qingqiu-world-server/internal/service/privatespace"
+	"qingqiu-world-server/internal/service/memo"
 )
 
 // Situation is a runtime-only DTO that serves as the unified input to
@@ -19,9 +25,16 @@ import (
 // decision opportunity from a source, facing the concrete matter it must
 // judge.
 type Situation struct {
-	Source  SituationSource
+	// Source identifies whether an event or a heartbeat opened this decision.
+	Source SituationSource
+	// Subject describes the agent's current capacity and ongoing commitments.
 	Subject SituationSubject
-	Matter  SituationMatter
+	// Environment describes generally available external surroundings.
+	Environment SituationEnvironment
+	// Matter describes only the event or heartbeat being considered now.
+	Matter SituationMatter
+	// generalReady prevents rebuilding the shared state within one decision.
+	generalReady bool
 }
 
 // SituationSource indicates whether this decision opportunity came from
@@ -39,10 +52,35 @@ const (
 	SituationSourceInternal
 )
 
-// SituationSubject is the agent's present capacity and commitments.
+// SituationSubject is the agent's present capacity, commitments, and bounded
+// recent cognitive continuity across otherwise independent decision calls.
 type SituationSubject struct {
-	Energy             int
+	// Energy is the agent's currently available energy.
+	Energy int
+	// ActiveWorksSummary lists current Focus works and any omitted count.
 	ActiveWorksSummary string
+	// ActiveActionsSummary lists ongoing top-level actions, including chats.
+	ActiveActionsSummary string
+	// ExecutionSlotSummary names the sustained loop currently holding the slot.
+	ExecutionSlotSummary string
+	// RecentExperienceSummary groups previously observed facts with the
+	// agent's subsequent choices and recorded effects, regardless of Session.
+	RecentExperienceSummary string
+	// PinnedMemosSummary is a small preview with creation and update times
+	// for memos the agent chose to keep in everyday view. Complete text
+	// remains in the private Memo table.
+	PinnedMemosSummary string
+}
+
+// SituationEnvironment contains the bounded, generally available world
+// roster. It is assembled without the current event or session as an input.
+type SituationEnvironment struct {
+	// Sessions lists available conversation destinations without their history.
+	Sessions string
+	// Persons lists people the agent can currently contact.
+	Persons string
+	// Resources summarizes owned resources without reading their contents.
+	Resources string
 }
 
 // SituationMatter carries the concrete data Decide needs to evaluate.
@@ -52,9 +90,12 @@ type SituationSubject struct {
 //   - External: Event and Comprehension are populated.
 //   - Internal: Description is populated.
 type SituationMatter struct {
-	Event         *eventqueue.AgentEvent         // non-nil when Source == External
-	Comprehension *comprehendTypes.Comprehension // non-nil when Source == External
-	Description   string                         // non-empty when Source == Internal
+	// Event is the triggering external occurrence; nil for a heartbeat.
+	Event *eventqueue.AgentEvent
+	// Comprehension is the direct understanding of Event; nil for a heartbeat.
+	Comprehension *comprehendTypes.Comprehension
+	// Description names the heartbeat opportunity; empty for an external event.
+	Description string
 }
 
 // buildExternalSituation constructs a Situation from an external event
@@ -88,121 +129,226 @@ func buildHeartbeatSituation(description string, energy int, activeWorksSummary 
 	}
 }
 
-// buildHeartbeatDescription collects the agent's self-observation into a
-// natural language description for the heartbeat Situation. This is the
-// internal counterpart of Comprehend — instead of understanding an external
-// event, it surveys the agent's social world and private space so Decide
-// can evaluate whether to form an intention.
+// buildHeartbeatDescription names the decision opportunity. General state is
+// assembled by populateGeneralSituation for either trigger type.
 func buildHeartbeatDescription(personID int64) string {
-	sessionsContext := buildSessionsContext(personID)
-	personsContext := buildContactablePersonsContext(personID)
-	privateSpaceContext := buildPrivateSpaceContext(personID)
-	jinshuContext := buildJinshuContext(personID)
-	return sessionsContext + personsContext + privateSpaceContext + jinshuContext
+	return "A quiet heartbeat gives you a chance to decide whether to act."
 }
 
-// jinshuContextRecent bounds how many recent received/sent jinshu records are
-// injected into the heartbeat prompt, matching the session context limit to
-// avoid prompt bloat.
-const jinshuContextRecent = 5
-
-// buildJinshuContext surveys the agent's recent jinshu (锦书) activity. The
-// received section includes the sender and read status; the sent section
-// includes the receiver but intentionally omits read status, which is
-// receiver-only information.
-func buildJinshuContext(personID int64) string {
-	received, err := dops.ListReceivedJinshu(personID, 0, jinshuContextRecent)
+// populateGeneralSituation applies the same event-independent state builder
+// to external and heartbeat decisions. Matter remains the only trigger-specific
+// component.
+func populateGeneralSituation(personID int64, situation *Situation) {
+	if situation == nil {
+		return
+	}
+	var actions []model.Action
+	if err := database.DB.Table("actions").Select("actions.*").Joins("JOIN decisions ON decisions.id = actions.decision_id").
+		Where("decisions.person_id = ? AND actions.status = ?", personID, model.ActionStatusInProgress).
+		Order("actions.created_at DESC").Limit(10).Find(&actions).Error; err != nil {
+		applogger.Error("populateGeneralSituation: active actions", "person_id", personID, "error", err)
+	}
+	var activeCount int64
+	if err := database.DB.Table("actions").Joins("JOIN decisions ON decisions.id = actions.decision_id").
+		Where("decisions.person_id = ? AND actions.status = ?", personID, model.ActionStatusInProgress).Count(&activeCount).Error; err != nil {
+		applogger.Error("populateGeneralSituation: count active actions", "person_id", personID, "error", err)
+	}
+	var actionLines []string
+	for _, a := range actions {
+		actionLines = append(actionLines, formatOngoingAction(a))
+	}
+	if activeCount > int64(len(actions)) {
+		actionLines = append(actionLines, fmt.Sprintf("- %d further ongoing actions can be recalled", activeCount-int64(len(actions))))
+	}
+	situation.Subject.ActiveActionsSummary = strings.Join(actionLines, "\n")
+	var works []model.Work
+	if err := database.DB.Where("person_id = ? AND status = ?", personID, model.WorkStatusRunning).Order("id DESC").Limit(10).Find(&works).Error; err != nil {
+		applogger.Error("populateGeneralSituation: active works", "person_id", personID, "error", err)
+	}
+	var workCount int64
+	if err := database.DB.Model(&model.Work{}).Where("person_id = ? AND status = ?", personID, model.WorkStatusRunning).Count(&workCount).Error; err != nil {
+		applogger.Error("populateGeneralSituation: count active works", "person_id", personID, "error", err)
+	}
+	var workLines []string
+	for _, w := range works {
+		line := fmt.Sprintf("- Active work (work_id=%d): %q", w.ID, truncateWorkDescription(w.Description))
+		if database.DB.Migrator().HasTable(&model.WorkspaceUse{}) {
+			if selected, err := dops.GetDefaultWorkWorkspace(personID, w.ID); err == nil {
+				line += fmt.Sprintf("; default workspace: %s (workspace_id=%d, path=%q)", selected.Name, selected.ID, selected.RelativePath)
+			} else {
+				applogger.Error("populateGeneralSituation: running Work has no default Workspace", "person_id", personID, "work_id", w.ID, "error", err)
+			}
+		}
+		workLines = append(workLines, line)
+	}
+	if workCount > int64(len(works)) {
+		workLines = append(workLines, fmt.Sprintf("- %d further active works can be recalled", workCount-int64(len(works))))
+	}
+	situation.Subject.ActiveWorksSummary = strings.Join(workLines, "\n")
+	situation.Environment.Sessions = buildSessionsRoster(personID)
+	situation.Environment.Persons = buildContactablePersonsContext(personID)
+	situation.Environment.Resources = buildOwnedResourceOverview(personID)
+	currentEventID := int64(0)
+	if situation.Matter.Event != nil {
+		currentEventID = situation.Matter.Event.EventID
+	}
+	situation.Subject.RecentExperienceSummary = buildRecentExperienceSummary(personID, currentEventID)
+	pinned, err := memo.PinnedOverview(personID, 3)
 	if err != nil {
-		applogger.Error("buildJinshuContext: failed to list received jinshu",
-			"person_id", personID, "error", err)
-		received = nil
+		applogger.Error("populateGeneralSituation: pinned memos", "person_id", personID, "error", err)
+	} else {
+		var lines []string
+		for _, record := range pinned {
+			lines = append(lines, fmt.Sprintf("- %q (memo_id=%d, revision=%d, created_at=%s, updated_at=%s)",
+				shortContextText(record.Content, 180), record.ID, record.Revision,
+				record.CreatedAt.Format(time.RFC3339), record.UpdatedAt.Format(time.RFC3339)))
+		}
+		situation.Subject.PinnedMemosSummary = strings.Join(lines, "\n")
 	}
+	situation.generalReady = true
+}
 
-	sent, err := dops.ListSentJinshu(personID, 0, jinshuContextRecent)
-	if err != nil {
-		applogger.Error("buildJinshuContext: failed to list sent jinshu",
-			"person_id", personID, "error", err)
-		sent = nil
+// formatOngoingAction presents only the plan facts that help with the next
+// choice. Persisted PlanJSON is a storage format, not agent-facing language.
+func formatOngoingAction(record model.Action) string {
+	line := fmt.Sprintf("- You have an ongoing action to %s (action_id=%d)", record.Type.Label(), record.ID)
+	if record.Background != "" {
+		line += fmt.Sprintf(". Your understanding at the time: %q", truncateWorkDescription(record.Background))
 	}
+	if record.Reason != "" {
+		line += fmt.Sprintf(". Your stated reason: %q", truncateWorkDescription(record.Reason))
+	}
+	switch record.Type {
+	case model.ActionTypeChat:
+		var plan action.ChatPlan
+		if record.PlanJSON != "" {
+			if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
+				applogger.Error("formatOngoingAction: invalid Chat plan", "action_id", record.ID, "error", err)
+			}
+		}
+		if plan.Guidance != "" {
+			line += fmt.Sprintf(". Intended message: %q", truncateWorkDescription(plan.Guidance))
+		}
+		if plan.SessionID > 0 {
+			line += fmt.Sprintf(". Destination: an existing conversation (session_id=%d)", plan.SessionID)
+		} else if plan.SessionID < 0 && plan.RecipientPersonID > 0 {
+			names, err := dops.GetPersonNames([]int64{plan.RecipientPersonID})
+			name := names[plan.RecipientPersonID]
+			if err != nil {
+				applogger.Error("formatOngoingAction: recipient identity unavailable", "action_id", record.ID, "person_id", plan.RecipientPersonID, "error", err)
+			} else if name == "" {
+				applogger.Error("formatOngoingAction: recipient identity missing", "action_id", record.ID, "person_id", plan.RecipientPersonID)
+			}
+			if name == "" {
+				name = "an unknown person"
+			}
+			line += fmt.Sprintf(". Destination: a new conversation with %s (person_id=%d)", name, plan.RecipientPersonID)
+		}
+	case model.ActionTypeWaitForExecutionSlot:
+		var plan action.WaitForExecutionSlotPlan
+		if record.PlanJSON != "" {
+			if err := json.Unmarshal([]byte(record.PlanJSON), &plan); err != nil {
+				applogger.Error("formatOngoingAction: invalid wait plan", "action_id", record.ID, "error", err)
+			}
+		}
+		if plan.Intention != "" {
+			line += fmt.Sprintf(". Waiting to reconsider: %q", truncateWorkDescription(plan.Intention))
+		}
+	}
+	return line
+}
 
-	// Resolve the referenced sender/receiver names in one batch.
-	idSet := make(map[int64]struct{})
-	for _, r := range received {
-		idSet[r.FromPersonID] = struct{}{}
-	}
-	for _, r := range sent {
-		idSet[r.ToPersonID] = struct{}{}
-	}
-	ids := make([]int64, 0, len(idSet))
-	for id := range idSet {
-		ids = append(ids, id)
-	}
-	names, err := dops.GetPersonNames(ids)
+// buildOwnedResourceOverview describes current resource availability only.
+// Private-space logs are historical material and do not belong in Environment.
+func buildOwnedResourceOverview(personID int64) string {
+	entries, err := readDirSummary(aos.GetPrivateSpacePath(personID))
 	if err != nil {
-		applogger.Error("buildJinshuContext: failed to resolve person names", "error", err)
+		applogger.Error("buildOwnedResourceOverview: listing failed", "person_id", personID, "error", err)
+		return "Your private space could not be listed."
+	}
+	result := "Your private space currently contains: " + entries
+	if database.DB.Migrator().HasTable(&model.Workspace{}) {
+		workspaces, count, err := dops.ListRecentWorkspaces(personID, 5)
+		if err != nil {
+			applogger.Error("buildOwnedResourceOverview: Workspaces unavailable", "person_id", personID, "error", err)
+		} else {
+			var lines []string
+			for _, item := range workspaces {
+				lines = append(lines, fmt.Sprintf("- %s (workspace_id=%d, path=%q): %s", item.Name, item.ID, item.RelativePath, truncateWorkDescription(item.Purpose)))
+			}
+			result += fmt.Sprintf("\nYour registered workspaces: %d", count)
+			if len(lines) > 0 {
+				result += "\n" + strings.Join(lines, "\n")
+			}
+		}
+	}
+	return result
+}
+
+// buildSessionsRoster exposes routing choices without loading message history
+// or mutable impressions into the general environment.
+func buildSessionsRoster(personID int64) string {
+	var rows []model.ParticipantSession
+	if err := database.DB.Where("participant_id = ? AND session_id IN (SELECT id FROM sessions WHERE status = ?)", personID, model.SessionStatusActive).Order("last_active_at DESC").Limit(20).Find(&rows).Error; err != nil {
+		applogger.Error("buildSessionsRoster: list failed", "person_id", personID, "error", err)
+		return "Sessions unavailable."
+	}
+	var count int64
+	if err := database.DB.Model(&model.ParticipantSession{}).Where("participant_id = ? AND session_id IN (SELECT id FROM sessions WHERE status = ?)", personID, model.SessionStatusActive).Count(&count).Error; err != nil {
+		applogger.Error("buildSessionsRoster: count failed", "person_id", personID, "error", err)
+	}
+	var lines []string
+	ids := make([]int64, 0, len(rows))
+	for _, row := range rows {
+		ids = append(ids, row.SessionID)
+	}
+	otherBySession := make(map[int64][]int64)
+	if len(ids) > 0 {
+		var others []model.ParticipantSession
+		if err := database.DB.Where("session_id IN ? AND participant_id != ?", ids, personID).Find(&others).Error; err != nil {
+			applogger.Error("buildSessionsRoster: participants failed", "person_id", personID, "error", err)
+		}
+		for _, other := range others {
+			otherBySession[other.SessionID] = append(otherBySession[other.SessionID], other.ParticipantID)
+		}
+	}
+	personIDs := make([]int64, 0)
+	for _, group := range otherBySession {
+		personIDs = append(personIDs, group...)
+	}
+	names, err := dops.GetPersonNames(personIDs)
+	if err != nil {
+		applogger.Error("buildSessionsRoster: names failed", "person_id", personID, "error", err)
 		names = map[int64]string{}
 	}
-
-	var sb strings.Builder
-	sb.WriteString("\n=== YOUR JINSHU (锦书) ===\n")
-
-	if len(received) == 0 {
-		sb.WriteString("Received: (none)\n")
-	} else {
-		sb.WriteString("Recently received:\n")
-		for _, r := range received {
-			sender := names[r.FromPersonID]
-			if sender == "" {
-				sender = fmt.Sprintf("person_%d", r.FromPersonID)
+	for _, row := range rows {
+		var peers []string
+		peerIDs := otherBySession[row.SessionID]
+		for _, id := range peerIDs[:min(len(peerIDs), 5)] {
+			name := names[id]
+			if name == "" {
+				if err == nil {
+					applogger.Error("buildSessionsRoster: participant identity missing", "person_id", id, "session_id", row.SessionID)
+				}
+				name = fmt.Sprintf("unknown participant (person_id=%d)", id)
 			}
-			read := "unread"
-			if r.IsRead {
-				read = "read"
-			}
-			fmt.Fprintf(&sb, "- from %s, topic: %s, %s, %s\n",
-				sender, r.Topic, read, r.CreatedAt.Format("2006-01-02 15:04"))
+			peers = append(peers, name)
 		}
-	}
-
-	if len(sent) == 0 {
-		sb.WriteString("Sent: (none)\n")
-	} else {
-		sb.WriteString("Recently sent:\n")
-		for _, r := range sent {
-			receiver := names[r.ToPersonID]
-			if receiver == "" {
-				receiver = fmt.Sprintf("person_%d", r.ToPersonID)
-			}
-			fmt.Fprintf(&sb, "- to %s, topic: %s, %s\n",
-				receiver, r.Topic, r.CreatedAt.Format("2006-01-02 15:04"))
+		if len(peerIDs) > 5 {
+			peers = append(peers, fmt.Sprintf("%d more participants", len(peerIDs)-5))
 		}
+		if len(peers) == 0 {
+			peers = append(peers, "no other participants")
+		}
+		lines = append(lines, fmt.Sprintf("- Conversation (session_id=%d) with %s; last recorded activity: %s", row.SessionID, strings.Join(peers, ", "), row.LastActiveAt.Format("2006-01-02 15:04")))
 	}
-
-	return sb.String()
-}
-
-// buildPrivateSpaceContext surveys the agent's private-space state:
-// workspace directory contents and recent log entries.
-// Only the space/ subdirectory is visible — system files like log.jsonl
-// and the parent directory path are not exposed to the agent.
-func buildPrivateSpaceContext(personID int64) string {
-	workDirPath := privatespace.GetWorkDirPath(personID)
-
-	// Read directory listing from the agent's workspace subdirectory only.
-	entries, err := readDirSummary(workDirPath)
-	if err != nil {
-		entries = "(unavailable)"
+	if count > int64(len(rows)) {
+		lines = append(lines, fmt.Sprintf("- %d further sessions not shown", count-int64(len(rows))))
 	}
-
-	logContext := privatespace.BuildRecentLogContext(personID, 5)
-
-	var sb strings.Builder
-	sb.WriteString("\n=== YOUR PRIVATE SPACE ===\n")
-	sb.WriteString(fmt.Sprintf("Contents: %s\n", entries))
-	if logContext != "" {
-		sb.WriteString("\n" + logContext)
+	if len(lines) == 0 {
+		return "Your sessions: none."
 	}
-	return sb.String()
+	return "Your sessions:\n" + strings.Join(lines, "\n")
 }
 
 // readDirSummary returns a compact summary of directory contents.
@@ -215,12 +361,15 @@ func readDirSummary(dirPath string) (string, error) {
 		return "(empty)", nil
 	}
 	var names []string
-	for _, e := range entries {
+	for _, e := range entries[:min(len(entries), 20)] {
 		name := e.Name()
 		if e.IsDir() {
 			name += "/"
 		}
-		names = append(names, name)
+		names = append(names, fmt.Sprintf("%q", name))
+	}
+	if len(entries) > 20 {
+		names = append(names, fmt.Sprintf("%d more entries not shown", len(entries)-20))
 	}
 	return strings.Join(names, ", "), nil
 }

@@ -38,27 +38,25 @@ func panicIfNotReady() {
 	}
 }
 
-// Start launches background services (event vectorization, daily maintenance
-// cron) tied to ctx. When ctx is cancelled, goroutines drain remaining work
-// and exit gracefully. Init must be called first.
+// Start launches event vectorization, term-index maintenance, and daily
+// observation maintenance tied to ctx. Init must be called first.
 func Start(ctx context.Context) {
 	panicIfNotReady()
 	go startEventVectorization(ctx)
+	go startTermIndexMaintenance(ctx)
 	go runDailyCron(ctx)
 	applogger.Info("Memory background services started")
 }
 
-// OnRetrievalHit is the package-level entry point for applying retrieval hits
-// from context-engineering to the memory system. It is safe to call
-// before Init(); the call is silently ignored when the memory service is
-// not configured.
+// OnRetrievalHit applies chat-history retrieval hits to the corresponding
+// observations. Init must be called first.
 func OnRetrievalHit(personID int64, messageIDs []int64) {
 	panicIfNotReady()
 	applyRetrievalHits(personID, messageIDs)
 }
 
-// CheckProfileDensity is the package-level entry point for dimension B
-// profile-density checks. Safe to call before Init().
+// CheckProfileDensity checks whether enough observations exist to refresh an
+// entity profile. Init must be called first.
 func CheckProfileDensity(ctx context.Context, personID int64) int {
 	panicIfNotReady()
 	return checkDensity(ctx, personID)

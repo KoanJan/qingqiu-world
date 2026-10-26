@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
+	"gorm.io/gorm"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
@@ -16,9 +18,9 @@ import (
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/focusedwork"
+	"qingqiu-world-server/internal/service/kb"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/tools"
-	"qingqiu-world-server/internal/service/workspace"
 )
 
 // work represents a unit of focused-work execution for an agent.
@@ -35,6 +37,7 @@ type work struct {
 	ID                int64
 	agent             *agentRuntime
 	sessionID         int64
+	workspaceID       int64            // Default Workspace chosen by StartFocusedWork.
 	plan              *action.WorkPlan // From Decide phase: guidance
 	maxIterations     int
 	focusContext      string                             // Runtime-selected prior handoffs and shared session notes
@@ -42,6 +45,11 @@ type work struct {
 	focusedWorkResult *focusedwork.FocusedWorkResult     // Focused-work result
 	guidanceCh        chan focusedwork.GuidanceDirective // Channel for sending guidance/cancel directives to FocusedLoop
 	done              chan struct{}                      // Closed when work finishes (normal or abandoned)
+	cancelMu          sync.Mutex                         // Serializes cancellation with terminal status persistence
+	cancelRun         context.CancelFunc                 // Cancels only this Work's Focus execution
+	cancelActionID    int64                              // Explicit Cancel Action that stopped this Work, if any
+	cancelReason      string                             // The Cancel Action's reason for the terminal handoff
+	executionEnded    bool                               // Protected by cancelMu; rejects late Route effects.
 
 	// triggerAction carries the originating Action's cognitive context for the
 	// WorkCompleted event (provenance only — Background and Reason).
@@ -57,6 +65,8 @@ type work struct {
 // signals removal from active works.
 // Respects context cancellation: exits early if the work is cancelled.
 func (w *work) Run(ctx context.Context) {
+	workCtx, cancel := w.executionContext(ctx)
+	defer cancel()
 	w.startedAt = time.Now() // Record start time for Decide-phase duration awareness
 	defer close(w.done)      // Signal completion regardless of how work exits
 	if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
@@ -65,30 +75,42 @@ func (w *work) Run(ctx context.Context) {
 	}
 
 	defer func() {
+		w.cancelMu.Lock()
+		w.executionEnded = true
 		// Finalize the DB status from the real outcome: a focused-work-reported
 		// failure must not be recorded as Completed. The update only applies
-		// when the work is still Running — abandon() may have already set
+		// when the work is still Running — cancellation may have already set
 		// Abandoned, in which case this is a no-op.
 		finalStatus := model.WorkStatusCompleted
-		if w.focusedWorkResult != nil && w.focusedWorkResult.Status != "success" {
+		interrupted := workCtx.Err() != nil && (w.focusedWorkResult == nil || w.focusedWorkResult.Status != "success") && w.cancelActionID == 0
+		if interrupted {
+			finalStatus = model.WorkStatusAbandoned
+		} else if w.focusedWorkResult != nil && w.focusedWorkResult.Status != "success" {
 			finalStatus = model.WorkStatusFailed
 		}
 		finalPhase, finalCheckpoint := focusTerminalState(finalStatus, w.focusedWorkResult)
+		if interrupted {
+			finalPhase = model.FocusPhasePaused
+			finalCheckpoint = "Focus was interrupted before completion."
+		}
 		if err := database.DB.Model(&model.Work{}).
 			Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
 			Updates(map[string]interface{}{"status": finalStatus, "focus_phase": finalPhase, "checkpoint": finalCheckpoint}).Error; err != nil {
 			applogger.Error("work: failed to update work status", "work_id", w.ID, "error", err)
 		}
 
-		// Re-read the final status from DB. abandon() may have set Abandoned
+		// Re-read the final status from DB. Cancellation may have set Abandoned
 		// while focusedWorkResult is nil (e.g. cancelled before the pipeline), so the
 		// in-memory result alone cannot be trusted to derive the outcome.
 		var workRow model.Work
-		if err := database.DB.Select("status").First(&workRow, w.ID).Error; err != nil {
+		if err := database.DB.Select("status", "focus_phase").First(&workRow, w.ID).Error; err != nil {
+			w.cancelMu.Unlock()
 			applogger.Error("work: failed to load final status for memory event",
 				"work_id", w.ID, "error", err)
 			return
 		}
+		cancelActionID, cancelReason := w.cancelActionID, w.cancelReason
+		w.cancelMu.Unlock()
 
 		// Derive the outcome from the real final DB status, not from focusedWorkResult
 		// alone, so abandoned works are never misreported as success.
@@ -111,12 +133,17 @@ func (w *work) Run(ctx context.Context) {
 				"work_id", w.ID, "status", workRow.Status)
 			return
 		}
+		applogger.Info("work ended", "work_id", w.ID, "session_id", w.sessionID,
+			"status", status, "cancel_action_id", cancelActionID)
 
-		persistWorkHandoff(w, workRow.Status, output, workErr)
+		persistWorkHandoff(w, workRow.Status, workRow.FocusPhase, output, workErr, cancelReason)
+		if err := kb.EnqueueFocusRelationAnalysisJob(w.ID); err != nil {
+			applogger.Error("work: failed to enqueue focus relation analysis", "work_id", w.ID, "error", err)
+		}
 
-		// Episodic gist for the memory event. The works row only carries
-		// description and status, so this text is the retrievable content.
-		// WorkOutput is used as-is (head-truncated) without re-summarization.
+		// The vector queue uses this episodic gist. Durable result text is
+		// retained in the Focus handoff created above, while the Event keeps
+		// the Work reference and the completion time.
 		gist := fmt.Sprintf("Guidance: %s\nStatus: %s\nDuration: %s",
 			w.plan.Guidance, status, time.Since(w.startedAt).Truncate(time.Second))
 		if output != "" {
@@ -127,6 +154,9 @@ func (w *work) Run(ctx context.Context) {
 			truncated, _ := tools.TruncateHead(workErr, tools.DefaultTruncateBytes)
 			gist += "\nError: " + truncated
 		}
+		if cancelActionID > 0 {
+			gist += "\nCancellation reason: " + cancelReason
+		}
 
 		// Persist the episodic memory event; eventID links the eventqueue
 		// event to the memory event so the runtime can create an observation.
@@ -134,24 +164,49 @@ func (w *work) Run(ctx context.Context) {
 		if err != nil {
 			applogger.Error("work: failed to record work-completed memory event",
 				"work_id", w.ID, "error", err)
+			return
+		}
+		person, personErr := dops.GetPerson(w.agent.agentPersonID)
+		if personErr != nil {
+			applogger.Error("work: failed to check owner before result delivery", "work_id", w.ID, "error", personErr)
+			return
+		}
+		if person.Status != model.PersonStatusActive {
+			return
 		}
 
-		// Send work completed event to the agent's event queue.
-		// The agent processes this through the same Comprehend->Decide pipeline
-		// as external events, deciding whether to inform the user.
-		eventqueue.SendEvent(w.agent.agentConfigID, &eventqueue.AgentEvent{
+		// Keep the recipient explicit until its observation is processed. A
+		// restart can replay this buffer without manufacturing another Event.
+		outgoing := &eventqueue.AgentEvent{
 			Type:          eventqueue.EventTypeWorkCompleted,
 			SessionID:     w.sessionID,
 			EventID:       eventID,
 			TriggerAction: w.triggerAction,
 			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:     w.ID,
-				Guidance:   w.plan.Guidance,
-				Status:     status,
-				WorkOutput: output,
-				WorkError:  workErr,
+				WorkID:         w.ID,
+				Guidance:       w.plan.Guidance,
+				Status:         status,
+				WorkOutput:     output,
+				WorkError:      workErr,
+				CancelActionID: cancelActionID,
+				CancelReason:   cancelReason,
 			},
-		})
+		}
+		encoded, err := serializeEventPayload(outgoing)
+		if err != nil {
+			applogger.Error("work: failed to encode result delivery", "work_id", w.ID, "event_id", eventID, "error", err)
+			return
+		}
+		if err := database.DB.Transaction(func(tx *gorm.DB) error {
+			if err := dops.RequireActivePersonTx(tx, w.agent.agentPersonID); err != nil {
+				return err
+			}
+			return tx.Create(&model.AgentEventBuffer{PersonID: w.agent.agentPersonID, EventType: int(outgoing.Type), SessionID: w.sessionID, EventID: eventID, PayloadJSON: encoded}).Error
+		}); err != nil {
+			applogger.Error("work: failed to persist result delivery", "work_id", w.ID, "event_id", eventID, "error", err)
+			return
+		}
+		eventqueue.SendEvent(w.agent.agentConfigID, outgoing)
 	}()
 
 	applogger.Info("work started",
@@ -161,18 +216,39 @@ func (w *work) Run(ctx context.Context) {
 	)
 
 	// Check cancellation before starting
-	if ctx.Err() != nil {
-		applogger.Info("work cancelled before pipeline", "work_id", w.ID)
-		w.abandon()
+	if workCtx.Err() != nil {
+		applogger.Info("work interrupted before pipeline", "work_id", w.ID)
+		w.cancelMu.Lock()
+		explicitCancel := w.cancelActionID > 0
+		w.cancelMu.Unlock()
+		if !explicitCancel {
+			if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
+				Updates(map[string]interface{}{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhasePaused,
+					"checkpoint": "Focus was interrupted before it began."}).Error; err != nil {
+				applogger.Error("work: failed to record pre-start interruption", "work_id", w.ID, "error", err)
+			}
+		}
 		return
 	}
 
-	w.runFocusedWork(ctx)
+	w.runFocusedWork(workCtx)
+	w.cancelMu.Lock()
+	w.executionEnded = true
+	w.cancelMu.Unlock()
 
-	applogger.Info("work completed",
-		"work_id", w.ID,
-		"session_id", w.sessionID,
-	)
+}
+
+// executionContext gives this Work a cancellable Focus context and applies a
+// Cancel Action that arrived before Run began.
+func (w *work) executionContext(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	w.cancelMu.Lock()
+	w.cancelRun = cancel
+	if w.cancelActionID > 0 {
+		cancel()
+	}
+	w.cancelMu.Unlock()
+	return ctx, cancel
 }
 
 // focusTerminalState maps a terminal Work status to its runtime-owned Focus checkpoint.
@@ -191,7 +267,7 @@ func focusTerminalState(workStatus model.WorkStatus, result *focusedwork.Focused
 
 // persistWorkHandoff records compact runtime-owned continuity metadata. It
 // intentionally does not attribute the shared session notes to this Work.
-func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr string) {
+func persistWorkHandoff(w *work, workStatus model.WorkStatus, phase model.FocusPhase, output, workErr, cancelReason string) {
 	handoffStatus := model.FocusHandoffCompleted
 	unresolved := ""
 	nextStep := ""
@@ -205,9 +281,19 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 			nextStep = "Review the saved notes and handoff, then decide whether to resume this focus."
 		}
 	case model.WorkStatusAbandoned:
-		handoffStatus = model.FocusHandoffCancelled
-		unresolved = "The work was abandoned before a normal completion."
-		nextStep = "Review the current session context before deciding whether to continue."
+		if phase == model.FocusPhasePaused {
+			handoffStatus = model.FocusHandoffInterrupted
+			unresolved = "Focus was interrupted before completion."
+			nextStep = "Review the durable Work records before deciding whether to continue."
+		} else {
+			handoffStatus = model.FocusHandoffCancelled
+			unresolved = "The work was abandoned before a normal completion."
+			nextStep = "Review the Work context before deciding whether to continue."
+		}
+		if cancelReason != "" {
+			unresolved = "The work stopped after a Cancel Action: " + cancelReason
+			nextStep = "Wait for a later instruction before resuming this work."
+		}
 	}
 	summary := output
 	if summary == "" {
@@ -221,11 +307,13 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 	}
 	confirmedFindings := confirmedFindingsForWork(workStatus, summary)
 	artifactReferences := extractHandoffSection(summary, "artifacts", "artifact", "产物", "交付")
-	if extracted := extractHandoffSection(summary, "unresolved", "未决", "未解决"); extracted != "" {
-		unresolved = extracted
-	}
-	if extracted := extractHandoffSection(summary, "next step", "next", "下一步"); extracted != "" {
-		nextStep = extracted
+	if cancelReason == "" {
+		if extracted := extractHandoffSection(summary, "unresolved", "未决", "未解决"); extracted != "" {
+			unresolved = extracted
+		}
+		if extracted := extractHandoffSection(summary, "next step", "next", "下一步"); extracted != "" {
+			nextStep = extracted
+		}
 	}
 	record := &model.FocusHandoff{
 		PersonID:           w.agent.agentPersonID,
@@ -244,11 +332,7 @@ func persistWorkHandoff(w *work, workStatus model.WorkStatus, output, workErr st
 		applogger.Error("work: failed to persist focus handoff", "work_id", w.ID, "error", err)
 		return
 	}
-	// The database is the canonical handoff store. AOSMeta is an append-only
-	// operational projection, so its failure cannot create a duplicate database record.
-	if err := workspace.AppendFocusHandoff(record); err != nil {
-		applogger.Error("work: failed to project focus handoff to AOSMeta", "work_id", w.ID, "handoff_id", record.ID, "error", err)
-	}
+	refreshMemorySource(model.MemorySourceFocusHandoff, record.ID)
 }
 
 // confirmedFindingsForWork keeps terminal output separate from confirmed
@@ -316,12 +400,6 @@ func isHandoffHeading(line string) bool {
 
 // runFocusedWork executes the focused-work path using Guidance from the Decide phase.
 func (w *work) runFocusedWork(ctx context.Context) {
-	session := w.loadSession()
-	if session == nil {
-		w.abandon()
-		return
-	}
-
 	// Fetch agent info at the point of use — do not hold the pointer across
 	// the long-running focused-work execution.
 	a, err := agent.GetAgent(w.agent.agentPersonID)
@@ -336,6 +414,7 @@ func (w *work) runFocusedWork(ctx context.Context) {
 	w.focusedWorkResult = focusedwork.RunFocusedWork(focusedwork.RunFocusedWorkParams{
 		LLMConfig:    &a.LLM,
 		SessionID:    w.sessionID,
+		WorkspaceID:  w.workspaceID,
 		PersonID:     a.Person.ID,
 		WorkID:       w.ID,
 		Guidance:     w.plan.Guidance,
@@ -348,27 +427,27 @@ func (w *work) runFocusedWork(ctx context.Context) {
 		GuidanceCh:   w.guidanceCh,
 	})
 
-	applogger.Info("Focus completed",
-		"work_id", w.ID,
-		"session_id", w.sessionID,
-		"status", w.focusedWorkResult.Status,
-	)
 }
 
-// FeedGuidance sends a guidance directive to the work's guidance channel.
-// This is called when the Decide phase routes an event to an existing
-// Focus or cancels it - the directive becomes an environment event
-// that the FocusedLoop observes at the next iteration boundary.
-//
-// For cancel, the directive carries guidance like "save progress and stop"
-// and the reason explaining why. The FocusedLoop's LLM processes this and
-// decides how to wrap up - this is "appealable" cancellation, not forceful kill.
-func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) {
+// FeedGuidance sends a routed directive to the running Focus. Cancellation
+// uses requestCancel because a stop request must not depend on another LLM turn.
+func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) bool {
+	w.cancelMu.Lock()
+	defer w.cancelMu.Unlock()
 	if w.guidanceCh == nil {
 		applogger.Error("FeedGuidance called on work with nil guidanceCh",
 			"work_id", w.ID,
 		)
-		return
+		return false
+	}
+	if w.executionEnded || w.cancelActionID > 0 {
+		applogger.Error("FeedGuidance rejected after Work stopped", "work_id", w.ID)
+		return false
+	}
+	var state model.Work
+	if err := database.DB.Select("status").First(&state, w.ID).Error; err != nil || state.Status != model.WorkStatusRunning {
+		applogger.Error("FeedGuidance rejected for non-running Work", "work_id", w.ID, "error", err)
+		return false
 	}
 	select {
 	case w.guidanceCh <- directive:
@@ -382,24 +461,66 @@ func (w *work) FeedGuidance(directive focusedwork.GuidanceDirective) {
 			"guidance", directive.Guidance,
 			"reason", directive.Reason,
 		)
+		return true
 	default:
 		applogger.Error("work guidanceCh full, dropping guidance",
 			"work_id", w.ID,
 			"guidance", directive.Guidance,
 		)
+		return false
 	}
 }
 
-// abandon marks the work as abandoned.
-// This is the fallback mechanism for when context is cancelled or
-// dependencies cannot be loaded. Normal cancellation goes through
-// FeedGuidance, allowing the FocusedLoop's LLM to wrap up gracefully.
-// This method is the safety net.
-//
-// Directly sets status to Abandoned in DB. The defer in Run() will not
-// overwrite it because it only transitions from Running -> Completed.
+// requestCancel atomically marks an active Work as abandoned and interrupts
+// its Focus context. A running tool may finish, but no later tool call or LLM
+// iteration may begin from the cancelled context.
+func (w *work) requestCancel(act action.Action) bool {
+	w.cancelMu.Lock()
+	defer w.cancelMu.Unlock()
+	if w.executionEnded {
+		applogger.Error("work: cancellation arrived after execution ended", "work_id", w.ID, "action_id", act.ID)
+		return false
+	}
+	reason := strings.TrimSpace(act.Reason)
+	if reason == "" {
+		reason = strings.TrimSpace(act.Background)
+	}
+	if reason == "" && act.WorkGuidance != nil {
+		reason = strings.TrimSpace(act.WorkGuidance.Guidance)
+	}
+	if reason == "" {
+		applogger.Error("work: cancel action has no reason", "work_id", w.ID, "action_id", act.ID)
+		reason = "Explicit cancellation requested."
+	}
+	result := database.DB.Model(&model.Work{}).
+		Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
+		Updates(map[string]interface{}{
+			"status":      model.WorkStatusAbandoned,
+			"focus_phase": model.FocusPhaseCancelled,
+			"checkpoint":  "Cancellation requested: " + reason,
+		})
+	if result.Error != nil {
+		applogger.Error("work: failed to cancel running work", "work_id", w.ID, "action_id", act.ID, "error", result.Error)
+		return false
+	}
+	if result.RowsAffected == 0 {
+		applogger.Error("work: cancel target was no longer running", "work_id", w.ID, "action_id", act.ID)
+		return false
+	}
+	w.cancelActionID = act.ID
+	w.cancelReason = reason
+	if w.cancelRun != nil {
+		w.cancelRun()
+	}
+	applogger.Info("work cancellation requested", "work_id", w.ID, "action_id", act.ID, "reason", reason)
+	return true
+}
+
+// abandon is the fallback for a Work that cannot enter or finish Focus.
+// Its update is limited to a running Work so it cannot overwrite a terminal
+// result. The defer in Run() also finalizes only from the running state.
 func (w *work) abandon() {
-	if err := database.DB.Model(&model.Work{}).Where("id = ?", w.ID).
+	if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", w.ID, model.WorkStatusRunning).
 		Updates(map[string]interface{}{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhaseCancelled, "checkpoint": "Focus was abandoned before normal completion."}).Error; err != nil {
 		applogger.Error("work: failed to mark work as abandoned", "work_id", w.ID, "error", err)
 	}
@@ -425,9 +546,8 @@ func removeWorkByID(works []*work, workID int64) []*work {
 	return works
 }
 
-// recoverActiveWorks loads running works from the database for agent recovery
-// after a service restart. All recovered works are marked as abandoned since
-// mid-execution resumption is not supported.
+// recoverActiveWorks closes interrupted Work execution and repairs missing
+// handoffs/result Events. No Focus is resumed after process restart.
 func recoverActiveWorks(agentConfigID int64) []*work {
 	// Resolve personID from agentConfigID.
 	ac, err := dops.Get[model.AgentConfig](agentConfigID)
@@ -438,33 +558,152 @@ func recoverActiveWorks(agentConfigID int64) []*work {
 	personID := ac.PersonID
 
 	var workRecords []model.Work
-	if err := database.DB.Where("person_id = ? AND status = ?", personID, model.WorkStatusRunning).Find(&workRecords).Error; err != nil {
+	// A result Event may have committed before its recipient buffer. Repair
+	// both boundaries without loading every historical Work into Go memory.
+	if err := database.DB.Where(`person_id = ? AND (status = ?
+		OR NOT EXISTS (SELECT 1 FROM events e WHERE e.event_type = ? AND e.ref_id = works.id)
+		OR NOT EXISTS (SELECT 1 FROM focus_handoffs h WHERE h.person_id = works.person_id AND h.work_id = works.id AND h.source = ?)
+		OR EXISTS (SELECT 1 FROM events e WHERE e.event_type = ? AND e.ref_id = works.id
+			AND NOT EXISTS (SELECT 1 FROM agent_observations o WHERE o.event_id = e.id AND o.person_id = works.person_id)
+			AND NOT EXISTS (SELECT 1 FROM agent_event_buffers b WHERE b.event_id = e.id AND b.person_id = works.person_id)))`,
+		personID, model.WorkStatusRunning, model.EventTypeWorkCompleted, model.FocusSourceExternal, model.EventTypeWorkCompleted).Find(&workRecords).Error; err != nil {
 		applogger.Error("recoverActiveWorks: failed to load work records", "agent_config_id", agentConfigID, "error", err)
 		return nil
 	}
 
 	for _, wr := range workRecords {
-		// Mark recovered works as abandoned since we can't resume mid-execution.
-		if err := database.DB.Model(&model.Work{}).Where("id = ?", wr.ID).
-			Update("status", model.WorkStatusAbandoned).Error; err != nil {
-			applogger.Error("recoverActiveWorks: failed to mark work as abandoned", "work_id", wr.ID, "error", err)
+		if wr.Status == model.WorkStatusRunning {
+			if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", wr.ID, model.WorkStatusRunning).
+				Updates(map[string]any{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhasePaused, "checkpoint": "Focus was interrupted before completion."}).Error; err != nil {
+				applogger.Error("recoverActiveWorks: failed to mark interrupted Work", "work_id", wr.ID, "error", err)
+				continue
+			}
+			wr.Status = model.WorkStatusAbandoned
+			wr.FocusPhase = model.FocusPhasePaused
 		}
-
-		// Reset participant status to idle so the frontend doesn't show stuck "responding".
-		if err := database.DB.Model(&model.ParticipantSession{}).
-			Where("session_id = ? AND participant_id = ?",
-				wr.SessionID, personID).
-			Update("status", model.ParticipantStatusIdle).Error; err != nil {
-			applogger.Error("recoverActiveWorks: failed to reset participant status",
-				"session_id", wr.SessionID, "agent_config_id", agentConfigID, "error", err)
+		if err := repairWorkResult(personID, wr); err != nil {
+			applogger.Error("recoverActiveWorks: failed to repair Work result", "work_id", wr.ID, "error", err)
 		}
-
-		applogger.Info("Recovered work marked as abandoned",
-			"work_id", wr.ID,
-			"agent_config_id", agentConfigID,
-			"session_id", wr.SessionID,
-		)
+		if wr.SessionID > 0 {
+			if err := database.DB.Model(&model.ParticipantSession{}).Where("session_id = ? AND participant_id = ?", wr.SessionID, personID).
+				Update("status", model.ParticipantStatusIdle).Error; err != nil {
+				applogger.Error("recoverActiveWorks: failed to reset participant status", "session_id", wr.SessionID, "agent_config_id", agentConfigID, "error", err)
+			}
+		}
 	}
 
 	return nil
+}
+
+// repairWorkResult is idempotent across startup retries. The Work row remains
+// the factual status; missing output is explicitly described as unavailable.
+func repairWorkResult(personID int64, wr model.Work) error {
+	var handoff model.FocusHandoff
+	err := database.DB.Where("person_id = ? AND work_id = ? AND source = ?", personID, wr.ID, model.FocusSourceExternal).Order("id DESC").Take(&handoff).Error
+	if err != nil && err != gorm.ErrRecordNotFound {
+		return err
+	}
+	if err == gorm.ErrRecordNotFound {
+		status := model.FocusHandoffCancelled
+		if wr.Status == model.WorkStatusAbandoned && wr.FocusPhase == model.FocusPhasePaused {
+			status = model.FocusHandoffInterrupted
+		}
+		if wr.Status == model.WorkStatusCompleted {
+			status = model.FocusHandoffCompleted
+		}
+		if wr.Status == model.WorkStatusFailed {
+			status = model.FocusHandoffFailed
+		}
+		handoff = model.FocusHandoff{PersonID: personID, SessionID: wr.SessionID, WorkID: wr.ID, Source: model.FocusSourceExternal, Status: status,
+			Orientation: wr.Description, Summary: "Result details were unavailable after service interruption.",
+			Unresolved: "The original Focus result could not be recovered.", NextStep: "Reassess this Work from its durable records."}
+		if wr.Status == model.WorkStatusAbandoned && status == model.FocusHandoffInterrupted {
+			handoff.Summary = "Focus was interrupted before completion."
+			handoff.Unresolved = handoff.Summary
+		}
+		if err := dops.CreateFocusHandoff(&handoff); err != nil {
+			return err
+		}
+		refreshMemorySource(model.MemorySourceFocusHandoff, handoff.ID)
+	}
+	status := "abandoned"
+	if wr.Status == model.WorkStatusCompleted {
+		status = "success"
+	}
+	if wr.Status == model.WorkStatusFailed {
+		status = "failure"
+	}
+	payload := &eventqueue.WorkCompletedPayload{WorkID: wr.ID, Guidance: wr.Description, Status: status, WorkOutput: handoff.Summary}
+	var eventID int64
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		var event model.Event
+		lookup := tx.Where("event_type = ? AND ref_id = ?", model.EventTypeWorkCompleted, wr.ID).Order("id").Take(&event).Error
+		if lookup != nil && lookup != gorm.ErrRecordNotFound {
+			return lookup
+		}
+		if lookup == gorm.ErrRecordNotFound {
+			event = model.Event{EventType: model.EventTypeWorkCompleted, RefID: wr.ID}
+			if err := tx.Create(&event).Error; err != nil {
+				return err
+			}
+		}
+		eventID = event.ID
+		var person model.Person
+		if err := tx.Select("status").First(&person, personID).Error; err != nil {
+			return err
+		}
+		if person.Status != model.PersonStatusActive {
+			return nil
+		}
+		var observed int64
+		if err := tx.Model(&model.AgentObservation{}).Where("person_id = ? AND event_id = ?", personID, eventID).Count(&observed).Error; err != nil {
+			return err
+		}
+		if observed > 0 {
+			return nil
+		}
+		var buffered int64
+		if err := tx.Model(&model.AgentEventBuffer{}).Where("person_id = ? AND event_id = ?", personID, eventID).Count(&buffered).Error; err != nil {
+			return err
+		}
+		if buffered > 0 {
+			return nil
+		}
+		outgoing := &eventqueue.AgentEvent{Type: eventqueue.EventTypeWorkCompleted, SessionID: wr.SessionID, EventID: eventID, Payload: payload}
+		encoded, err := serializeEventPayload(outgoing)
+		if err != nil {
+			return err
+		}
+		return tx.Create(&model.AgentEventBuffer{PersonID: personID, EventType: int(outgoing.Type), SessionID: wr.SessionID, EventID: eventID, PayloadJSON: encoded}).Error
+	})
+	if err != nil {
+		return err
+	}
+	refreshMemorySource(model.MemorySourceEvent, eventID)
+	return nil
+}
+
+// recoverDeceasedWorks closes Work execution that cannot resume after its
+// owner died. It records objective interruption history without delivery.
+func recoverDeceasedWorks() {
+	var works []model.Work
+	if err := database.DB.Where(`person_id IN (SELECT id FROM persons WHERE status = ?) AND (status = ?
+		OR NOT EXISTS (SELECT 1 FROM events e WHERE e.event_type = ? AND e.ref_id = works.id)
+		OR NOT EXISTS (SELECT 1 FROM focus_handoffs h WHERE h.person_id = works.person_id AND h.work_id = works.id AND h.source = ?))`,
+		model.PersonStatusDeceased, model.WorkStatusRunning, model.EventTypeWorkCompleted, model.FocusSourceExternal).Find(&works).Error; err != nil {
+		applogger.Error("recoverDeceasedWorks: failed to list interrupted Works", "error", err)
+		return
+	}
+	for _, wr := range works {
+		if err := database.DB.Model(&model.Work{}).Where("id = ? AND status = ?", wr.ID, model.WorkStatusRunning).
+			Updates(map[string]any{"status": model.WorkStatusAbandoned, "focus_phase": model.FocusPhasePaused, "checkpoint": "Owner died before Focus completed."}).Error; err != nil {
+			applogger.Error("recoverDeceasedWorks: failed to close Work", "work_id", wr.ID, "error", err)
+			continue
+		}
+		wr.Status = model.WorkStatusAbandoned
+		wr.FocusPhase = model.FocusPhasePaused
+		if err := repairWorkResult(wr.PersonID, wr); err != nil {
+			applogger.Error("recoverDeceasedWorks: failed to record interruption", "work_id", wr.ID, "error", err)
+		}
+	}
 }
