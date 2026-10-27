@@ -11,15 +11,18 @@ import (
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 
-	"gorm.io/gorm"
 	applogger "qingqiu-world-server/internal/logger"
+
+	"gorm.io/gorm"
 )
 
-// executionSlot identifies the single sustained cognitive loop of an agent.
+// executionSlot identifies the agent's one sustained Focus, private-space,
+// or cognitive activity without conflating their domain identities.
 type executionSlot struct {
-	workID  int64
-	private bool
-	done    chan struct{}
+	workID             int64
+	private            bool
+	cognitiveProcessID int64
+	done               chan struct{}
 }
 
 // acquireExecutionSlot reserves the one sustained loop before it is started.
@@ -33,31 +36,74 @@ func (r *agentRuntime) acquireExecutionSlot(workID int64, private bool) bool {
 	return true
 }
 
+// acquireCognitiveSlot reserves the same sustained slot without presenting a
+// cognitive process as a Work or using a synthetic Work ID.
+func (r *agentRuntime) acquireCognitiveSlot(processID int64) bool {
+	r.slotMu.Lock()
+	defer r.slotMu.Unlock()
+	if processID <= 0 || r.slot != nil {
+		return false
+	}
+	r.slot = &executionSlot{cognitiveProcessID: processID, done: make(chan struct{})}
+	return true
+}
+
 // releaseExecutionSlot runs only after the owner's loop has actually exited.
 func (r *agentRuntime) releaseExecutionSlot(workID int64, private bool) {
 	r.slotMu.Lock()
 	defer r.slotMu.Unlock()
-	if r.slot == nil || r.slot.workID != workID || r.slot.private != private {
+	if r.slot == nil || r.slot.cognitiveProcessID != 0 || r.slot.workID != workID || r.slot.private != private {
 		return
 	}
+	r.releaseSlotLocked()
+}
+
+// releaseCognitiveSlot releases only the matching cognitive owner.
+func (r *agentRuntime) releaseCognitiveSlot(processID int64) {
+	r.slotMu.Lock()
+	defer r.slotMu.Unlock()
+	if r.slot == nil || r.slot.cognitiveProcessID != processID {
+		return
+	}
+	r.releaseSlotLocked()
+}
+
+func (r *agentRuntime) releaseSlotLocked() {
 	// Keep new loop admission behind the durable notifications. A waiter
 	// must learn that this release occurred even if another loop starts soon.
 	released := r.slot
 	r.slot = nil
 	r.notifyWaitingActionsLocked()
 	close(released.done)
+	if released.cognitiveProcessID != 0 {
+		// A cognitive process ending or pausing is not a new stimulus. Waking
+		// the worker here would immediately create another process because no
+		// paused process remains. The next heartbeat or Event will wake it.
+		return
+	}
+	// Wake the cognition worker so it can reconsider admission; the event loop
+	// itself does not wait for that decision.
+	select {
+	case r.cognitionWake <- struct{}{}:
+	default:
+	}
 }
 
 // registerExecutionWait leaves the Action in progress until one availability fact is recorded.
 func (r *agentRuntime) registerExecutionWait(actionID int64) {
 	r.slotMu.Lock()
-	defer r.slotMu.Unlock()
 	if r.slot == nil {
 		r.notifyWaitingActionsLocked()
+		r.slotMu.Unlock()
 		return
 	}
+	cognitiveProcessID := r.slot.cognitiveProcessID
 	if r.slot.private && r.privateSpaceLoop != nil {
 		r.privateSpaceLoop.RequestYield()
+	}
+	r.slotMu.Unlock()
+	if cognitiveProcessID > 0 {
+		r.pauseCognitiveProcess(cognitiveProcessID)
 	}
 	applogger.Info("registered execution slot wait", "person_id", r.agentPersonID, "action_id", actionID)
 }
@@ -155,13 +201,16 @@ func (r *agentRuntime) executionSlotSummary() string {
 	if slot.private {
 		return "occupied by your current private-space activity"
 	}
+	if slot.cognitiveProcessID > 0 {
+		return "occupied by your background cognition"
+	}
 	return fmt.Sprintf("occupied by work (work_id=%d)", slot.workID)
 }
 
 // awaitExecutionSlotRelease prevents a completion event from overtaking loop exit.
 func (r *agentRuntime) awaitExecutionSlotRelease(ctx context.Context, workID int64, private bool) {
 	slot := r.currentExecutionSlot()
-	if slot == nil || slot.workID != workID || slot.private != private {
+	if slot == nil || slot.cognitiveProcessID != 0 || slot.workID != workID || slot.private != private {
 		return
 	}
 	select {

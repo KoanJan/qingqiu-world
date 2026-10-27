@@ -1,6 +1,8 @@
 package memory
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -9,47 +11,56 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/energy"
 )
 
 // eventSourceContent resolves the authoritative domain row for lexical
 // indexing. Its person IDs are source data, not agent-facing speaker labels.
 // A self-held Event retains its original JSON snapshot.
 func eventSourceContent(event model.Event) (string, time.Time, error) {
+	return eventSourceContentContext(context.Background(), event)
+}
+
+// eventSourceContentContext resolves a source under the caller's cancellation.
+func eventSourceContentContext(ctx context.Context, event model.Event) (string, time.Time, error) {
 	if event.RefID == 0 {
 		if event.PayloadJSON == "" {
 			return "", time.Time{}, fmt.Errorf("event %d has no source", event.ID)
+		}
+		if event.EventType == model.EventTypeSystemNotification {
+			return systemNotificationText(event), event.CreatedAt, nil
 		}
 		return event.PayloadJSON, event.CreatedAt, nil
 	}
 	switch event.EventType {
 	case model.EventTypeMessage:
 		var row model.Message
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		return fmt.Sprintf("Person %d said in session %d: %s", row.PersonID, row.SessionID, row.Content), row.CreatedAt, nil
 	case model.EventTypeBiography:
 		var row model.AgentBiography
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		return row.Content, event.CreatedAt, nil
 	case model.EventTypeJinshu, model.EventTypeJinshuSent:
 		var row model.Jinshu
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		return fmt.Sprintf("Jinshu from person %d to person %d, topic %s, description %s", row.FromPersonID, row.ToPersonID, row.Topic, row.Description), event.CreatedAt, nil
 	case model.EventTypeWorkCompleted:
 		var row model.Work
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		content := fmt.Sprintf("Work %d completion event for %s; current status %d", row.ID, row.Description, row.Status)
 		var handoff model.FocusHandoff
 		// Only a handoff already recorded when the Event occurred can describe
 		// that observation. A later handoff must remain a separate source.
-		result := database.DB.Where("work_id = ? AND person_id = ? AND created_at <= ?", row.ID, row.PersonID, event.CreatedAt).
+		result := database.DB.WithContext(ctx).Where("work_id = ? AND person_id = ? AND created_at <= ?", row.ID, row.PersonID, event.CreatedAt).
 			Order("created_at DESC, id DESC").Limit(1).Find(&handoff)
 		if result.Error != nil {
 			return "", time.Time{}, result.Error
@@ -62,13 +73,13 @@ func eventSourceContent(event model.Event) (string, time.Time, error) {
 		return content, event.CreatedAt, nil
 	case model.EventTypePSDigest:
 		var row model.PSDigest
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		return "Private-space digest: " + row.Digest, event.CreatedAt, nil
 	case model.EventTypeScheduled:
 		var row model.ScheduledEvent
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
 		return "Your scheduled reminder fired: " + row.Message, event.CreatedAt, nil
@@ -77,13 +88,25 @@ func eventSourceContent(event model.Event) (string, time.Time, error) {
 	}
 }
 
+// systemNotificationText decodes the message held by a self-contained
+// SystemNotification Event. Its snapshot is a JSON string; an unreadable one is
+// logged and replaced so raw storage data never reaches a recollection.
+func systemNotificationText(event model.Event) string {
+	var message string
+	if err := json.Unmarshal([]byte(event.PayloadJSON), &message); err != nil || strings.TrimSpace(message) == "" {
+		applogger.Error("memory: invalid system notification payload", "event_id", event.ID, "error", err)
+		return "A notice reached you, but its wording was unreadable."
+	}
+	return message
+}
+
 // presentedPersonName resolves one participant relative to the observer. A
 // missing identity is logged and stays unknown instead of becoming a bare ID.
-func presentedPersonName(observerID, personID, eventID int64) string {
+func presentedPersonName(ctx context.Context, observerID, personID, eventID int64) string {
 	if personID == observerID {
 		return "You"
 	}
-	names, err := dops.GetPersonNames([]int64{personID})
+	names, err := dops.GetPersonNamesContext(ctx, []int64{personID})
 	if err != nil {
 		applogger.Error("memory: event participant identity unavailable", "event_id", eventID, "person_id", personID, "error", err)
 		return "Unknown person"
@@ -104,40 +127,57 @@ func FormatChatSpeech(speaker, content string) string {
 
 // presentedEventContent turns an observed source into a statement addressed to
 // its observer. The neutral source text above remains stable for indexing.
-func presentedEventContent(observerID int64, event model.Event) (string, time.Time, error) {
+// withRecordIDs keeps references that follow-up recall tools accept; a dated
+// retrospective omits them so they cannot enter a remembered account.
+func presentedEventContent(ctx context.Context, observerID int64, event model.Event, withRecordIDs bool) (string, time.Time, error) {
+	if err := ctx.Err(); err != nil {
+		return "", time.Time{}, err
+	}
 	if event.RefID == 0 {
-		content, occurred, err := eventSourceContent(event)
+		content, occurred, err := eventSourceContentContext(ctx, event)
 		if err != nil {
 			return "", time.Time{}, err
+		}
+		if event.EventType == model.EventTypeSystemNotification {
+			return content, occurred, nil
 		}
 		return "(recorded JSON payload) " + content, occurred, nil
 	}
 	switch event.EventType {
 	case model.EventTypeMessage:
 		var message model.Message
-		if err := database.DB.First(&message, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&message, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
-		return fmt.Sprintf("Chat message from session (session_id=%d) — %s", message.SessionID, FormatChatSpeech(presentedPersonName(observerID, message.PersonID, event.ID), message.Content)), message.CreatedAt, nil
+		if withRecordIDs {
+			return fmt.Sprintf("Chat message from session (session_id=%d) — %s", message.SessionID, FormatChatSpeech(presentedPersonName(ctx, observerID, message.PersonID, event.ID), message.Content)), message.CreatedAt, nil
+		}
+		return "Chat message — " + FormatChatSpeech(presentedPersonName(ctx, observerID, message.PersonID, event.ID), message.Content), message.CreatedAt, nil
 	case model.EventTypeJinshu, model.EventTypeJinshuSent:
 		var row model.Jinshu
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
-		sender := presentedPersonName(observerID, row.FromPersonID, event.ID)
-		recipient := presentedPersonName(observerID, row.ToPersonID, event.ID)
+		sender := presentedPersonName(ctx, observerID, row.FromPersonID, event.ID)
+		recipient := presentedPersonName(ctx, observerID, row.ToPersonID, event.ID)
 		if row.ToPersonID == observerID {
 			recipient = "you"
 		}
-		return fmt.Sprintf("Jinshu (jinshu_id=%d) — %s sent it to %s about %q: %q.", row.ID, sender, recipient, row.Topic, row.Description), event.CreatedAt, nil
+		if withRecordIDs {
+			return fmt.Sprintf("Jinshu (jinshu_id=%d) — %s sent it to %s about %q: %q.", row.ID, sender, recipient, row.Topic, row.Description), event.CreatedAt, nil
+		}
+		return fmt.Sprintf("Jinshu — %s sent it to %s about %q: %q.", sender, recipient, row.Topic, row.Description), event.CreatedAt, nil
 	case model.EventTypeWorkCompleted:
 		var work model.Work
-		if err := database.DB.First(&work, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&work, event.RefID).Error; err != nil {
 			return "", time.Time{}, err
 		}
-		content := fmt.Sprintf("A work completion event was recorded for %q (work_id=%d). The work's current status is %s.", work.Description, work.ID, work.Status.Label())
+		content := fmt.Sprintf("A work completion was reported for %q.", work.Description)
+		if withRecordIDs {
+			content = fmt.Sprintf("A work completion event was recorded for %q (work_id=%d). The work's current status is %s.", work.Description, work.ID, work.Status.Label())
+		}
 		var handoff model.FocusHandoff
-		result := database.DB.Where("work_id = ? AND person_id = ? AND created_at <= ?", work.ID, work.PersonID, event.CreatedAt).
+		result := database.DB.WithContext(ctx).Where("work_id = ? AND person_id = ? AND created_at <= ?", work.ID, work.PersonID, event.CreatedAt).
 			Order("created_at DESC, id DESC").Limit(1).Find(&handoff)
 		if result.Error != nil {
 			return "", time.Time{}, result.Error
@@ -149,7 +189,7 @@ func presentedEventContent(observerID int64, event model.Event) (string, time.Ti
 		}
 		return content, event.CreatedAt, nil
 	default:
-		return eventSourceContent(event)
+		return eventSourceContentContext(ctx, event)
 	}
 }
 
@@ -164,32 +204,143 @@ func presentedEventText(event model.Event, content string) string {
 	}
 }
 
-// DescribeObservedEvent reads one authoritative event for a short-lived
-// cognitive context. It applies the same observation and source permissions as
-// recall, and keeps reported outcomes attributed to their source.
-func DescribeObservedEvent(personID, eventID int64) (string, error) {
+// readObservedEvent applies the same ownership and current source permissions
+// for every presentation of one person's observed event.
+func readObservedEvent(ctx context.Context, personID, eventID int64) (model.Event, error) {
 	var event model.Event
-	if err := database.DB.First(&event, eventID).Error; err != nil {
-		return "", err
+	if err := database.DB.WithContext(ctx).First(&event, eventID).Error; err != nil {
+		return event, err
 	}
-	allowed, err := canReadEvent(personID, event)
+	allowed, err := canReadEvent(ctx, personID, event)
+	if err != nil {
+		return event, err
+	}
+	if !allowed {
+		return event, fmt.Errorf("person %d cannot read event %d", personID, eventID)
+	}
+	return event, nil
+}
+
+// DescribeObservedEvent reads one authoritative event for a short-lived
+// cognitive context. It keeps reported outcomes attributed to their source.
+func DescribeObservedEvent(ctx context.Context, personID, eventID int64) (string, error) {
+	event, err := readObservedEvent(ctx, personID, eventID)
 	if err != nil {
 		return "", err
 	}
-	if !allowed {
-		return "", fmt.Errorf("person %d cannot read event %d", personID, eventID)
-	}
-	content, _, err := presentedEventContent(personID, event)
+	content, _, err := presentedEventContent(ctx, personID, event, true)
 	if err != nil {
 		return "", err
 	}
 	return presentedEventText(event, content), nil
 }
 
+// DescribeObservedEventAsExperience presents a chat message like a dialogue
+// line with its actual sender. Other observed sources keep their event wording.
+// The CognitiveLoop entry preview uses this form; date summaries use the
+// identifier-free dailyObservedEvent instead.
+func DescribeObservedEventAsExperience(ctx context.Context, personID int64, ownerName string, eventID int64) (string, error) {
+	event, err := readObservedEvent(ctx, personID, eventID)
+	if err != nil {
+		return "", err
+	}
+	if event.EventType != model.EventTypeMessage {
+		content, _, err := presentedEventContent(ctx, personID, event, true)
+		if err != nil {
+			return "", err
+		}
+		return presentedEventText(event, content), nil
+	}
+	var message model.Message
+	if err := database.DB.WithContext(ctx).First(&message, event.RefID).Error; err != nil {
+		return "", err
+	}
+	speaker := ownerName + " (self)"
+	if message.PersonID != personID {
+		speaker = presentedPersonName(ctx, personID, message.PersonID, event.ID)
+	}
+	return fmt.Sprintf("Chat message from session (session_id=%d) — %s [%s] said: %q", message.SessionID, speaker, message.CreatedAt.In(energy.Timezone()).Format("2006-01-02 15:04:05"), message.Content), nil
+}
+
+// dailyChatCounterpart names the other participants of a chat session so a
+// message the observer wrote can still say whom it was addressed to. An
+// unresolvable identity is logged and omitted rather than becoming a bare ID.
+func dailyChatCounterpart(ctx context.Context, personID, sessionID, eventID int64) string {
+	var participantIDs []int64
+	if err := database.DB.WithContext(ctx).Model(&model.ParticipantSession{}).
+		Where("session_id = ? AND participant_id <> ?", sessionID, personID).
+		Order("participant_id").Pluck("participant_id", &participantIDs).Error; err != nil {
+		applogger.Error("memory: chat counterpart lookup failed", "event_id", eventID, "session_id", sessionID, "error", err)
+		return ""
+	}
+	if len(participantIDs) == 0 {
+		return ""
+	}
+	names, err := dops.GetPersonNamesContext(ctx, participantIDs)
+	if err != nil {
+		applogger.Error("memory: chat counterpart identity unavailable", "event_id", eventID, "session_id", sessionID, "error", err)
+		return ""
+	}
+	named := make([]string, 0, len(participantIDs))
+	for _, id := range participantIDs {
+		name := strings.TrimSpace(names[id])
+		if name == "" {
+			applogger.Error("memory: chat counterpart identity missing", "event_id", eventID, "person_id", id)
+			continue
+		}
+		named = append(named, name)
+	}
+	return strings.Join(named, " and ")
+}
+
+// dailyObservedEvent presents one observed source for a dated retrospective.
+// Speaker attribution and content remain, while record identifiers and
+// second-level clock precision are omitted so they cannot enter a remembered
+// account. A self-set reminder contributes only the fact that it went off; its
+// stored note is an instruction for the future, not something that happened.
+func dailyObservedEvent(ctx context.Context, personID int64, ownerName string, at time.Time, eventID int64) (string, error) {
+	event, err := readObservedEvent(ctx, personID, eventID)
+	if err != nil {
+		return "", err
+	}
+	if event.EventType == model.EventTypeMessage {
+		var message model.Message
+		if err := database.DB.WithContext(ctx).First(&message, event.RefID).Error; err != nil {
+			return "", err
+		}
+		speaker := ownerName + " (self)"
+		if message.PersonID != personID {
+			speaker = presentedPersonName(ctx, personID, message.PersonID, event.ID)
+			return fmt.Sprintf("%s [%s] said: %q", speaker, dailyClock(message.CreatedAt), message.Content), nil
+		}
+		// A conversation needs both sides; naming the addressee keeps the
+		// counterpart from becoming an unnamed "other person" in the account.
+		if counterpart := dailyChatCounterpart(ctx, personID, message.SessionID, event.ID); counterpart != "" {
+			return fmt.Sprintf("%s [%s] said to %s: %q", speaker, dailyClock(message.CreatedAt), counterpart, message.Content), nil
+		}
+		return fmt.Sprintf("%s [%s] said: %q", speaker, dailyClock(message.CreatedAt), message.Content), nil
+	}
+	if event.EventType == model.EventTypeScheduled {
+		return fmt.Sprintf("[%s] A reminder you had set for yourself went off.", dailyClock(at)), nil
+	}
+	if event.EventType == model.EventTypeSystemNotification {
+		content, _, err := presentedEventContent(ctx, personID, event, false)
+		if err != nil {
+			return "", err
+		}
+		return fmt.Sprintf("[%s] %s", dailyClock(at), content), nil
+	}
+	content, _, err := presentedEventContent(ctx, personID, event, false)
+	if err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("[%s] %s", dailyClock(at), presentedEventText(event, content)), nil
+}
+
 // canReadEvent checks both observation and the current domain authorization.
-func canReadEvent(personID int64, event model.Event) (bool, error) {
+func canReadEvent(ctx context.Context, personID int64, event model.Event) (bool, error) {
 	var observed int64
-	if err := database.DB.Model(&model.AgentObservation{}).Where("person_id = ? AND event_id = ?", personID, event.ID).Count(&observed).Error; err != nil {
+	if err := database.DB.WithContext(ctx).Model(&model.AgentObservation{}).Where("person_id = ? AND event_id = ?", personID, event.ID).Count(&observed).Error; err != nil {
 		return false, err
 	}
 	if observed == 0 {
@@ -201,43 +352,43 @@ func canReadEvent(personID int64, event model.Event) (bool, error) {
 	switch event.EventType {
 	case model.EventTypeMessage:
 		var row model.Message
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
-		return canReadSession(personID, row.SessionID), nil
+		return canReadSessionContext(ctx, personID, row.SessionID)
 	case model.EventTypeJinshu:
 		var row model.Jinshu
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.ToPersonID == personID, nil
 	case model.EventTypeJinshuSent:
 		var row model.Jinshu
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.FromPersonID == personID, nil
 	case model.EventTypeWorkCompleted:
 		var row model.Work
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.PersonID == personID, nil
 	case model.EventTypeBiography:
 		var row model.AgentBiography
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.PersonID == personID, nil
 	case model.EventTypePSDigest:
 		var row model.PSDigest
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.PersonID == personID, nil
 	case model.EventTypeScheduled:
 		var row model.ScheduledEvent
-		if err := database.DB.First(&row, event.RefID).Error; err != nil {
+		if err := database.DB.WithContext(ctx).First(&row, event.RefID).Error; err != nil {
 			return false, err
 		}
 		return row.PersonID == personID, nil
@@ -257,11 +408,11 @@ func readRecallItem(personID int64, kind model.MemorySourceKind, id int64) (Reca
 		if err := database.DB.First(&event, id).Error; err != nil {
 			return item, false, err
 		}
-		allowed, err := canReadEvent(personID, event)
+		allowed, err := canReadEvent(context.Background(), personID, event)
 		if err != nil || !allowed {
 			return item, false, err
 		}
-		content, occurred, err := presentedEventContent(personID, event)
+		content, occurred, err := presentedEventContent(context.Background(), personID, event, true)
 		if err != nil {
 			return item, false, err
 		}
@@ -455,6 +606,8 @@ func effectTypeName(t model.ActionEffectType) string {
 		return "message"
 	case model.ActionEffectScheduledEvent:
 		return "scheduled alarm"
+	case model.ActionEffectScheduledEventCancellation:
+		return "cancelled alarm"
 	case model.ActionEffectJinshu:
 		return "jinshu"
 	case model.ActionEffectSelfHeldEvent:
@@ -480,7 +633,7 @@ func effectTargetIDName(t model.ActionEffectType) string {
 		return "work_id"
 	case model.ActionEffectMessage:
 		return "message_id"
-	case model.ActionEffectScheduledEvent:
+	case model.ActionEffectScheduledEvent, model.ActionEffectScheduledEventCancellation:
 		return "scheduled_event_id"
 	case model.ActionEffectJinshu:
 		return "jinshu_id"

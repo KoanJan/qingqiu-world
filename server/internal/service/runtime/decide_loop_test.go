@@ -16,9 +16,31 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/llm"
 )
+
+func TestChatPlanSchemaRequiresDeliveryTarget(t *testing.T) {
+	var schema struct {
+		Required []string `json:"required"`
+	}
+	if err := json.Unmarshal(llm.GenerateSchema[action.ChatPlan](), &schema); err != nil {
+		t.Fatal(err)
+	}
+	for _, field := range []string{"guidance", "session_id"} {
+		found := false
+		for _, required := range schema.Required {
+			if required == field {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("ChatPlan schema does not require %q: %v", field, schema.Required)
+		}
+	}
+}
 
 // TestWorkspaceRecallExplainsDeclaredUse verifies that Decide sees a workspace
 // and its use as named records, without raw ownership or numeric enum fields.
@@ -129,6 +151,86 @@ func TestDecideLoopBoundsNetworkRequests(t *testing.T) {
 	result, accepted := runDecideLoop(context.Background(), client, 1, 1, "Current situation")
 	if !accepted || len(result.Actions) != 0 || requests != maxDecideRequests {
 		t.Fatalf("loop did not finish with one empty decision after %d requests: accepted=%v result=%+v", requests, accepted, result)
+	}
+}
+
+// TestDecideLoopCorrectsChatPlanInRecallContext verifies that a rejected
+// decision stays in the original tool conversation with its recall result.
+func TestDecideLoopCorrectsChatPlanInRecallContext(t *testing.T) {
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/chat-correction.db"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Workspace{}, &model.Session{}, &model.ParticipantSession{}); err != nil {
+		t.Fatal(err)
+	}
+	oldDB := database.DB
+	database.DB = db
+	t.Cleanup(func() { database.DB = oldDB })
+	if err := db.Create(&model.Workspace{PersonID: 1, RelativePath: "work/contact", Name: "Contact context from recall", Purpose: "Contact correspondence"}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Session{ID: 7}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.Session{ID: 8}).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Create(&model.ParticipantSession{SessionID: 7, ParticipantID: 1}).Error; err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("local HTTP listener is unavailable: %v", err)
+	}
+	requests := 0
+	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		var input struct {
+			Messages []struct {
+				Role    string `json:"role"`
+				Content string `json:"content"`
+			} `json:"messages"`
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&input); err != nil {
+			t.Errorf("decode request: %v", err)
+			http.Error(w, "invalid JSON", http.StatusBadRequest)
+			return
+		}
+		name, arguments := "recall_workspace", `{}`
+		switch requests {
+		case 2:
+			if len(input.Messages) != 3 || !strings.Contains(input.Messages[2].Content, "Contact context from recall") {
+				t.Errorf("workspace recall missing before the first decision: %+v", input.Messages)
+			}
+			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":0,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":8}}]}`
+		case 3:
+			if len(input.Messages) != 5 || !strings.Contains(input.Messages[2].Content, "Contact context from recall") || input.Messages[4].Role != "tool" || !strings.Contains(input.Messages[4].Content, "chat_plan.session_id=8 is not a conversation you participate in") {
+				t.Errorf("correction lost recall context or validation feedback: %+v", input.Messages)
+			}
+			if len(input.Tools) != 1 || input.Tools[0].Function.Name != "decide" {
+				t.Errorf("correction request must expose only decide: %+v", input.Tools)
+			}
+			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":0,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":7}}]}`
+		default:
+			if requests > 3 {
+				t.Errorf("unexpected request %d", requests)
+			}
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprintf(w, `{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_%d","type":"function","function":{"name":%q,"arguments":%q}}]}}]}`, requests, name, arguments)
+	})}}
+	server.Start()
+	defer server.Close()
+	client := llm.NewChatModel(server.URL, "test", "test-model")
+	result, accepted := runDecideLoop(context.Background(), client, 1, 1, "Current situation")
+	if !accepted || requests != 3 || len(result.Actions) != 1 || result.Actions[0].ChatPlan == nil || result.Actions[0].ChatPlan.SessionID != 7 {
+		t.Fatalf("ChatPlan was not corrected in the original context: accepted=%t requests=%d result=%+v", accepted, requests, result)
 	}
 }
 

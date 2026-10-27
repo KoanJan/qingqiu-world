@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
@@ -42,6 +43,8 @@ type RecallRequest struct {
 	Scope RecallScope
 	// PersonID is the subject whose observation and ownership rules apply.
 	PersonID int64
+	// CounterpartID limits RecallAll to explicit, owner-visible links with one person.
+	CounterpartID int64
 	// SourceID selects one row within a source-specific scope.
 	SourceID int64
 	// ActionID limits Event results to effects recorded for this Action.
@@ -103,7 +106,7 @@ type recallCursor struct {
 // recallHash binds a continuation cursor to every filter and the page size.
 // A cursor from another recall request must not be reused.
 func recallHash(r RecallRequest) string {
-	raw := fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%d", r.Scope, r.PersonID, r.SourceID, r.ActionID, r.DecisionID, r.SessionID, r.MessageID, r.WorkID, r.Query, r.FromTime.UTC().Format(time.RFC3339Nano), r.ToTime.UTC().Format(time.RFC3339Nano), r.PageSize)
+	raw := fmt.Sprintf("%d|%d|%d|%d|%d|%d|%d|%d|%d|%s|%s|%s|%d", r.Scope, r.PersonID, r.CounterpartID, r.SourceID, r.ActionID, r.DecisionID, r.SessionID, r.MessageID, r.WorkID, r.Query, r.FromTime.UTC().Format(time.RFC3339Nano), r.ToTime.UTC().Format(time.RFC3339Nano), r.PageSize)
 	digest := sha256.Sum256([]byte(raw))
 	return fmt.Sprintf("%x", digest[:12])
 }
@@ -118,7 +121,7 @@ func Recall(r RecallRequest) (RecallPage, error) {
 	if r.PersonID <= 0 || r.Scope < RecallAll || r.Scope > RecallHandoffs {
 		return page, errors.New("invalid recall identity or scope")
 	}
-	if r.SourceID < 0 || r.ActionID < 0 || r.DecisionID < 0 || r.SessionID < 0 || r.MessageID < 0 || r.WorkID < 0 {
+	if r.SourceID < 0 || r.ActionID < 0 || r.DecisionID < 0 || r.SessionID < 0 || r.MessageID < 0 || r.WorkID < 0 || r.CounterpartID < 0 {
 		return page, errors.New("recall IDs cannot be negative")
 	}
 	if r.PageSize == 0 {
@@ -147,6 +150,9 @@ func Recall(r RecallRequest) (RecallPage, error) {
 	}
 	if r.WorkID > 0 && r.Scope != RecallHandoffs && r.Scope != RecallActions {
 		return page, errors.New("work_id is only valid for action or Focus handoff recall")
+	}
+	if r.CounterpartID > 0 && (r.Scope != RecallAll || r.CounterpartID == r.PersonID) {
+		return page, errors.New("person_id requires cross-source history of another person")
 	}
 	hash := recallHash(r)
 	cur := recallCursor{Hash: hash, Upper: time.Now().UTC()}
@@ -179,7 +185,13 @@ func Recall(r RecallRequest) (RecallPage, error) {
 	limit := r.PageSize + 1
 	var candidates []recallCandidate
 	for _, kind := range kinds {
-		found, err := recallSourceCandidates(r, cur, kind, terms, limit)
+		var found []recallCandidate
+		var err error
+		if r.CounterpartID > 0 {
+			found, err = recallPersonCandidates(r, cur, kind, terms, limit)
+		} else {
+			found, err = recallSourceCandidates(r, cur, kind, terms, limit)
+		}
 		if err != nil {
 			return page, err
 		}
@@ -209,6 +221,9 @@ func Recall(r RecallRequest) (RecallPage, error) {
 		if !termIndexReady.Load() {
 			page.Coverage = "Lexical index is building or unavailable; results may be incomplete. " + page.Coverage
 		}
+	}
+	if r.CounterpartID > 0 {
+		page.Coverage += " Only explicit two-person conversation, Jinshu, and recorded causal links are included; a limited page or index miss is not absence of shared experience."
 	}
 	return page, nil
 }
@@ -279,14 +294,24 @@ func RecallEntityProfile(personID int64, entityType model.EntityType, entityID i
 // canReadSession checks current session membership before returning a
 // session-scoped impression. Query failures deny access and are logged.
 func canReadSession(personID, sessionID int64) bool {
-	if sessionID <= 0 {
-		return false
-	}
-	var count int64
-	err := database.DB.Model(&model.ParticipantSession{}).Where("participant_id = ? AND session_id = ?", personID, sessionID).Count(&count).Error
+	allowed, err := canReadSessionContext(context.Background(), personID, sessionID)
 	if err != nil {
 		applogger.Error("memory session permission query failed", "person_id", personID, "session_id", sessionID, "error", err)
 		return false
 	}
-	return count > 0
+	return allowed
+}
+
+// canReadSessionContext keeps a cognitive recall's authorization query under
+// the same cancellation as its other source reads.
+func canReadSessionContext(ctx context.Context, personID, sessionID int64) (bool, error) {
+	if sessionID <= 0 {
+		return false, nil
+	}
+	var count int64
+	err := database.DB.WithContext(ctx).Model(&model.ParticipantSession{}).Where("participant_id = ? AND session_id = ?", personID, sessionID).Count(&count).Error
+	if err != nil {
+		return false, err
+	}
+	return count > 0, nil
 }

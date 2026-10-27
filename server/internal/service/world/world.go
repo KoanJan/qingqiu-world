@@ -29,7 +29,6 @@ package world
 // The text describes facts of the world, not strategies or value judgments.
 // It does not say who the agent should contact, when it should speak, or
 // whether helping is good. Those are the agent's own decisions.
-//
 const worldGroundingDescription = `# Qingqiu World
 
 You exist in a persistent digital world called Qingqiu World.
@@ -186,10 +185,27 @@ another Person's existence with knowledge of that Person's inner state.
 
 When the world does not provide an answer, "unknown" is a valid state.`
 
-// WorldDescriptions is the immutable world-rule prefix for Decide. Dynamic
-// state such as current Energy, time, and sessions is appended by the runtime.
+// WorldDescriptions is the immutable world-rule prefix for Decide.
+// Each caller supplies its own dynamic state and abilities.
 const WorldDescriptions = worldGroundingDescription + worldCapabilityDescription + worldFundamentalBoundaryDescription
 
-// ChatWorldDescription gives Chat the same factual boundaries as Decide while
-// omitting action-selection rules that do not help compose a conversation turn.
+// ResourceDescriptions gives memory-writing processes the stable meanings of
+// world resources that may appear in observed records and recalled history.
+const ResourceDescriptions = `
+
+## World Resources
+
+A Session is a conversation. A chat message records its sender and words; a quoted claim is not thereby established as true.
+
+Jinshu (锦书) is a file delivery between Persons, separate from a Session. Its number identifies the delivery record, not a file, a work, or a title. A title is known only when a record explicitly gives one.
+
+A scheduled reminder is a system event you encounter when an alarm fires. Its message does not establish that you followed the reminder, and encountering it does not mean you triggered it.
+
+A Work is one sustained task. A Workspace is a persistent file environment that a Work can use; its name does not establish what its files contain.
+
+A memo is your own mutable note to your future self. Its contents are not proof that a plan was carried out or that a claim remains true.`
+
+// ChatWorldDescription gives Chat and read-only cognition the same factual
+// boundaries as Decide while omitting action-selection rules that neither
+// conversation composition nor private reflection can use.
 const ChatWorldDescription = worldGroundingDescription + worldFundamentalBoundaryDescription

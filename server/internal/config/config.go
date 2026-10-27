@@ -25,6 +25,10 @@
 //   - KB_RETRIEVAL_MAX_TOKENS: Hard upper bound for KB retrieval units (default: 512)
 //   - KB_CHUNK_OVERLAP_TOKENS: Overlap for splits within one oversized leaf (default: 64)
 //   - KB_EMBEDDING_HARD_MAX_TOKENS: Embedding provider input guard (default: 8192)
+//   - DAILY_MEMORY_MAX_GROUPS_PER_PASS: Maximum date resource groups summarized per index pass (default: 8)
+//   - COGNITIVE_MAX_REQUESTS: Model-request limit for one background cognitive process (default: 12, minimum effective value: 3)
+//   - COGNITIVE_RECENT_REVIEW_HOURS: Age below which revisiting needs explicit confirmation (default: 24)
+//   - COGNITIVE_ROUTE_MIN_SIMILARITY_PERCENT: Minimum description-to-daily similarity for a routed review, 1–100 (default: 35)
 package config
 
 import (
@@ -34,30 +38,34 @@ import (
 )
 
 // AppVersion is the current application version.
-const AppVersion = "0.1.20"
+const AppVersion = "0.1.21"
 
 // globalSettings is the singleton configuration instance.
 var globalSettings *Settings
 
 // Settings holds all application configuration values.
 type Settings struct {
-	DataRoot                 string // Root directory for all data storage
-	LogDir                   string // Directory for log files (default: logs/)
-	SummaryWindowSize        int    // Number of messages before triggering summary generation
-	SummaryTokenThreshold    int    // Token budget threshold for fallback summary trigger
-	LogLevel                 string // Logging level (DEBUG, INFO, WARN, ERROR)
-	FocusedWorkMaxIterations int    // Maximum iterations for FocusedLoop
-	AOSRoot                  string // Root directory for agent-owned resources
-	AOSMetaRoot              string // Root directory for runtime-owned agent metadata
-	JinshuRoot               string // Root directory for person-level jinshu (锦书) files
-	MinIterationWindow       int    // Minimum iterations visible to agent (anchor size)
-	MaxIterationWindow       int    // Maximum iterations before bulk-shrink triggers
-	NotesMaxChars            int    // Maximum character limit for agent notes
-	KBFlatThreshold          int    // Minimum vector count before building an HNSW index
-	KBRetrievalMinTokens     int    // Target lower bound for KB retrieval units
-	KBRetrievalMaxTokens     int    // Hard upper bound for KB retrieval units
-	KBChunkOverlapTokens     int    // Overlap for chunks split within one oversized leaf
-	KBEmbeddingHardMaxTokens int    // Embedding provider input guard for KB retrieval units
+	DataRoot                    string // Root directory for all data storage
+	LogDir                      string // Directory for log files (default: logs/)
+	SummaryWindowSize           int    // Number of messages before triggering summary generation
+	SummaryTokenThreshold       int    // Token budget threshold for fallback summary trigger
+	LogLevel                    string // Logging level (DEBUG, INFO, WARN, ERROR)
+	FocusedWorkMaxIterations    int    // Maximum iterations for FocusedLoop
+	AOSRoot                     string // Root directory for agent-owned resources
+	AOSMetaRoot                 string // Root directory for runtime-owned agent metadata
+	JinshuRoot                  string // Root directory for person-level jinshu (锦书) files
+	MinIterationWindow          int    // Minimum iterations visible to agent (anchor size)
+	MaxIterationWindow          int    // Maximum iterations before bulk-shrink triggers
+	NotesMaxChars               int    // Maximum character limit for agent notes
+	KBFlatThreshold             int    // Minimum vector count before building an HNSW index
+	KBRetrievalMinTokens        int    // Target lower bound for KB retrieval units
+	KBRetrievalMaxTokens        int    // Hard upper bound for KB retrieval units
+	KBChunkOverlapTokens        int    // Overlap for chunks split within one oversized leaf
+	KBEmbeddingHardMaxTokens    int    // Embedding provider input guard for KB retrieval units
+	DailyMemoryMaxGroupsPerPass int    // Bounds asynchronous date-index model usage per pass
+	CognitiveMaxRequests        int    // Bounds one background cognitive process; runtime needs at least three requests
+	CognitiveRecentReviewHours  int    // Requires explicit confirmation for a recent review
+	CognitiveRouteMinSimilarity int    // Minimum similarity percent for a system-routed review (1–100)
 }
 
 // Init loads configuration from environment variables with defaults.
@@ -65,23 +73,27 @@ func Init() {
 	dataRoot := expandHome(getEnv("DATA_ROOT", filepath.Join("..", "data")))
 
 	globalSettings = &Settings{
-		DataRoot:                 dataRoot,
-		LogDir:                   expandHome(getEnv("LOG_DIR", "logs")),
-		SummaryWindowSize:        getEnvInt("SUMMARY_WINDOW_SIZE", 50),
-		SummaryTokenThreshold:    getEnvInt("SUMMARY_TOKEN_THRESHOLD", 16000),
-		LogLevel:                 getEnv("LOG_LEVEL", "INFO"),
-		FocusedWorkMaxIterations: getEnvInt("FOCUSED_WORK_MAX_ITERATIONS", 300),
-		AOSRoot:                  expandHome(getEnv("AOS_ROOT", "")),
-		AOSMetaRoot:              expandHome(getEnv("AOS_META_ROOT", "")),
-		JinshuRoot:               expandHome(getEnv("JINSHU_ROOT", "")),
-		MinIterationWindow:       getEnvInt("MIN_ITERATION_WINDOW", 10),
-		MaxIterationWindow:       getEnvInt("MAX_ITERATION_WINDOW", 100),
-		NotesMaxChars:            getEnvInt("NOTES_MAX_CHARS", 10000),
-		KBFlatThreshold:          getPositiveEnvInt("KB_FLAT_THRESHOLD", 1000),
-		KBRetrievalMinTokens:     getEnvInt("KB_RETRIEVAL_MIN_TOKENS", 64),
-		KBRetrievalMaxTokens:     getEnvInt("KB_RETRIEVAL_MAX_TOKENS", 512),
-		KBChunkOverlapTokens:     getEnvInt("KB_CHUNK_OVERLAP_TOKENS", 64),
-		KBEmbeddingHardMaxTokens: getEnvInt("KB_EMBEDDING_HARD_MAX_TOKENS", 8192),
+		DataRoot:                    dataRoot,
+		LogDir:                      expandHome(getEnv("LOG_DIR", "logs")),
+		SummaryWindowSize:           getEnvInt("SUMMARY_WINDOW_SIZE", 50),
+		SummaryTokenThreshold:       getEnvInt("SUMMARY_TOKEN_THRESHOLD", 16000),
+		LogLevel:                    getEnv("LOG_LEVEL", "INFO"),
+		FocusedWorkMaxIterations:    getEnvInt("FOCUSED_WORK_MAX_ITERATIONS", 300),
+		AOSRoot:                     expandHome(getEnv("AOS_ROOT", "")),
+		AOSMetaRoot:                 expandHome(getEnv("AOS_META_ROOT", "")),
+		JinshuRoot:                  expandHome(getEnv("JINSHU_ROOT", "")),
+		MinIterationWindow:          getEnvInt("MIN_ITERATION_WINDOW", 10),
+		MaxIterationWindow:          getEnvInt("MAX_ITERATION_WINDOW", 100),
+		NotesMaxChars:               getEnvInt("NOTES_MAX_CHARS", 10000),
+		KBFlatThreshold:             getPositiveEnvInt("KB_FLAT_THRESHOLD", 1000),
+		KBRetrievalMinTokens:        getEnvInt("KB_RETRIEVAL_MIN_TOKENS", 64),
+		KBRetrievalMaxTokens:        getEnvInt("KB_RETRIEVAL_MAX_TOKENS", 512),
+		KBChunkOverlapTokens:        getEnvInt("KB_CHUNK_OVERLAP_TOKENS", 64),
+		KBEmbeddingHardMaxTokens:    getEnvInt("KB_EMBEDDING_HARD_MAX_TOKENS", 8192),
+		DailyMemoryMaxGroupsPerPass: getPositiveEnvInt("DAILY_MEMORY_MAX_GROUPS_PER_PASS", 8),
+		CognitiveMaxRequests:        getPositiveEnvInt("COGNITIVE_MAX_REQUESTS", 12),
+		CognitiveRecentReviewHours:  getPositiveEnvInt("COGNITIVE_RECENT_REVIEW_HOURS", 24),
+		CognitiveRouteMinSimilarity: getPercentEnvInt("COGNITIVE_ROUTE_MIN_SIMILARITY_PERCENT", 35),
 	}
 }
 
@@ -175,6 +187,21 @@ func getEnvInt(key string, fallback int) int {
 func getPositiveEnvInt(key string, fallback int) int {
 	if val := os.Getenv(key); val != "" {
 		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			return n
+		}
+	}
+	return fallback
+}
+
+// getPercentEnvInt reads an integer percentage in 1–100. A value above 100 is
+// clamped because a larger threshold would disable routing entirely; a
+// non-positive or unparsable value falls back, keeping the documented default.
+func getPercentEnvInt(key string, fallback int) int {
+	if val := os.Getenv(key); val != "" {
+		if n, err := strconv.Atoi(val); err == nil && n > 0 {
+			if n > 100 {
+				return 100
+			}
 			return n
 		}
 	}

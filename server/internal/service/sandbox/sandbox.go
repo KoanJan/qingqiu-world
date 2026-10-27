@@ -54,6 +54,17 @@ func Run(workspace, policyDir string, cmd []string) (*exec.Cmd, bool, error) {
 	}
 }
 
+// fallbackExec returns a plain exec.Cmd when a platform sandbox is unavailable.
+func fallbackExec(cmd []string) *exec.Cmd {
+	if len(cmd) == 0 {
+		if runtime.GOOS == "windows" {
+			return exec.Command("cmd", "/c", "exit", "0")
+		}
+		return exec.Command("true")
+	}
+	return exec.Command(cmd[0], cmd[1:]...)
+}
+
 // absolutePath resolves a filesystem path to its canonical absolute form by
 // following symlinks. Seatbelt subpath filters and bubblewrap mounts match
 // against the symlink-resolved ("real") path, so a symlinked component (e.g.

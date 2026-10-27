@@ -125,3 +125,47 @@ func TestSiblingActionStatusesRemainIndependent(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// TestPersistDecisionKeepsThoughtsWithoutActions verifies that reasoning is kept
+// on the Decision itself only when no Action exists to carry it.
+func TestPersistDecisionKeepsThoughtsWithoutActions(t *testing.T) {
+	old := database.DB
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/thoughts.db"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Person{}, &model.Event{}, &model.Decision{}, &model.Action{}, &model.ParticipantSession{}); err != nil {
+		t.Fatal(err)
+	}
+	database.DB = db
+	t.Cleanup(func() { database.DB = old })
+	if err := db.Create(&model.Person{ID: 1, Name: "Decision owner", Type: model.PersonTypeAI}).Error; err != nil {
+		t.Fatal(err)
+	}
+	situation := &Situation{Source: SituationSourceInternal}
+	silence := DecisionResult{Accepted: true, Thoughts: "  Nothing here needs an answer.  "}
+	if accepted, err := persistDecision(1, situation, &silence); err != nil || !accepted {
+		t.Fatalf("zero-action decision was not persisted: accepted=%t err=%v", accepted, err)
+	}
+	var saved model.Decision
+	if err := db.Order("id DESC").Take(&saved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Thoughts != "Nothing here needs an answer." || saved.EventID != 0 {
+		t.Fatalf("zero-action decision lost its reasoning: %+v", saved)
+	}
+	acted := DecisionResult{Accepted: true, Thoughts: "I should ask again", Actions: []action.Action{{
+		Type: action.Chat, Background: "wanted feedback", Reason: "enough time had passed",
+		ChatPlan: &action.ChatPlan{Guidance: "ask again", SessionID: 7},
+	}}}
+	if accepted, err := persistDecision(1, situation, &acted); err != nil || !accepted {
+		t.Fatalf("action-bearing decision was not persisted: accepted=%t err=%v", accepted, err)
+	}
+	saved = model.Decision{}
+	if err := db.Order("id DESC").Take(&saved).Error; err != nil {
+		t.Fatal(err)
+	}
+	if saved.Thoughts != "" {
+		t.Fatalf("action-bearing decision duplicated its reasoning: %q", saved.Thoughts)
+	}
+}

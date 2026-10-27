@@ -12,7 +12,7 @@ import (
 // ActionType represents the type of action the Decide phase concludes.
 //
 // Actions are divided into two categories:
-//   - Self-contained actions: Chat, CreateAlarm, UpdateBio — the Action
+//   - Self-contained actions: Chat, CreateAlarm, CancelAlarm, UpdateBio — the Action
 //     itself is a complete description of what to do; no Work iteration is
 //     required.
 //   - Focus-oriented actions: StartFocusedWork, RouteFocusedWork, CancelFocusedWork — these
@@ -64,6 +64,8 @@ const (
 	WaitForExecutionSlot = model.ActionTypeWaitForExecutionSlot
 	// ManageMemo creates or changes one private memo as a finite world action.
 	ManageMemo = model.ActionTypeManageMemo
+	// CancelAlarm cancels one of the agent's pending scheduled alarms.
+	CancelAlarm = model.ActionTypeCancelAlarm
 )
 
 // MemoPlan requests one explicit change to the agent's own memo resource.
@@ -179,6 +181,12 @@ type AlarmPlan struct {
 	ExpressionInstruction string `json:"expression_instruction,omitempty" jsonschema:"description=How to express action_content in speech. Required when action is 'send_message'; write a non-empty natural-language delivery instruction."`
 }
 
+// CancelAlarmPlan identifies one pending alarm previously returned by the
+// Decide read tool. The runtime checks ownership and pending status again.
+type CancelAlarmPlan struct {
+	AlarmID int64 `json:"alarm_id" jsonschema:"description=ID of your pending alarm to cancel, from list_pending_alarms,required"`
+}
+
 // BioUpdate carries the new bio content for the UpdateBio action.
 type BioUpdate struct {
 	Bio string `json:"bio" jsonschema:"description=Your self-introduction displayed to others. A one-sentence statement about who you are.,required"`
@@ -203,9 +211,10 @@ type BioUpdate struct {
 //   - SendJinshu: uses SendJinshuPlan (to_person_id + topic + paths)
 //   - ListSentJinshu: uses ListSentJinshuParams (query + page + limit)
 //   - ManageMemo: uses MemoPlan (operation and complete desired content/state)
+//   - CancelAlarm: uses CancelAlarmPlan (pending alarm ID)
 type Action struct {
 	ID   int64      `json:"-"` // Persisted top-level Action ID, assigned after Decide succeeds.
-	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot, 12=manage_memo,required"`
+	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot, 12=manage_memo, 13=cancel_alarm,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -224,4 +233,5 @@ type Action struct {
 	OwnedSpaceInspectionPlan *OwnedSpaceInspectionPlan `json:"owned_space_inspection_plan,omitempty" jsonschema:"description=When type is inspect_owned_space(10): the bounded metadata inspection request"`
 	WaitForExecutionSlotPlan *WaitForExecutionSlotPlan `json:"wait_for_execution_slot_plan,omitempty" jsonschema:"description=When type is wait_for_execution_slot(11): the intention to reconsider later"`
 	MemoPlan                 *MemoPlan                 `json:"memo_plan,omitempty" jsonschema:"description=When type is manage_memo(12): one change to a private memo"`
+	CancelAlarmPlan          *CancelAlarmPlan          `json:"cancel_alarm_plan,omitempty" jsonschema:"description=When type is cancel_alarm(13): the pending alarm ID to cancel"`
 }

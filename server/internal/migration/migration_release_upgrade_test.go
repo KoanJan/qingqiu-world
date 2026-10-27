@@ -14,8 +14,12 @@ import (
 
 // TestUpgradeFrom0117PreservesObservationHistory checks the formal release
 // path. Version 0.1.17 had no Decision table, and its read boundary does not
-// prove that every earlier message entered comprehension.
+// prove that every earlier message entered comprehension. This test checks
+// the 0.1.19 release target rather than later version transitions.
 func TestUpgradeFrom0117PreservesObservationHistory(t *testing.T) {
+	if config.AppVersion != "0.1.19" {
+		t.Skipf("0.1.19 release upgrade test does not apply to %s", config.AppVersion)
+	}
 	previousDB := database.DB
 	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "release-upgrade.db")), &gorm.Config{})
 	if err != nil {

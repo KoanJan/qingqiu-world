@@ -67,7 +67,9 @@ func main() {
 
 	llm.LoadCapabilityCache()
 
-	// Initialize the embedding service once — shared by memory and experience systems.
+	// Initialize the optional embedding service once. Initial setup must be
+	// reachable before one is configured; vector-dependent background work is
+	// deferred until the next startup with a configuration.
 	embSvc := getEmbeddingService()
 
 	// Memory system: event vectorization + daily cron
@@ -149,11 +151,12 @@ func main() {
 	applogger.Info("Server stopped gracefully")
 }
 
-// getEmbeddingService creates an EmbeddingService from the global embedding config.
-// Returns nil if no embedding config exists.
+// getEmbeddingService creates an EmbeddingService from the global embedding
+// config. A fresh installation has none until the user completes setup.
 func getEmbeddingService() *llm.EmbeddingService {
 	embConfig := dops.GetEmbeddingConfig()
 	if embConfig == nil {
+		applogger.Info("Embedding-dependent background work deferred until configuration is available")
 		return nil
 	}
 

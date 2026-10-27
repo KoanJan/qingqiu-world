@@ -1,9 +1,13 @@
 package dops
 
 import (
+	"errors"
+
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
 
 // GetEmbeddingConfig retrieves the global embedding configuration (first row).
@@ -11,7 +15,9 @@ import (
 func GetEmbeddingConfig() *model.EmbeddingConfig {
 	var config model.EmbeddingConfig
 	if err := database.DB.Order("id ASC").First(&config).Error; err != nil {
-		applogger.Error("No embedding config found, embedding-dependent features unavailable")
+		if !errors.Is(err, gorm.ErrRecordNotFound) {
+			applogger.Error("Failed to load embedding config", "error", err)
+		}
 		return nil
 	}
 	return &config

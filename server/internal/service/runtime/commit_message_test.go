@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"github.com/glebarez/sqlite"
@@ -12,9 +13,9 @@ import (
 	"qingqiu-world-server/internal/service/eventqueue"
 )
 
-// TestOwnMessageDoesNotSkipEarlierIncomingMessage covers the interleaving
-// where an asynchronous reply lands before the receiver handles an older event.
-func TestOwnMessageDoesNotSkipEarlierIncomingMessage(t *testing.T) {
+// TestOwnMessagePreservesReadBoundaryAndPausesCognition covers an asynchronous
+// reply arriving while an older incoming event and background cognition exist.
+func TestOwnMessagePreservesReadBoundaryAndPausesCognition(t *testing.T) {
 	old := database.DB
 	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/interleaved-messages.db"), &gorm.Config{})
 	if err != nil {
@@ -22,7 +23,7 @@ func TestOwnMessageDoesNotSkipEarlierIncomingMessage(t *testing.T) {
 	}
 	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{},
 		&model.Message{}, &model.Event{}, &model.Decision{}, &model.Action{},
-		&model.ActionEffect{}, &model.AgentObservation{}, &model.MemoryTerm{}); err != nil {
+		&model.ActionEffect{}, &model.AgentObservation{}, &model.MemoryTerm{}, &model.CognitiveProcess{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
@@ -56,9 +57,24 @@ func TestOwnMessageDoesNotSkipEarlierIncomingMessage(t *testing.T) {
 	if err := db.Create(&action).Error; err != nil {
 		t.Fatal(err)
 	}
-	(&agentRuntime{agentPersonID: sender.ID}).commitMessage(&commitRequest{
+	process := model.CognitiveProcess{PersonID: sender.ID, Status: model.CognitiveProcessRunning, Epoch: 1}
+	if err := db.Create(&process).Error; err != nil {
+		t.Fatal(err)
+	}
+	cognitionCtx, cancel := context.WithCancel(context.Background())
+	r := &agentRuntime{agentPersonID: sender.ID, cognitionWake: make(chan struct{}, 1), cognitiveCancel: cancel, cognitiveProcessID: process.ID, cognitiveEpoch: process.Epoch}
+	if !r.acquireCognitiveSlot(process.ID) {
+		t.Fatal("cognitive slot was not acquired")
+	}
+	r.commitMessage(&commitRequest{
 		actionID: action.ID, sessionID: session.ID, content: "Later outgoing message",
 	})
+	if cognitionCtx.Err() == nil || r.currentExecutionSlot() != nil {
+		t.Fatal("committed self-observation did not pause background cognition")
+	}
+	if err := db.First(&process, process.ID).Error; err != nil || process.Status != model.CognitiveProcessPaused {
+		t.Fatalf("cognitive process was not paused: status=%d err=%v", process.Status, err)
+	}
 
 	var saved model.ParticipantSession
 	if err := db.First(&saved, participant.ID).Error; err != nil {
@@ -95,5 +111,54 @@ func TestOwnMessageDoesNotSkipEarlierIncomingMessage(t *testing.T) {
 	var observed int64
 	if err := db.Model(&model.AgentObservation{}).Where("person_id = ? AND event_id = ?", sender.ID, trigger.ID).Count(&observed).Error; err != nil || observed != 1 {
 		t.Fatalf("incoming event was not observed: count=%d err=%v", observed, err)
+	}
+}
+
+// TestCommitMessageRejectsNonParticipant keeps an incorrect existing session
+// ID from creating a message or any of its causal records.
+func TestCommitMessageRejectsNonParticipant(t *testing.T) {
+	old := database.DB
+	db, err := gorm.Open(sqlite.Open(t.TempDir()+"/wrong-session.db"), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{},
+		&model.Message{}, &model.Event{}, &model.Decision{}, &model.Action{},
+		&model.ActionEffect{}, &model.AgentObservation{}); err != nil {
+		t.Fatal(err)
+	}
+	database.DB = db
+	t.Cleanup(func() { database.DB = old })
+
+	sender := model.Person{Name: "sender", Type: model.PersonTypeAI}
+	other := model.Person{Name: "other", Type: model.PersonTypeHuman}
+	session := model.Session{}
+	for _, row := range []any{&sender, &other, &session} {
+		if err := db.Create(row).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := db.Create(&model.ParticipantSession{SessionID: session.ID, ParticipantID: other.ID}).Error; err != nil {
+		t.Fatal(err)
+	}
+	decision := model.Decision{PersonID: sender.ID}
+	if err := db.Create(&decision).Error; err != nil {
+		t.Fatal(err)
+	}
+	action := model.Action{DecisionID: decision.ID, Type: model.ActionTypeChat, Status: model.ActionStatusInProgress}
+	if err := db.Create(&action).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	r := &agentRuntime{agentPersonID: sender.ID}
+	r.commitMessage(&commitRequest{actionID: action.ID, sessionID: session.ID, content: "wrong destination"})
+	for _, table := range []string{"messages", "events", "action_effects", "agent_observations"} {
+		var count int64
+		if err := db.Table(table).Count(&count).Error; err != nil || count != 0 {
+			t.Fatalf("%s count=%d err=%v; rejected delivery persisted data", table, count, err)
+		}
+	}
+	if err := db.First(&action, action.ID).Error; err != nil || action.Status != model.ActionStatusEnded {
+		t.Fatalf("failed Chat action status=%d err=%v", action.Status, err)
 	}
 }

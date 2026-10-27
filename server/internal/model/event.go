@@ -58,6 +58,8 @@ func (e Event) EffectTarget() (ActionEffectType, int64) {
 		return ActionEffectMessage, e.RefID
 	case EventTypeWorkCompleted:
 		return ActionEffectWork, e.RefID
+	case EventTypePSDigest:
+		return ActionEffectPSDigest, e.RefID
 	case EventTypeScheduled:
 		return ActionEffectScheduledEvent, e.RefID
 	case EventTypeJinshu, EventTypeJinshuSent:

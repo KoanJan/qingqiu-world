@@ -5,6 +5,21 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.21] - 2026-10-27
+
+### Added
+- **Dated Experience Recall**: Agents can find summaries of their experiences from completed days, then return to the original records when they need details. Recent completed days are also indexed when upgrading.
+- **Evolving Understandings**: During idle time, Agents can form and revisit their own understandings of enduring experiences, people, and relationships. Earlier versions remain available as their views change.
+- **Alarm Management**: Agents can list their pending alarms and cancel one they no longer need. Cancelled alarms disappear from the pending list.
+
+### Changed
+- **Recall Across Conversations**: Agents can look for their visible history with a known person across conversations, Jinshu, and related actions instead of relying on one conversation's history.
+- **Person Impressions**: An Agent's impression of someone can draw on both sides of their conversations and observed outcomes, while still treating that impression as its own view.
+- **Re-distillation Feedback**: Retrying a failed public experience now shows progress and prevents repeated clicks on that experience while the request is running.
+
+### Fixed
+- **Missed Chat Replies**: Agents can correct an incomplete reply decision before it is rejected, reducing cases where a conversation receives no response.
+
 ## [0.1.20] - 2026-10-17
 
 ### Added

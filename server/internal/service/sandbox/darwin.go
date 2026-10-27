@@ -5,7 +5,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 
@@ -126,15 +125,4 @@ func generatePolicy(workspace, dataRoot string) string {
 		"$DATAROOT", dataRoot,
 	)
 	return replacer.Replace(seatbeltTemplate)
-}
-
-// fallbackExec returns a plain exec.Cmd as a fallback when sandbox setup fails.
-func fallbackExec(cmd []string) *exec.Cmd {
-	if len(cmd) == 0 {
-		if runtime.GOOS == "windows" {
-			return exec.Command("cmd", "/c", "exit", "0")
-		}
-		return exec.Command("true")
-	}
-	return exec.Command(cmd[0], cmd[1:]...)
 }

@@ -7,7 +7,7 @@ type EntityType int
 
 const (
 	// EntityTypePerson represents a person entity (AI or human).
-	EntityTypePerson  EntityType = iota + 1
+	EntityTypePerson EntityType = iota + 1
 	// EntityTypeSession represents a session entity.
 	EntityTypeSession
 )
@@ -21,12 +21,12 @@ const (
 // Key design:
 //   - Each (person_id, entity_type, entity_id) has exactly one profile row.
 //     New reflections replace the old narrative (update, not append).
-//   - Evidence selection: top K observations sorted by importance DESC (id DESC
-//     as tiebreaker), with no survival_count gate.
+//   - Evidence selection: top K observations by importance, with newer IDs
+//     breaking ties; there is no survival_count gate.
 //   - input_md5 is the MD5 hash of the evidence text at generation time. It is
 //     compared before re-generation to skip when input is unchanged.
 //   - Each generation is fresh — no prior narrative is fed to the LLM.
-//   - Rate limit: same profile at most once per 24 hours.
+//   - Rate limit: same profile at most once per six hours.
 type EntityProfile struct {
 	ID            int64      `gorm:"primaryKey;autoIncrement" json:"id"`
 	PersonID      int64      `gorm:"not null;uniqueIndex:idx_entity_profile;column:person_id" json:"person_id"`

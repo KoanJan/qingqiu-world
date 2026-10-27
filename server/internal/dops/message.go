@@ -1,6 +1,8 @@
 package dops
 
 import (
+	"context"
+
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 
@@ -50,11 +52,16 @@ func GetMaxMessageID(sessionID int64) (int64, error) {
 
 // GetPersonNames returns the names indexed by person ID.
 func GetPersonNames(personIDs []int64) (map[int64]string, error) {
+	return GetPersonNamesContext(context.Background(), personIDs)
+}
+
+// GetPersonNamesContext lets a caller interrupt a name lookup with its work.
+func GetPersonNamesContext(ctx context.Context, personIDs []int64) (map[int64]string, error) {
 	if len(personIDs) == 0 {
 		return map[int64]string{}, nil
 	}
 	var persons []model.Person
-	if err := database.DB.Where("id IN ?", personIDs).Find(&persons).Error; err != nil {
+	if err := database.DB.WithContext(ctx).Where("id IN ?", personIDs).Find(&persons).Error; err != nil {
 		return nil, err
 	}
 	names := make(map[int64]string, len(persons))

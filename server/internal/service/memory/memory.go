@@ -23,13 +23,21 @@ var (
 // Init sets the embedding service reference for the memory system.
 // Must be called once during application startup, before any memory operations.
 // Idempotent: only the first call has effect.
-// embeddingSvc may be nil if only profile generation is needed.
+// An initial installation may not have an embedding service. Source memory,
+// lexical recall, and observation maintenance remain available in that case;
+// vector-dependent background work starts after a configured restart.
 func Init(es *llm.EmbeddingService) {
 	initOnce.Do(func() {
 		embeddingSvc = es
 		ready.Store(true)
 		applogger.Info("Memory system initialized")
 	})
+}
+
+// EmbeddingAvailable reports whether this process has a configured embedding
+// service. The service is fixed at startup, so concurrent reads are safe.
+func EmbeddingAvailable() bool {
+	return embeddingSvc != nil
 }
 
 func panicIfNotReady() {
@@ -45,6 +53,12 @@ func Start(ctx context.Context) {
 	go startEventVectorization(ctx)
 	go startTermIndexMaintenance(ctx)
 	go runDailyCron(ctx)
+	if EmbeddingAvailable() {
+		go runDailyMemoryIndex(ctx)
+		go runVectorBackfill(ctx)
+	} else {
+		applogger.Info("Date and cognitive memory generation deferred until embedding configuration is loaded at startup")
+	}
 	applogger.Info("Memory background services started")
 }
 

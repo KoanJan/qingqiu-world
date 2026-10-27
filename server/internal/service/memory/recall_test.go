@@ -24,7 +24,7 @@ func recallTestDB(t testing.TB) *gorm.DB {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{}, &model.Message{}, &model.Event{}, &model.AgentObservation{}, &model.Decision{}, &model.Action{}, &model.ActionEffect{}, &model.Work{}, &model.FocusHandoff{}, &model.MemoryTerm{}, &model.EntityProfile{}, &model.Jinshu{}, &model.AgentBiography{}, &model.PSDigest{}, &model.ScheduledEvent{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.ParticipantSession{}, &model.Message{}, &model.Event{}, &model.AgentObservation{}, &model.Decision{}, &model.Action{}, &model.ActionEffect{}, &model.Work{}, &model.FocusHandoff{}, &model.MemoryTerm{}, &model.EntityProfile{}, &model.Jinshu{}, &model.AgentBiography{}, &model.PSDigest{}, &model.ScheduledEvent{}, &model.DailyMemory{}, &model.CognitiveMemory{}, &model.CognitiveMemoryVersion{}, &model.CognitiveProcess{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
@@ -72,7 +72,7 @@ func TestObservedMessagesNameTheirSpeakers(t *testing.T) {
 		if err := db.Create(&model.AgentObservation{PersonID: 13, EventID: event.ID}).Error; err != nil {
 			t.Fatal(err)
 		}
-		observed, err := DescribeObservedEvent(13, event.ID)
+		observed, err := DescribeObservedEvent(context.Background(), 13, event.ID)
 		if err != nil || !strings.Contains(observed, spec.wanted) {
 			t.Fatalf("recent experience speaker: %q, err=%v", observed, err)
 		}

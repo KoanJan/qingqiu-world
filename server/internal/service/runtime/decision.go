@@ -2,7 +2,6 @@ package runtime
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -101,6 +100,7 @@ Type 4 (create_alarm) — Set an alarm that will wake you at a future time. Sett
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
    - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
+   - Use list_pending_alarms when you need to check what is already scheduled. Actions in one decision have no order; do not create and cancel the same alarm in one decision.
 
 Type 5 (update_bio) — Update your own Bio (self-introduction displayed to others).
    - MUST include a "bio_update" object with "bio".
@@ -147,6 +147,10 @@ Type 12 (manage_memo) — Write or change a private memo to your future self, ac
    - Create needs the full content and may set pinned. Other operations need an existing memo_id and its current revision from your reminders or recall_memo; revise also needs the complete replacement content. Set pinned uses the boolean pinned field.
    - A memo preserves what you choose to remember; it does not schedule a wake-up or prove that an intention was fulfilled. Use create_alarm separately for a timed reminder. Do not copy every message into a memo automatically.
    - Actions in one decision have no order. Choose at most one change to the same memo in this decision.
+
+Type 13 (cancel_alarm) — Cancel one of your alarms that is still pending.
+   - MUST include "cancel_alarm_plan" with a positive "alarm_id" from list_pending_alarms.
+   - A fired or already cancelled alarm cannot be cancelled. Cancellation is recorded only if it wins the race with firing. Do not claim in a sibling chat that cancellation already succeeded.
 
 Important: "Active works" only includes works currently running. If the event refers to something that was done previously (e.g., "stop the service you started", "check the thing you did earlier"), that previous work has already finished — treat it as a NEW request. Start a new FocusedWork only if the new request meets the FocusedWork criteria above; otherwise reply directly or inspect bounded metadata first.
 
@@ -200,6 +204,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 // The Action surface is intentionally narrower than the event-triggered path:
 //   - action.Chat (type=0): compose and send a chat message.
 //   - action.CreateAlarm (type=4): set a future alarm.
+//   - action.CancelAlarm (type=13): cancel one pending alarm.
 //   - action.UpdateBio (type=5): update your self-introduction bio.
 //   - action.EnterPrivateSpace (type=6): enter your private space.
 //   - action.SendJinshu: send an existing deliverable.
@@ -255,6 +260,7 @@ Type 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - action: "send_message" (fast path — instantly send action_content) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
    - expression_instruction: Required when action is "send_message" — how the message should be expressed in speech.
+   - Use list_pending_alarms to inspect existing alarms before creating another when the current schedule matters.
 
 Type 5 (update_bio) — Update your own Bio (self-introduction that others see).
    - MUST include a "bio_update" object with "bio".
@@ -288,6 +294,10 @@ Type 12 (manage_memo) — Write or change a private memo to your future self wit
    - A memo is not a timed alarm or proof that an intention was fulfilled. Keep one only when you have something worth retaining for later.
    - Actions in one decision have no order. Choose at most one change to the same memo in this decision.
 
+Type 13 (cancel_alarm) — Cancel one of your alarms that is still pending.
+   - MUST include "cancel_alarm_plan" with a positive "alarm_id" from list_pending_alarms.
+   - A fired or already cancelled alarm cannot be cancelled. Actions in one decision have no order.
+
 You may return multiple actions (e.g., begin a conversation AND update your bio). Each is independent.
 
 If you have nothing to act on, return an empty actions list. This is the default — do not force action.
@@ -315,64 +325,13 @@ Write background, guidance, and plan in the same language you would use to speak
 // Also serves as the LLM structured output schema — the jsonschema tags
 // drive JSON Schema generation for the LLM call directly.
 //
-// Thoughts provides the LLM with a chain-of-thought scratchpad. It is
-// instrumental for decision quality but is never consumed by the system
-// after the Decide phase returns — only Actions are read by callers.
+// Thoughts provides the LLM with a chain-of-thought scratchpad. A decision that
+// produced Actions keeps its reasoning on each Action; a decision with no
+// Action keeps these thoughts as its only readable record.
 type DecisionResult struct {
 	Thoughts string          `json:"thoughts" jsonschema:"description=Your reasoning process: why you chose these actions,required"`
 	Actions  []action.Action `json:"actions" jsonschema:"description=List of actions to take. Each action is independent and self-contained.,required"`
 	Accepted bool            `json:"-"` // True only when Decide produced a valid result, including intentional silence.
-}
-
-type decisionJSONCompleter func(context.Context, []llm.Message, llm.JSONSchemaDefinition) (string, error)
-
-func needsChatPlanRepair(act action.Action) bool {
-	if act.Type != action.Chat {
-		return false
-	}
-	plan := act.ChatPlan
-	return plan == nil || plan.Guidance == "" || plan.SessionID == 0 || (plan.SessionID < 0 && plan.RecipientPersonID <= 0)
-}
-
-// repairChatPlans asks for the missing delivery plan without changing the action's intent.
-func repairChatPlans(ctx context.Context, complete decisionJSONCompleter, prompt string, personID int64, decision *DecisionResult) {
-	const maxRepairs = 3
-	repairs := 0
-	schema := llm.GenerateSchema[action.ChatPlan]()
-	for i := range decision.Actions {
-		act := &decision.Actions[i]
-		if !needsChatPlanRepair(*act) {
-			continue
-		}
-		if repairs >= maxRepairs {
-			applogger.Warn("Decision chat plan repair limit reached", "person_id", personID)
-			break
-		}
-		repairs++
-		previousPlan, _ := json.Marshal(act.ChatPlan)
-		repairPrompt := fmt.Sprintf("%s\n\nYour last decision chose a chat action, but its chat_plan was missing or invalid. Produce only the chat_plan for that action; do not decide again.\nAction background: %q\nAction reason: %q\nPrevious chat_plan: %s\nSet guidance to your own intention. Set session_id to the existing target session, or -1 with recipient_person_id for a new conversation. If replying to the triggering message, use that message's session ID.", prompt, act.Background, act.Reason, previousPlan)
-		result, err := complete(ctx, []llm.Message{{Role: "user", Content: repairPrompt}}, llm.JSONSchemaDefinition{
-			Name:        "ChatPlan",
-			Description: "Delivery plan for the chat action already chosen",
-			Strict:      true,
-			Schema:      schema,
-		})
-		if err != nil {
-			applogger.Error("Decision chat plan repair failed", "person_id", personID, "error", err)
-			continue
-		}
-		var plan action.ChatPlan
-		if err := json.Unmarshal([]byte(result), &plan); err != nil {
-			applogger.Error("Decision chat plan repair parse failed", "person_id", personID, "error", err)
-			continue
-		}
-		if plan.Guidance == "" || plan.SessionID == 0 || (plan.SessionID < 0 && plan.RecipientPersonID <= 0) {
-			applogger.Error("Decision chat plan repair returned invalid plan", "person_id", personID)
-			continue
-		}
-		act.ChatPlan = &plan
-		applogger.Info("Decision chat plan repaired", "person_id", personID, "session_id", plan.SessionID)
-	}
 }
 
 // Decide determines how the agent should respond to a Situation.
@@ -622,7 +581,6 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 	if !ok {
 		return DecisionResult{}
 	}
-	repairChatPlans(ctx, chatModel.ChatWithJSONSchema, prompt, personID, &decision)
 
 	applogger.Info("Decision made",
 		"person_id", personID,
@@ -642,7 +600,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 		applogger.Info("Decision: agent chose to do nothing",
 			"person_id", personID,
 		)
-		return DecisionResult{Accepted: true}
+		return DecisionResult{Accepted: true, Thoughts: decision.Thoughts}
 	}
 	if len(validActions) == 0 {
 		applogger.Error("Decision: all actions were invalid and filtered out",
@@ -662,7 +620,7 @@ func decideWithLLM(ctx context.Context, situation *Situation, personID int64, ac
 //
 // Unlike decideWithLLM (which handles an external event), this path presents
 // the agent with the world fact "you are idle" and asks whether it wants to
-// form an intention. Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
+// form an intention. Chat, CreateAlarm, CancelAlarm, UpdateBio, EnterPrivateSpace,
 // SendJinshu, and InspectOwnedSpace are allowed; focused-work actions are not.
 //
 // General state comes from Subject and Environment. Matter.Description only
@@ -701,7 +659,6 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 	if !ok {
 		return DecisionResult{}
 	}
-	repairChatPlans(ctx, chatModel.ChatWithJSONSchema, prompt, personID, &decision)
 
 	applogger.Info("Heartbeat decision made",
 		"person_id", personID,
@@ -717,7 +674,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 			return DecisionResult{}
 		}
 		applogger.Info("Heartbeat Decide: agent chose to do nothing", "person_id", personID)
-		return DecisionResult{Accepted: true}
+		return DecisionResult{Accepted: true, Thoughts: decision.Thoughts}
 	}
 
 	return DecisionResult{
@@ -733,7 +690,7 @@ func decideHeartbeat(ctx context.Context, situation *Situation, personID int64, 
 //
 // situation.Source controls which action types are accepted:
 //   - External: all action types valid (subject to per-type checks).
-//   - Internal (heartbeat): Chat, CreateAlarm, UpdateBio, EnterPrivateSpace,
+//   - Internal (heartbeat): Chat, CreateAlarm, CancelAlarm, UpdateBio, EnterPrivateSpace,
 //     SendJinshu, InspectOwnedSpace, and ManageMemo are allowed. Focused-work actions and
 //     Jinshu inspection/list actions require an external event.
 //
@@ -754,7 +711,7 @@ func filterValidActions(actions []action.Action, activeWorks []*work, situation 
 				valid = append(valid, act)
 			}
 		case action.Chat:
-			if isValidChatAction(act, situation) {
+			if isValidChatAction(act) {
 				valid = append(valid, act)
 			}
 		case action.StartFocusedWork:
@@ -777,6 +734,12 @@ func filterValidActions(actions []action.Action, activeWorks []*work, situation 
 			if isValidCreateAlarmAction(act) {
 				valid = append(valid, act)
 			}
+		case action.CancelAlarm:
+			if act.CancelAlarmPlan == nil || act.CancelAlarmPlan.AlarmID <= 0 {
+				applogger.Error("Decision cancel_alarm: missing positive alarm_id")
+				continue
+			}
+			valid = append(valid, act)
 		case action.UpdateBio:
 			if isValidUpdateBioAction(act) {
 				valid = append(valid, act)
@@ -892,27 +855,30 @@ func isValidRouteFocusedWorkAction(dec action.Action, activeWorks []*work) bool 
 // SessionID must be either positive (existing session) or -1 (new session).
 // 0 is always rejected — it is indistinguishable from a missing field in
 // LLM-generated JSON.
-func isValidChatAction(dec action.Action, situation *Situation) bool {
-	if dec.ChatPlan == nil {
-		applogger.Error("Decision chat: missing chat_plan, skipping")
-		return false
-	}
-	plan := dec.ChatPlan
-	if plan.Guidance == "" {
-		applogger.Error("Decision chat: missing guidance, skipping")
-		return false
-	}
-
-	if plan.SessionID == 0 {
-		// Go zero value, indistinguishable from missing field in LLM JSON.
-		applogger.Error("Decision chat: session_id is 0 (invalid), skipping")
-		return false
-	}
-	if plan.UseNewSession() && plan.RecipientPersonID <= 0 {
-		applogger.Error("Decision chat: session_id is -1 but recipient_person_id is empty, skipping")
+func isValidChatAction(dec action.Action) bool {
+	if problem := chatPlanProblem(dec.ChatPlan); problem != "" {
+		applogger.Error("Decision chat: invalid chat_plan, skipping", "problem", problem)
 		return false
 	}
 	return true
+}
+
+// chatPlanProblem checks the same delivery fields before DecideLoop accepts a
+// decision and when the resulting Action is validated for execution.
+func chatPlanProblem(plan *action.ChatPlan) string {
+	if plan == nil {
+		return "chat_plan is missing"
+	}
+	if strings.TrimSpace(plan.Guidance) == "" {
+		return "chat_plan.guidance is missing"
+	}
+	if plan.SessionID == 0 || plan.SessionID < -1 {
+		return "chat_plan.session_id must be a positive existing session ID or -1 for a new conversation"
+	}
+	if plan.SessionID == -1 && plan.RecipientPersonID <= 0 {
+		return "chat_plan.recipient_person_id must be positive when session_id is -1"
+	}
+	return ""
 }
 
 // isValidStartFocusedWorkAction checks whether a start_focused_work action has a valid

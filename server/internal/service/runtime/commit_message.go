@@ -64,6 +64,19 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 		applogger.Error("commitMessage: session unavailable", "session_id", req.sessionID, "error", err)
 		return
 	}
+	// Sending is an action, not comprehension of preceding incoming messages.
+	// The read boundary advances only with a persisted chat Decision.
+	// Updating the participant row also verifies membership at the final write
+	// boundary. A wrong session ID must not create a Message or its causal facts.
+	member := tx.Model(&model.ParticipantSession{}).
+		Where("session_id = ? AND participant_id = ?", req.sessionID, r.agentPersonID).
+		Update("last_active_at", time.Now())
+	if member.Error != nil || member.RowsAffected != 1 {
+		applogger.Error("commitMessage: sender is not a unique session participant",
+			"session_id", req.sessionID, "person_id", r.agentPersonID,
+			"rows_affected", member.RowsAffected, "error", member.Error)
+		return
+	}
 
 	msg := &model.Message{
 		SessionID:             req.sessionID,
@@ -93,16 +106,6 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 		return
 	}
 
-	// Sending is an action, not comprehension of preceding incoming messages.
-	// The read boundary advances only with a persisted chat Decision.
-	if err := tx.Model(&model.ParticipantSession{}).
-		Where("session_id = ? AND participant_id = ?", req.sessionID, r.agentPersonID).
-		Update("last_active_at", time.Now()).Error; err != nil {
-		applogger.Error("commitMessage: failed to update participant session",
-			"session_id", req.sessionID, "error", err)
-		return
-	}
-
 	// Fill empty session title with the first message content.
 	titleRunes := []rune(req.content)
 	title := string(titleRunes)
@@ -128,6 +131,9 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 		return
 	}
 	committed = true
+	// A sent message is also a new self-observation. Stop background cognition
+	// so its in-flight model response cannot be accepted as if it saw this fact.
+	r.pauseCurrentCognition()
 	if obsID > 0 {
 		applogger.Debug("Observation created", "person_id", r.agentPersonID, "event_id", eventID, "obs_id", obsID)
 	}

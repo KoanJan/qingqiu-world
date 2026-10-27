@@ -12,13 +12,14 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
 )
 
-const recallPromptInstruction = `Use tools to gather missing facts, then call "decide" once. An empty actions list is valid.
+const recallPromptInstruction = `Use tools to gather missing facts, then call "decide" to submit your decision. An empty actions list is valid.
 Choose the source that can answer your question:
 - "recall_message" shows what was said. Omit session_id to search across accessible conversations.
 - "recall_event" shows an observed event or a recorded action's observed effects.
@@ -27,11 +28,15 @@ Choose the source that can answer your question:
 - The Jinshu list tools show deliveries; "read_jinshu" adds a description, never attachment contents.
 - "recall_workspace" shows workspace names, purposes, and recorded Work or Private Space uses.
 - "recall_memo" browses memos you wrote to yourself or reads one in full, including how it was changed.
+- "list_pending_alarms" shows alarms you set that have not fired or been cancelled. Use an alarm_id from that list to cancel one.
 - "recall_entity_profile" reads an impression you formed of a known person or conversation; it is not direct access to anyone's inner state.
-- "recall_history" discovers records across sources by text or time.
+- "recall_history" discovers records across sources by text or time; person_id narrows to your visible dealings with one known person.
+- "recall_daily_memory" finds summaries of completed contact days; today's records remain available through original-record recall. Use original records to verify details.
+- "recall_cognitive_memory" finds your past understandings and revisions, which may need checking against original records.
 Record references appear in tool ID fields or in parentheses in descriptive text; they are for follow-up lookups. Search results may be incomplete: a limited page or lexical miss does not prove absence. Recall reads records, not AOS file contents or paths; inspect files inside Focus. Decide when the evidence is sufficient, or state what remains uncertain.`
 
 const maxDecideRequests = 5
+const maxDecideCorrections = 1
 const maxRecallResultBytes = 8000
 const maxMemoRecallResultBytes = 22000
 const maxRecallContextBytes = 24000
@@ -66,16 +71,23 @@ func formatGeneralSubject(s SituationSubject) string {
 }
 
 // runDecideLoop gives one decision opportunity a bounded, temporary recall
-// aos. Only the terminal decide call is eligible for persistence.
+// context. A model-correctable decision problem is returned to the same tool
+// conversation for one correction; only a validated decide call proceeds.
 func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID int64, prompt string) (DecisionResult, bool) {
 	messages := []llm.Message{{Role: "user", Content: prompt}}
-	definitions := append(recallToolDefinitions(), jinshuToolDefinitions()...)
+	definitions := append(recallToolDefinitions(eventID > 0), jinshuToolDefinitions()...)
+	definitions = append(definitions, cognitiveRecallDefinitions()...)
+	definitions = append(definitions, llm.FunctionDefinition{Name: "list_pending_alarms", Description: "Read only your alarms that are still pending, ordered by trigger time. Cancelled and triggered alarms are absent. Page through the list to find an alarm_id before choosing cancel_alarm.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		"page":      map[string]interface{}{"type": "integer", "description": "1-based page; default 1."},
+		"page_size": map[string]interface{}{"type": "integer", "description": "Default 5, maximum 20."},
+	}}})
 	decideDefinition := decisionToolDefinition()
 	seen := make(map[string]struct{})
 	recalledBytes := 0
-	for request := 1; request <= maxDecideRequests; request++ {
+	corrections := 0
+	for request := 1; request <= maxDecideRequests+maxDecideCorrections; request++ {
 		available := []llm.FunctionDefinition{decideDefinition}
-		if request < maxDecideRequests {
+		if corrections == 0 && request < maxDecideRequests {
 			available = append(available, definitions...)
 		}
 		response, err := client.ChatWithRequiredTools(ctx, messages, available)
@@ -98,10 +110,28 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 				applogger.Error("DecideLoop invalid decide arguments", "person_id", personID, "event_id", eventID, "error", err)
 				return DecisionResult{}, false
 			}
+			problem, err := validateDecision(personID, result)
+			if err != nil {
+				applogger.Error("DecideLoop could not validate decision", "person_id", personID, "event_id", eventID, "error", err)
+				return DecisionResult{}, false
+			}
+			if problem != "" {
+				if corrections >= maxDecideCorrections {
+					applogger.Error("DecideLoop corrected decision is still invalid", "person_id", personID, "event_id", eventID, "problem", problem)
+					return DecisionResult{}, false
+				}
+				corrections++
+				applogger.Warn("DecideLoop decision invalid; requesting correction", "person_id", personID, "event_id", eventID, "problem", problem)
+				messages = append(messages,
+					llm.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls},
+					llm.Message{Role: "tool", ToolCallID: call.ID, Content: "Decision not accepted: " + problem + ". No action has run. Submit the complete corrected decision with the decide tool."},
+				)
+				continue
+			}
 			applogger.Info("DecideLoop completed", "person_id", personID, "event_id", eventID, "requests", request, "action_count", len(result.Actions))
 			return result, true
 		}
-		if request == maxDecideRequests {
+		if request >= maxDecideRequests || corrections > 0 {
 			applogger.Error("DecideLoop recalled after terminal request", "person_id", personID, "event_id", eventID, "tool", call.Function.Name)
 			return DecisionResult{}, false
 		}
@@ -113,10 +143,14 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 			output = "The recall budget for this decision is exhausted. Decide from the available material and state any uncertainty."
 		} else {
 			seen[key] = struct{}{}
-			if isJinshuTool(call.Function.Name) {
+			if call.Function.Name == "recall_daily_memory" || call.Function.Name == "recall_cognitive_memory" {
+				output, err = executeCognitiveRecall(ctx, personID, call.Function.Name, call.Function.Arguments)
+			} else if isJinshuTool(call.Function.Name) {
 				output, err = executeJinshuTool(personID, call.Function.Name, call.Function.Arguments)
 			} else if call.Function.Name == "recall_memo" {
 				output, err = executeMemoRecall(personID, call.Function.Arguments)
+			} else if call.Function.Name == "list_pending_alarms" {
+				output, err = executePendingAlarmList(personID, call.Function.Arguments)
 			} else {
 				output, err = executeRecallTool(personID, eventID, call.Function.Name, call.Function.Arguments)
 			}
@@ -125,13 +159,15 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 				output = "Recall could not complete: " + err.Error() + ". This is an unavailable source, not evidence of absence."
 			}
 			resultLimit := maxRecallResultBytes
-			if call.Function.Name == "recall_memo" {
-				resultLimit = maxMemoRecallResultBytes // A complete memo can contain 8 KiB of text before JSON escaping.
+			if call.Function.Name == "recall_memo" || call.Function.Name == "list_pending_alarms" {
+				resultLimit = maxMemoRecallResultBytes // Current private resources may contain complete agent-authored text.
 			}
 			if len(output) > resultLimit || recalledBytes+len(output) > maxRecallContextBytes {
 				applogger.Warn("DecideLoop recall output exceeded budget", "person_id", personID, "event_id", eventID, "tool", call.Function.Name, "bytes", len(output), "already_used", recalledBytes)
 				if call.Function.Name == "recall_memo" {
 					output = "This memo result does not fit the remaining recall context for this decision. Decide from the available material or revisit it later; omitted content is not evidence of absence."
+				} else if call.Function.Name == "list_pending_alarms" {
+					output = "This alarm page does not fit the remaining context for this decision. Try a smaller page_size or revisit the list later; omitted alarms may still be pending."
 				} else {
 					output = "This recall page exceeds the remaining context budget. Narrow the query, time range, or page size; the omitted material is not evidence of absence."
 				}
@@ -141,6 +177,33 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 		messages = append(messages, llm.Message{Role: "assistant", Content: response.Content, ToolCalls: response.ToolCalls}, llm.Message{Role: "tool", ToolCallID: call.ID, Content: output})
 	}
 	return DecisionResult{}, false
+}
+
+// validateDecision checks model-correctable problems while the proposed
+// decision still has its recall context. It currently covers Chat delivery;
+// execution-specific Action checks remain in filterValidActions. Database
+// failures abort Decide rather than asking the model to correct an unknown
+// condition.
+func validateDecision(personID int64, decision DecisionResult) (string, error) {
+	var problems []string
+	for i, act := range decision.Actions {
+		if act.Type == action.Chat {
+			if problem := chatPlanProblem(act.ChatPlan); problem != "" {
+				problems = append(problems, fmt.Sprintf("action %d: %s", i+1, problem))
+				continue
+			}
+			if act.ChatPlan.SessionID > 0 {
+				member, err := dops.IsParticipant(act.ChatPlan.SessionID, personID)
+				if err != nil {
+					return "", fmt.Errorf("check session %d participant %d: %w", act.ChatPlan.SessionID, personID, err)
+				}
+				if !member {
+					problems = append(problems, fmt.Sprintf("action %d: chat_plan.session_id=%d is not a conversation you participate in; choose one of your conversations or use session_id=-1 to start a new one", i+1, act.ChatPlan.SessionID))
+				}
+			}
+		}
+	}
+	return strings.Join(problems, "; "), nil
 }
 
 // decisionToolDefinition exposes DecisionResult as the loop's terminal call.
@@ -153,15 +216,19 @@ func decisionToolDefinition() llm.FunctionDefinition {
 	return llm.FunctionDefinition{Name: "decide", Description: "Submit this decision once, including an empty actions list if no action is needed.", Parameters: schema}
 }
 
-// recallToolDefinitions describes the bounded, read-only memory queries
-// available while forming one decision.
-func recallToolDefinitions() []llm.FunctionDefinition {
+// recallToolDefinitions describes shared read-only queries. Only an
+// event-triggered Decide has a current Event for a bare recall_event call.
+func recallToolDefinitions(hasCurrentEvent bool) []llm.FunctionDefinition {
+	eventDescription := "Read an observed event by event_id, find observed effects of your action_id, or search observed events by query and time. With no filters, browse recent observed events. event_id and action_id are exact reads: do not combine them with query, time bounds, or a cursor. Page through search results with next_cursor only; do not reuse a cursor after changing filters or after switching recall tools."
+	if hasCurrentEvent {
+		eventDescription = "Read an observed event by event_id, find observed effects of your action_id, or search observed events by query and time. With no arguments, read the event that triggered this decision. event_id and action_id are exact reads: do not combine them with query, time bounds, or a cursor. Page through search results with next_cursor only; do not reuse a cursor after changing filters or after switching recall tools."
+	}
 	common := map[string]interface{}{
 		"query":     map[string]interface{}{"type": "string", "description": "Optional terms from record text or Workspace name/purpose; not a search of AOS file paths or contents. Omit to browse recent records."},
 		"from_time": map[string]interface{}{"type": "string", "description": "Optional inclusive timestamp. RFC3339 with timezone, or local YYYY-MM-DD HH:MM:SS / YYYY-MM-DDTHH:MM:SS in the project timezone."},
 		"to_time":   map[string]interface{}{"type": "string", "description": "Optional exclusive timestamp. RFC3339 with timezone, or local YYYY-MM-DD HH:MM:SS / YYYY-MM-DDTHH:MM:SS in the project timezone."},
 		"page_size": map[string]interface{}{"type": "integer", "description": "Optional page size, default 5, maximum 20."},
-		"cursor":    map[string]interface{}{"type": "string", "description": "Optional next_cursor returned by the previous page."},
+		"cursor":    map[string]interface{}{"type": "string", "description": "Optional next_cursor returned by the immediately preceding page of this same tool. Reuse it with the same arguments; do not change filters, switch to another recall tool, or reuse an older token. Tokens also expire."},
 	}
 	makeTool := func(name, description string, extra map[string]interface{}) llm.FunctionDefinition {
 		props := make(map[string]interface{}, len(common)+len(extra))
@@ -174,13 +241,16 @@ func recallToolDefinitions() []llm.FunctionDefinition {
 		return llm.FunctionDefinition{Name: name, Description: description, Parameters: map[string]interface{}{"type": "object", "properties": props}}
 	}
 	return []llm.FunctionDefinition{
-		makeTool("recall_history", "Discover accessible, observed events (including messages and Jinshu metadata), your actions, works, and Focus handoffs across sources. Provide query or from_time.", nil),
-		makeTool("recall_event", "Read an observed event by event_id, find observed effects of your action_id, or search observed events. No arguments reads the current event.", map[string]interface{}{"event_id": map[string]interface{}{"type": "integer"}, "action_id": map[string]interface{}{"type": "integer"}}),
+		makeTool("recall_history", "Discover accessible, observed events (including messages and Jinshu metadata), your actions, works, and Focus handoffs across sources. Provide query or from_time, or person_id to browse explicit dealings with one person.", map[string]interface{}{
+			"query":     map[string]interface{}{"type": "string", "description": "Optional terms from record text or Workspace name/purpose; not a search of AOS file paths or contents. At least one of query, from_time, or person_id is required."},
+			"person_id": map[string]interface{}{"type": "integer", "description": "Optional other person's ID for observed two-person conversation, Jinshu, and causally linked behavior."},
+		}),
+		makeTool("recall_event", eventDescription, map[string]interface{}{"event_id": map[string]interface{}{"type": "integer"}, "action_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_message", "Search or browse observed messages across accessible sessions. Omit session_id to discover conversations; provide it to narrow the search, or use message_id to read one message.", map[string]interface{}{"session_id": map[string]interface{}{"type": "integer"}, "message_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_action", "Read your recorded action by action_id, one decision's actions, or actions related to a work_id. For observed effects, use recall_event.", map[string]interface{}{"action_id": map[string]interface{}{"type": "integer"}, "decision_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_work", "Find your past or ongoing Works by query or time without a work_id, or inspect one by ID. Returns its goal and current status; use recall_focus_handoff for its recorded outcome.", map[string]interface{}{"work_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_workspace", "Browse your registered Workspace names and purposes, or inspect one by workspace_id to see its origin and declared Work or private-space uses. Does not read files.", map[string]interface{}{"workspace_id": map[string]interface{}{"type": "integer"}}),
-		{Name: "recall_memo", Description: "Browse your private memos or read one in full by memo_id. Lists include previews and creation/update times; reading returns full current content and recorded change sources. A memo is your own note, not proof that its content remains true.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
+		{Name: "recall_memo", Description: "Browse your private memos page by page or read one in full by memo_id. There is no text search: query, from_time, to_time, and cursor do not exist here, and any unlisted argument is rejected. To find a memo by content, browse pages and read the previews. Lists include previews and creation/update times; reading returns full current content and recorded change sources. history_page applies only when memo_id is set. A memo is your own note, not proof that its content remains true.", Parameters: map[string]interface{}{"type": "object", "properties": map[string]interface{}{
 			"memo_id":      map[string]interface{}{"type": "integer", "description": "Read this owned memo in full; omit to browse."},
 			"status":       map[string]interface{}{"type": "integer", "description": "When browsing: 0 or omitted for all, 1 active, 2 archived."},
 			"page":         map[string]interface{}{"type": "integer", "description": "When browsing: 1-based page; default 1."},
@@ -195,6 +265,8 @@ func recallToolDefinitions() []llm.FunctionDefinition {
 // recallArguments decodes the union of all read-only recall tool parameters.
 // validateRecallArguments rejects fields irrelevant to the selected tool.
 type recallArguments struct {
+	// PersonID limits cross-source history to explicit dealings with another person.
+	PersonID int64 `json:"person_id"`
 	// EventID selects one occurrence for recall_event.
 	EventID int64 `json:"event_id"`
 	// SessionID and MessageID narrow recall_message to one conversation or row.
@@ -240,6 +312,7 @@ func executeRecallTool(personID, eventID int64, name, arguments string) (string,
 	switch name {
 	case "recall_history":
 		req.Scope = memory.RecallAll
+		req.CounterpartID = args.PersonID
 	case "recall_event":
 		req.Scope = memory.RecallEvents
 		req.SourceID = args.EventID
@@ -364,6 +437,9 @@ func parseRecallTime(value string, location *time.Location) (time.Time, error) {
 // validateRecallArguments rejects keys that a tool cannot apply. Silently
 // ignoring an anchor would make a broader result look like a scoped read.
 func validateRecallArguments(name string, a recallArguments) error {
+	if a.PersonID < 0 || (a.PersonID != 0 && name != "recall_history") {
+		return fmt.Errorf("person_id is only valid for recall_history")
+	}
 	other := func(ids ...int64) bool {
 		for _, id := range ids {
 			if id != 0 {
@@ -377,8 +453,8 @@ func validateRecallArguments(name string, a recallArguments) error {
 		if other(a.EventID, a.SessionID, a.MessageID, a.ActionID, a.DecisionID, a.WorkID, a.HandoffID, int64(a.EntityType), a.EntityID) {
 			return fmt.Errorf("recall_history does not accept source IDs")
 		}
-		if strings.TrimSpace(a.Query) == "" && a.FromTime == "" {
-			return fmt.Errorf("recall_history needs query words or from_time to bound cross-source discovery")
+		if strings.TrimSpace(a.Query) == "" && a.FromTime == "" && a.PersonID == 0 {
+			return fmt.Errorf("recall_history needs query words, from_time, or person_id to bound cross-source discovery")
 		}
 	case "recall_event":
 		if other(a.SessionID, a.MessageID, a.DecisionID, a.WorkID, a.HandoffID, int64(a.EntityType), a.EntityID) {

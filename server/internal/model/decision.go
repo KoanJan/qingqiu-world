@@ -20,6 +20,7 @@ const (
 	ActionTypeInspectOwnedSpace
 	ActionTypeWaitForExecutionSlot
 	ActionTypeManageMemo
+	ActionTypeCancelAlarm
 )
 
 // Label names an Action for historical presentation without changing its
@@ -52,6 +53,8 @@ func (t ActionType) Label() string {
 		return "wait for execution slot"
 	case ActionTypeManageMemo:
 		return "maintain a memo"
+	case ActionTypeCancelAlarm:
+		return "cancel a scheduled alarm"
 	default:
 		return "unknown action"
 	}
@@ -79,6 +82,7 @@ const (
 	ActionEffectWorkControl
 	ActionEffectPSDigest
 	ActionEffectMemo
+	ActionEffectScheduledEventCancellation
 )
 
 // Decision is one accepted Decide result. EventID is zero only for a true
@@ -90,8 +94,14 @@ type Decision struct {
 	PersonID int64 `gorm:"not null;index:idx_decisions_person_event;column:person_id" json:"person_id"`
 	// EventID identifies the trigger; zero represents a heartbeat.
 	EventID int64 `gorm:"not null;default:0;index:idx_decisions_person_event;column:event_id" json:"event_id"`
+	// Thoughts preserves the accepted reasoning of a decision that produced no
+	// Action. A decision with Actions keeps its reasoning on each Action instead,
+	// so a heartbeat that chose nothing still leaves a readable record. A row
+	// with neither Actions nor Thoughts predates this field and is omitted from
+	// the dated account.
+	Thoughts string `gorm:"type:text;not null;default:''" json:"thoughts"`
 	// CreatedAt records when this accepted decision was persisted.
-	CreatedAt time.Time `gorm:"not null;autoCreateTime" json:"created_at"`
+	CreatedAt time.Time `gorm:"not null;autoCreateTime;index:idx_decisions_created" json:"created_at"`
 }
 
 // TableName returns the database table for accepted decisions.

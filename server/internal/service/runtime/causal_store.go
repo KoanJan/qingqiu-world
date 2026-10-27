@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -65,6 +66,12 @@ func persistDecision(personID int64, situation *Situation, result *DecisionResul
 	}
 
 	decision := model.Decision{PersonID: personID, EventID: eventID}
+	// A decision with no Action has no other row to hold its reasoning. Keeping
+	// the accepted thoughts makes an intentional silence, including a heartbeat
+	// that chose nothing, a readable record rather than an empty one.
+	if len(result.Actions) == 0 {
+		decision.Thoughts = strings.TrimSpace(result.Thoughts)
+	}
 	if err := tx.Create(&decision).Error; err != nil {
 		return false, fmt.Errorf("create decision: %w", err)
 	}
@@ -187,6 +194,8 @@ func encodeActionPlan(act action.Action) (string, error) {
 		plan = act.WaitForExecutionSlotPlan
 	case action.ManageMemo:
 		plan = act.MemoPlan
+	case action.CancelAlarm:
+		plan = act.CancelAlarmPlan
 	default:
 		return "", fmt.Errorf("unknown action type %d", act.Type)
 	}
@@ -233,7 +242,7 @@ func endActionLogged(actionID int64, operation string) {
 
 // recordActionEffect adds a private, application-validated source relation.
 func recordActionEffect(tx *gorm.DB, actionID int64, effectType model.ActionEffectType, effectID int64) error {
-	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectMemo {
+	if actionID <= 0 || effectID <= 0 || effectType < model.ActionEffectWork || effectType > model.ActionEffectScheduledEventCancellation {
 		return fmt.Errorf("invalid action effect: action=%d type=%d effect=%d", actionID, effectType, effectID)
 	}
 	var action model.Action

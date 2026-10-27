@@ -64,7 +64,17 @@ type agentRuntime struct {
 	heartbeatTick      int                // Total heartbeat ticks (for check scheduling)
 	mu                 sync.Mutex         // Protects activeWrites for external queries
 	slotMu             sync.Mutex         // Protects the sustained execution slot.
-	slot               *executionSlot     // One Focus or PS loop at a time.
+	slot               *executionSlot     // One Focus, private-space, or cognitive loop at a time.
+	cognitionWake      chan struct{}      // Wakes the cognitive worker when the runtime may be quiet (capacity 1).
+	cognitiveMu        sync.Mutex         // Serializes cognitive epoch changes and checkpoint commits.
+	cognitiveCancel    context.CancelFunc // Cancels the current model request without blocking Event handling.
+	cognitiveProcessID int64
+	cognitiveEpoch     int64
+	// busy counts the runtime's own active work: an input being processed
+	// (Comprehend, Decide and its finite Actions), a Focused Work, or the
+	// private-space loop. Unlike a boolean it survives several parallel
+	// Actions; the cognition worker starts only when it reaches zero.
+	busy               atomic.Int32
 	learningInProgress atomic.Bool        // Guards against concurrent learning checks
 	privateSpaceLoop   *privatespace.Loop // Private-space loop (nil if not initialized)
 }
@@ -85,6 +95,7 @@ func newAgentRuntime(
 		agentConfigID:     agentConfigID,
 		eventCh:           eventCh,
 		messageCommitCh:   make(chan *commitRequest, 16),
+		cognitionWake:     make(chan struct{}, 1),
 		heartbeatInterval: heartbeatInterval,
 	}
 }
@@ -113,12 +124,22 @@ func (r *agentRuntime) Run(ctx context.Context) {
 		defer internalWg.Done()
 		r.handleMessageCommits(ctx)
 	}()
+	// The cognition worker owns every admission decision for the background
+	// loop; the event loop only signals that conditions may have changed. It is
+	// tracked so a stop cannot return while an admission is still in flight.
+	internalWg.Add(1)
+	go func() {
+		defer internalWg.Done()
+		r.runCognitionWorker(ctx)
+	}()
 	r.replayBufferedEvents(ctx)
 	r.notifyWaitingActions()
+	r.signalCognition()
 
 	for {
 		select {
 		case <-ctx.Done():
+			r.pauseCurrentCognition()
 			heartbeatTimer.Stop()
 			// Drain the timer channel to prevent leak if Stop returned false
 			select {
@@ -139,17 +160,23 @@ func (r *agentRuntime) Run(ctx context.Context) {
 				<-slot.done
 			}
 
-			// Wait for message commit handler to drain its channel
+			// Wait for the message commit handler and the cognition worker. The
+			// second pause covers an admission that completed after the first
+			// one, so no durable Running row is left without an owner.
 			internalWg.Wait()
+			r.pauseCurrentCognition()
 
 			applogger.Info("agentRuntime stopped", "agent_config_id", r.agentConfigID)
 			return
 
 		case event := <-r.eventCh:
 			if event == nil {
+				r.pauseCurrentCognition()
 				applogger.Error("agent event channel closed", "agent_config_id", r.agentConfigID)
 				return
 			}
+			r.busy.Add(1)
+			r.pauseCurrentCognition()
 			// External events reset idleTicks so the adaptive backoff
 			// (Active→Steady→Dormant) restarts from heartbeatBase.
 			r.idleTicks = 0
@@ -173,10 +200,20 @@ func (r *agentRuntime) Run(ctx context.Context) {
 				}
 			}
 			r.resetHeartbeatTimer(heartbeatTimer)
+			// Only a decrement can make the runtime idle; waking below that
+			// point would just make the worker re-check and return.
+			if r.busy.Add(-1) == 0 {
+				r.signalCognition()
+			}
 
 		case <-heartbeatTimer.C:
+			r.busy.Add(1)
+			r.pauseCurrentCognition()
 			r.handleHeartbeat(ctx)
 			r.resetHeartbeatTimer(heartbeatTimer)
+			if r.busy.Add(-1) == 0 {
+				r.signalCognition()
+			}
 		}
 	}
 }
@@ -432,9 +469,13 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			r.slotMu.Lock()
 			r.slot.workID = w.ID
 			r.slotMu.Unlock()
+			r.busy.Add(1)
 			go func() {
 				w.Run(ctx)
 				r.releaseExecutionSlot(w.ID, false)
+				if r.busy.Add(-1) == 0 {
+					r.signalCognition()
+				}
 			}()
 		case action.CreateAlarm:
 			if act.AlarmPlan == nil {
@@ -444,6 +485,16 @@ func (r *agentRuntime) executeActions(ctx context.Context, situation *Situation,
 			}
 			r.handleCreateAlarmAction(act, situation)
 			endActionLogged(act.ID, "create_alarm")
+		case action.CancelAlarm:
+			if act.CancelAlarmPlan == nil {
+				applogger.Error("cancel_alarm action has no plan", "action_id", act.ID)
+				endActionLogged(act.ID, "cancel_alarm")
+				continue
+			}
+			if err := cancelScheduledAlarm(r.agentPersonID, act.ID, act.CancelAlarmPlan.AlarmID); err != nil {
+				applogger.Error("cancel_alarm action failed", "person_id", r.agentPersonID, "action_id", act.ID, "alarm_id", act.CancelAlarmPlan.AlarmID, "error", err)
+				endActionLogged(act.ID, "cancel_alarm")
+			}
 		case action.UpdateBio:
 			if act.BioUpdate == nil {
 				applogger.Error("update_bio action has no bio_update", "agent_config_id", r.agentConfigID)
@@ -602,9 +653,13 @@ func (r *agentRuntime) handleEnterPrivateSpace(ctx context.Context, thoughts str
 			return
 		}
 		r.privateSpaceLoop.BeginRun(actionID)
+		r.busy.Add(1)
 		go func() {
 			r.privateSpaceLoop.Run(ctx)
 			r.releaseExecutionSlot(0, true)
+			if r.busy.Add(-1) == 0 {
+				r.signalCognition()
+			}
 		}()
 	}
 }
@@ -1448,6 +1503,9 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 
 	// Recover any abandoned works from previous run
 	recoverActiveWorks(agentConfigID)
+	if err := recoverCognitiveProcesses(ac.PersonID); err != nil {
+		return nil, fmt.Errorf("recover cognitive processes for person %d: %w", ac.PersonID, err)
+	}
 
 	// Energy: trigger lazy recovery on startup so the agent's energy state is
 	// initialized/refreshed before the first event arrives. Non-fatal.

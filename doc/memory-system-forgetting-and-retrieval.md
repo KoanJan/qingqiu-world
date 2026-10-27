@@ -35,7 +35,7 @@ The alternative: **a forgetting-first model of prominence, not deletion.** Durab
 
 This model is grounded in two well-established cognitive phenomena. **Use-dependent retention** (Anderson & Schooler, 1991) demonstrates that human memory strength follows the pattern of environmental demand — items needed more frequently are retained better, and the retention function closely tracks actual usage probability. **Forgetting as adaptive regulation** (Bjork & Bjork, 1992) reframes forgetting not as a failure of recall but as a functional mechanism: by reducing interference from outdated information, forgetting improves retrieval of currently relevant content. An agent that remembers a user's obsolete preferences is worse at serving their current needs than an agent that has let those preferences fade.
 
-An important distinction: this is **not** recency-only ranking. Time-based decay lowers every active importance value, while qualifying use can raise it again. A repeatedly reused older observation can therefore remain prominent in EntityProfile evidence selection. An unreinforced recent one can sink in that ordering. Neither outcome deletes the historical source or establishes whether a user's stated preference is still true.
+An important distinction: this is **not** recency-only ranking. Newly observed records start with a higher importance than older records left to decay, while qualifying use can raise an older record again. EntityProfile selects its evidence by this importance value, using newer IDs only to break ties. Neither outcome deletes the historical source or establishes whether a user's stated preference is still true.
 
 ### The Two-Way Relationship with Retrieval
 
@@ -107,7 +107,7 @@ The observation contains no content — event content is loaded on demand via `e
 
 1. Check density during heartbeat (performed periodically)
 2. Count observations per entity direction (each observation can point to multiple: session + user + agent)
-3. When count >= threshold for a direction, select top-N by importance for LLM reflection
+3. When count >= threshold for a direction, select up to 50 observations by importance for LLM reflection
 4. Generate a fresh narrative (no prior narrative is fed to the LLM) describing the agent's understanding of the entity
 5. MD5 dedup: if the evidence text is unchanged from the last generation, skip
 

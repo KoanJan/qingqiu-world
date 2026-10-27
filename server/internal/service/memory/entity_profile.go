@@ -21,8 +21,10 @@ import (
 // Profile generation constants.
 const (
 	profileTriggerMin   = 10  // 10 Minimum observations in one direction to trigger generation
-	profileTopK         = 50  // Top K observations selected for LLM reflection (by importance DESC, id DESC as tiebreaker)
+	profileTopK         = 50  // Most important observations, with newer IDs breaking equal-importance ties.
 	profileRateLimitMin = 360 // 360 Minutes between profile regenerations for the same entity
+	// A two-person Session contains exactly the profile owner and counterpart.
+	profileDyadParticipantCount = 2
 )
 
 // entityDirection is a composite key for grouping observations by entity.
@@ -35,8 +37,8 @@ type entityDirection struct {
 // with enough observations to warrant EntityProfile generation. For each
 // eligible direction, it triggers LLM reflection asynchronously.
 //
-// Evidence selection is done by top-K importance (with id DESC as tiebreaker),
-// not survival_count. See loadProfileEvidences.
+// Evidence selection follows importance, with newer observations breaking
+// ties. See loadProfileEvidences.
 //
 // Returns the number of profiles triggered.
 func checkDensity(ctx context.Context, personID int64) int {
@@ -284,7 +286,7 @@ func isRateLimited(entityType model.EntityType, entityID, personID int64) bool {
 // generateProfile triggers LLM reflection to produce an EntityProfile
 // narrative for the given agent/entity combination.
 //
-// It loads the top-K observations (by importance) for the entity direction,
+// It loads the most important observations for the entity direction,
 // formats them as evidence, and asks the LLM to synthesize a fresh narrative
 // (no prior narrative is fed). MD5 of the evidence text is compared with the
 // existing profile's input_md5 — if unchanged, generation is skipped.
@@ -469,8 +471,10 @@ func entityLabel(entityType model.EntityType, entityID int64) (string, bool) {
 // loadProfileEvidences loads message content for observations relevant to the
 // given entity direction, formatted for inclusion in the LLM reflection prompt.
 //
-// Selection: top profileTopK observations sorted by importance DESC (id DESC as
-// tiebreaker for equal importance). No survival_count gate.
+// Selection follows the observation's importance, which already decays over
+// time. Person profiles can also inspect the agent's own replies and later
+// Work feedback in a two-person conversation; only the counterpart's
+// observations trigger regeneration.
 func loadProfileEvidences(personID int64, entityType model.EntityType, entityID int64, agentName string) []string {
 	// Load all observations ordered by importance DESC, then id DESC for recency tiebreaking.
 	var observations []model.AgentObservation
@@ -492,7 +496,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 		eventIDs = append(eventIDs, o.EventID)
 	}
 
-	// Load events (message-type and work-completion-type)
+	// Load observed expressions and reported Work outcomes.
 	var events []model.Event
 	if err := database.DB.Where("id IN ?", eventIDs).Find(&events).Error; err != nil {
 		applogger.Error("loadProfileEvidences: failed to load events", "error", err)
@@ -500,6 +504,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 	eventMap := make(map[int64]model.Event)
 	msgRefIDs := make([]int64, 0, len(events))
 	workRefIDs := make([]int64, 0, len(events))
+	jinshuRefIDs := make([]int64, 0, len(events))
 	for _, e := range events {
 		eventMap[e.ID] = e
 		switch e.EventType {
@@ -507,10 +512,22 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			msgRefIDs = append(msgRefIDs, e.RefID)
 		case model.EventTypeWorkCompleted:
 			workRefIDs = append(workRefIDs, e.RefID)
+		case model.EventTypeJinshu, model.EventTypeJinshuSent:
+			jinshuRefIDs = append(jinshuRefIDs, e.RefID)
 		}
 	}
-	if len(msgRefIDs) == 0 && len(workRefIDs) == 0 {
+	if len(msgRefIDs) == 0 && len(workRefIDs) == 0 && len(jinshuRefIDs) == 0 {
 		return nil
+	}
+	jinshuMap := make(map[int64]model.Jinshu)
+	if len(jinshuRefIDs) > 0 {
+		var letters []model.Jinshu
+		if err := database.DB.Where("id IN ?", jinshuRefIDs).Find(&letters).Error; err != nil {
+			applogger.Error("loadProfileEvidences: failed to load Jinshu", "error", err)
+		}
+		for _, letter := range letters {
+			jinshuMap[letter.ID] = letter
+		}
 	}
 
 	// Load messages
@@ -556,6 +573,20 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 	for _, s := range sessions {
 		sessionMap[s.ID] = s
 	}
+	dyadSessions := make(map[int64]bool)
+	if entityType == model.EntityTypePerson {
+		var ids []int64
+		err := database.DB.Table("participant_sessions own").Select("own.session_id").
+			Joins("JOIN participant_sessions other ON other.session_id = own.session_id").
+			Where("own.participant_id = ? AND other.participant_id = ? AND (SELECT COUNT(*) FROM participant_sessions p WHERE p.session_id = own.session_id) = ?", personID, entityID, profileDyadParticipantCount).
+			Pluck("own.session_id", &ids).Error
+		if err != nil {
+			applogger.Error("loadProfileEvidences: failed to load two-person sessions", "person_id", personID, "entity_id", entityID, "error", err)
+		}
+		for _, id := range ids {
+			dyadSessions[id] = true
+		}
+	}
 
 	// Map person_id → person name for resolving labels in evidence.
 	// Batch-load all persons referenced by messages.
@@ -577,9 +608,21 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			personNameMap[p.ID] = p.Name
 		}
 	}
+	if entityType == model.EntityTypePerson && personNameMap[entityID] == "" {
+		names, err := dops.GetPersonNames([]int64{entityID})
+		if err != nil {
+			applogger.Error("loadProfileEvidences: failed to load counterpart name", "person_id", personID, "counterpart_id", entityID, "error", err)
+		}
+		personNameMap[entityID] = names[entityID]
+		if personNameMap[entityID] == "" {
+			applogger.Error("loadProfileEvidences: counterpart name missing", "counterpart_id", entityID)
+			personNameMap[entityID] = "Unknown person"
+		}
+	}
 
-	// Walk observations in importance order, collect top K matching the entity direction.
-	var evidences []string
+	// Observations are already ordered by importance, so selecting the first
+	// matching records preserves the forgetting mechanism's ranking.
+	evidences := make([]string, 0, profileTopK)
 	for _, o := range observations {
 		ev, ok := eventMap[o.EventID]
 		if !ok {
@@ -587,6 +630,19 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 		}
 
 		switch ev.EventType {
+		case model.EventTypeJinshu, model.EventTypeJinshuSent:
+			if entityType != model.EntityTypePerson {
+				continue
+			}
+			letter, ok := jinshuMap[ev.RefID]
+			if !ok || !((letter.FromPersonID == personID && letter.ToPersonID == entityID) || (letter.FromPersonID == entityID && letter.ToPersonID == personID)) {
+				continue
+			}
+			sender := agentName
+			if letter.FromPersonID == entityID {
+				sender = personNameMap[entityID]
+			}
+			evidences = append(evidences, fmt.Sprintf("[%s, %s] Jinshu about %q: %s", o.CreatedAt.Format(time.RFC3339), sender, letter.Topic, letter.Description))
 		case model.EventTypeMessage:
 			msg, ok := msgMap[ev.RefID]
 			if !ok {
@@ -598,7 +654,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			case model.EntityTypeSession:
 				matches = msg.SessionID == entityID
 			case model.EntityTypePerson:
-				matches = msg.PersonID == entityID
+				matches = msg.PersonID == entityID || (msg.PersonID == personID && dyadSessions[msg.SessionID])
 			}
 			if !matches {
 				continue
@@ -609,43 +665,26 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			if personName, ok := personNameMap[msg.PersonID]; ok && personName != agentName {
 				roleLabel = personName
 			}
-			evidences = append(evidences, fmt.Sprintf("[%s] %s", roleLabel, msg.Content))
+			evidences = append(evidences, fmt.Sprintf("[%s, %s] %s", o.CreatedAt.Format(time.RFC3339), roleLabel, msg.Content))
 
 		case model.EventTypeWorkCompleted:
 			work, ok := workMap[ev.RefID]
 			if !ok {
 				continue
 			}
-			// Work events only contribute to the session direction: they
-			// describe what the agent itself did for that session.
-			if entityType != model.EntityTypeSession || work.SessionID != entityID {
+			// Work completion also informs a person profile when the Work
+			// belongs to a two-person session with that counterpart.
+			if !((entityType == model.EntityTypeSession && work.SessionID == entityID) || (entityType == model.EntityTypePerson && dyadSessions[work.SessionID])) {
 				continue
 			}
-			evidences = append(evidences, fmt.Sprintf("[%s] [work] %s (status: %s)",
-				agentName, work.Description, workStatusLabel(work.Status)))
+			evidences = append(evidences, fmt.Sprintf("[%s, %s] Work completion: %s (status: %s)",
+				o.CreatedAt.Format(time.RFC3339), agentName, work.Description, work.Status.Label()))
 		}
-
 		if len(evidences) >= profileTopK {
 			break
 		}
 	}
-
 	return evidences
-}
-
-// workStatusLabel renders a work status as a short human-readable label for
-// profile evidence text.
-func workStatusLabel(status model.WorkStatus) string {
-	switch status {
-	case model.WorkStatusCompleted:
-		return "completed"
-	case model.WorkStatusFailed:
-		return "failed"
-	case model.WorkStatusAbandoned:
-		return "abandoned"
-	default:
-		return "running"
-	}
 }
 
 // getAgentConfigByPersonID retrieves the agent config model by person_id.

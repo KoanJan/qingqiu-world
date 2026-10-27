@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"sort"
@@ -103,7 +104,7 @@ func buildRecentExperienceSummary(personID, currentEventID int64) string {
 		entry := entries[i]
 		line := "- " + entry.when.Format("01-02 15:04:05") + " "
 		if entry.eventID > 0 {
-			description, err := memory.DescribeObservedEvent(personID, entry.eventID)
+			description, err := memory.DescribeObservedEvent(context.Background(), personID, entry.eventID)
 			if err != nil {
 				applogger.Error("recent experience: failed to read observed event", "person_id", personID, "event_id", entry.eventID, "error", err)
 				continue
@@ -165,6 +166,8 @@ func describeRecentDecision(decision model.Decision) string {
 				part += fmt.Sprintf("; the work accepted the control (work_id=%d)", effect.EffectID)
 			case model.ActionEffectMemo:
 				part += fmt.Sprintf("; a private memo was changed (memo_id=%d)", effect.EffectID)
+			case model.ActionEffectScheduledEventCancellation:
+				part += fmt.Sprintf("; the pending alarm was cancelled (alarm_id=%d)", effect.EffectID)
 			default:
 				part += "; recorded an effect"
 			}
@@ -175,6 +178,8 @@ func describeRecentDecision(decision model.Decision) string {
 				part += "; no accepted control was recorded"
 			case model.ActionTypeManageMemo:
 				part += "; no memo change was recorded"
+			case model.ActionTypeCancelAlarm:
+				part += "; no alarm cancellation was recorded"
 			}
 		}
 		parts = append(parts, part)
@@ -228,7 +233,7 @@ func buildWorkControlContext(personID, workID int64) string {
 		}
 		line := fmt.Sprintf("- You attempted to %s the work (work_id=%d)", strings.ToLower(kind), workID)
 		if control.TriggerEventID > 0 {
-			source, err := memory.DescribeObservedEvent(personID, control.TriggerEventID)
+			source, err := memory.DescribeObservedEvent(context.Background(), personID, control.TriggerEventID)
 			if err != nil {
 				applogger.Error("work control context: failed to read trigger", "action_id", control.ID, "event_id", control.TriggerEventID, "error", err)
 			} else {

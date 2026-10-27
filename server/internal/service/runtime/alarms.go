@@ -58,6 +58,17 @@ func (r *alarmRegistryType) unregister(eventID int64, registration *alarmRegistr
 	}
 }
 
+// cancelOne releases the waiter after its alarm's cancellation committed.
+// The conditional status update in the database remains the firing boundary.
+func (r *alarmRegistryType) cancelOne(eventID int64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if registration := r.alarms[eventID]; registration != nil {
+		registration.cancel()
+		delete(r.alarms, eventID)
+	}
+}
+
 // cancelAll cancels all registered alarm goroutines. Called on server shutdown.
 func (r *alarmRegistryType) cancelAll() {
 	r.mu.Lock()

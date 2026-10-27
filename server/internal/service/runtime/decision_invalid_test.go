@@ -26,16 +26,24 @@ func TestAllInvalidActionsDoNotPersistDecision(t *testing.T) {
 	if err != nil {
 		t.Skipf("local HTTP listener is unavailable: %v", err)
 	}
+	requests := 0
 	server := &httptest.Server{Listener: listener, Config: &http.Server{Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
 		var request struct {
 			Messages []struct {
+				Role    string `json:"role"`
 				Content string `json:"content"`
 			} `json:"messages"`
+			Tools []struct {
+				Function struct {
+					Name string `json:"name"`
+				} `json:"function"`
+			} `json:"tools"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Errorf("decode model request: %v", err)
 		}
-		if len(request.Messages) != 1 || !strings.Contains(request.Messages[0].Content, "A biography changed.") {
+		if len(request.Messages) == 0 || !strings.Contains(request.Messages[0].Content, "A biography changed.") {
 			t.Errorf("current Event was missing from the initial prompt: %+v", request.Messages)
 		} else {
 			prompt := request.Messages[0].Content
@@ -43,6 +51,14 @@ func TestAllInvalidActionsDoNotPersistDecision(t *testing.T) {
 				if strings.Contains(prompt, marker) {
 					t.Errorf("internal causal ID leaked into initial prompt: %s", marker)
 				}
+			}
+		}
+		if requests == 2 {
+			if len(request.Messages) != 3 || request.Messages[2].Role != "tool" || !strings.Contains(request.Messages[2].Content, "chat_plan.session_id") {
+				t.Errorf("invalid ChatPlan was not returned for correction: %+v", request.Messages)
+			}
+			if len(request.Tools) != 1 || request.Tools[0].Function.Name != "decide" {
+				t.Errorf("correction request must expose only decide: %+v", request.Tools)
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -79,6 +95,9 @@ func TestAllInvalidActionsDoNotPersistDecision(t *testing.T) {
 		&comprehendTypes.Comprehension{EventDescription: "A biography changed."}, 100, "")
 	situation.generalReady = true
 	result := decideWithLLM(context.Background(), situation, personID, nil)
+	if requests != 2 {
+		t.Fatalf("invalid ChatPlan should have received one correction opportunity, got %d requests", requests)
+	}
 	if result.Accepted || len(result.Actions) != 0 {
 		t.Fatalf("invalid action was accepted: %+v", result)
 	}

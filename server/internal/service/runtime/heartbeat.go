@@ -30,7 +30,7 @@ const (
 // their tick schedules. After maintenance, when the agent is idle and has
 // enough Energy for an active action (CostActive), the heartbeat builds a
 // self-observation Description and calls Decide.
-func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
+func (r *agentRuntime) handleHeartbeat(ctx context.Context) bool {
 	r.heartbeatTick++
 	r.idleTicks++
 
@@ -61,7 +61,7 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 			"person_id", r.agentPersonID,
 			"error", err,
 		)
-		return
+		return false
 	}
 	if state.Energy < int(energyCost(SituationSourceInternal)) {
 		applogger.Debug("heartbeat: skip autonomous Decide (insufficient energy)",
@@ -70,7 +70,7 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 			"energy", state.Energy,
 			"required", int(energyCost(SituationSourceInternal)),
 		)
-		return
+		return false
 	}
 
 	// Build the heartbeat Situation directly — no event, no Comprehend.
@@ -83,11 +83,11 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 	d := Decide(ctx, situation, r.agentPersonID, r.activeWorks)
 	if !d.Accepted {
 		applogger.Error("heartbeat: Decide produced no accepted result", "person_id", r.agentPersonID)
-		return
+		return false
 	}
 	if _, err := persistDecision(r.agentPersonID, situation, &d); err != nil {
 		applogger.Error("heartbeat: failed to persist decision", "person_id", r.agentPersonID, "error", err)
-		return
+		return false
 	}
 	if len(d.Actions) > 0 {
 		if err := energy.DeductEnergy(r.agentPersonID, energyCost(situation.Source)); err != nil {
@@ -95,6 +95,7 @@ func (r *agentRuntime) handleHeartbeat(ctx context.Context) {
 		}
 	}
 	r.executeActions(ctx, situation, d.Actions)
+	return true
 }
 
 // checkMemoryDensity runs memory density check: detects when enough long-term
