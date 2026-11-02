@@ -14,7 +14,6 @@ yarn-error.log*
 .lingma
 .specify
 /specs
-AGENTS.md
 
 # Build outputs
 dist/
