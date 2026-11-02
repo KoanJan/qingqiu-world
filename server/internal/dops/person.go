@@ -88,6 +88,9 @@ func GetAIPersons() ([]model.Person, error) {
 func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int64, avatar string) (*model.AgentConfig, *model.Person, error) {
 	var agent *model.AgentConfig
 	var person *model.Person
+	if err := RequirePassingLLMProbe(llmConfigID); err != nil {
+		return nil, nil, err
+	}
 
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
 		p := model.Person{
@@ -178,6 +181,17 @@ func UpdateAIPerson(aiPersonUpdates *AIPersonUpdates) error {
 	return database.DB.Transaction(func(tx *gorm.DB) error {
 		if err := RequireActivePersonTx(tx, aiPersonUpdates.PersonID); err != nil {
 			return err
+		}
+		if aiPersonUpdates.LLMConfigID != nil {
+			var current model.AgentConfig
+			if err := tx.Where("person_id = ?", aiPersonUpdates.PersonID).First(&current).Error; err != nil {
+				return err
+			}
+			if current.LLMConfigID != *aiPersonUpdates.LLMConfigID {
+				if err := requirePassingLLMProbeTx(tx, *aiPersonUpdates.LLMConfigID); err != nil {
+					return err
+				}
+			}
 		}
 		// Update agent-level fields
 		acUpdates := aiPersonUpdates.getAgentConfigUpdates()

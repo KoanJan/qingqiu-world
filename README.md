@@ -94,6 +94,7 @@ Memory evidence names the participants, including the agent itself, so a past co
 Download the latest release for your platform — macOS (Apple Silicon / Intel), Windows, or Linux — from the [Releases](https://github.com/KoanJan/qingqiu-world/releases) page. No development environment required.
 
 Chat needs one LLM API key (any OpenAI-compatible provider). Knowledge-base indexing additionally requires an embedding model, and web search requires a search provider — both are configured in Settings after first launch.
+New LLM connections are checked for the tool calls the Agent uses. A failed check keeps the connection saved and shows a Retest action; assigning it to a new Agent requires a passing check.
 
 ### Development Mode
 

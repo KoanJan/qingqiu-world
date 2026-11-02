@@ -4,7 +4,7 @@ import { PlusOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
 import AgentAvatar from './AgentAvatar';
 import CardActions from './CardActions';
-import type { Agent, LLMConfig } from '../types';
+import { LLMProbeStatus, type Agent, type LLMConfig } from '../types';
 import { agentApi, llmConfigApi, uploadApi } from '../services/api';
 import { logger } from '../logger';
 import { confirmDelete } from '../utils/confirm';
@@ -53,7 +53,12 @@ const AgentConfig: React.FC<AgentConfigProps> = ({ showCreate, onCreateClose, on
   }, [loadAgents]);
 
   useEffect(() => {
-    if (showCreate) setModalVisible(true);
+    if (showCreate) {
+      setModalVisible(true);
+      llmConfigApi.list().then(response => setLLMConfigs(response.data)).catch(error => {
+        logger.error('Failed to refresh LLM configs', error);
+      });
+    }
   }, [showCreate]);
 
   const closeCreate = () => {
@@ -159,7 +164,11 @@ const AgentConfig: React.FC<AgentConfigProps> = ({ showCreate, onCreateClose, on
             <Input.TextArea rows={4} placeholder={t('agent.characterSettingsPlaceholder')} />
           </Form.Item>
           <Form.Item name="llm_config_id" label={t('agent.llmConfigId')} rules={[{ required: true, message: t('agent.llmConfigIdPlaceholder') }]}>
-            <Select placeholder={t('agent.llmConfigIdPlaceholder')} options={llmConfigs.map(config => ({ value: config.id, label: config.name }))} />
+            <Select placeholder={t('agent.llmConfigIdPlaceholder')} options={llmConfigs.map(config => ({
+              value: config.id,
+              label: config.probe.status === LLMProbeStatus.Passed ? config.name : `${config.name} (${t('llmConfig.assignmentUnavailable')})`,
+              disabled: config.probe.status !== LLMProbeStatus.Passed,
+            }))} />
           </Form.Item>
         </Form>
       </Modal>

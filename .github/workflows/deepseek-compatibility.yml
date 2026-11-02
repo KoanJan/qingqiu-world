@@ -1,0 +1,26 @@
+name: DeepSeek API compatibility
+
+on:
+  schedule:
+    - cron: '0 2 * * *'
+  workflow_dispatch:
+
+jobs:
+  live-contract:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: server/go.mod
+          cache-dependency-path: server/go.sum
+      - name: Check required secret
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: test -n "$DEEPSEEK_API_KEY" || { echo 'DEEPSEEK_API_KEY secret is missing'; exit 1; }
+      - name: Probe official DeepSeek API
+        working-directory: server
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: go test -tags live_llm ./internal/service/llm -run '^TestLiveDeepSeekCompatibility$' -count=1 -v

@@ -1,11 +1,32 @@
 package dops
 
 import (
+	"errors"
 	"fmt"
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
+
+var ErrLLMProbeRequired = errors.New("LLM compatibility probe must pass before assigning this config to an agent")
+
+func RequirePassingLLMProbe(llmConfigID int64) error {
+	return requirePassingLLMProbeTx(database.DB, llmConfigID)
+}
+
+func requirePassingLLMProbeTx(tx *gorm.DB, llmConfigID int64) error {
+	var config model.LLMConfig
+	err := tx.First(&config, llmConfigID).Error
+	if err != nil {
+		return err
+	}
+	if !config.ProbePassed() {
+		return ErrLLMProbeRequired
+	}
+	return nil
+}
 
 // GetLLMConfig retrieves an LLM config by ID.
 func GetLLMConfig(llmConfigID int64) (*model.LLMConfig, error) {
@@ -70,7 +91,7 @@ func UpdateSystemLLMConfig(llmConfigID int64) error {
 // LLM features work out of the box without manual bootstrap.
 func CreateLLMConfig(entity *model.LLMConfig) error {
 	if err := database.DB.Select(
-		"Name", "ModelID", "BaseURL", "APIKey", "Description",
+		"Name", "ModelID", "BaseURL", "APIKey", "Description", "ProbeConfigHash", "ProbeStatus",
 	).Create(entity).Error; err != nil {
 		return err
 	}
