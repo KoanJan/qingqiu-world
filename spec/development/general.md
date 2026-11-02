@@ -27,6 +27,6 @@ These principles apply across codebases and technology stacks. Use them to asses
 - Log every occurrence that violates expected business behavior; never handle it silently. Logs should support diagnosis without exposing sensitive content.
 - Use integers, not strings, for enum values. Follow the relevant technology-specific standard for type declarations and persistence.
 - Every independently running service provides `start.sh`, `stop.sh`, and `restart.sh` in its root directory. Keep those scripts consistent with actual service behavior.
-- Never use an LLM to assign scores.
+- Never use a generative LLM to produce scores with natural language.
 
 These principles constrain one another. For example, removing duplication should not create a false abstraction, and reducing coupling should not scatter one coherent responsibility. Review the concrete change and usage rather than citing a principle's name as the whole argument.

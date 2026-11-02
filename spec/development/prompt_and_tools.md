@@ -4,7 +4,7 @@ The information available to a model in a given turn is determined by the actual
 
 ## Information Selection and Narrative
 
-- Input should serve the current task and identify necessary provenance, time, and state. Resolve deterministic associations and permission boundaries while constructing the input; provide open-ended retrieval when needed. Do not use LLM scores to select information.
+- Input should serve the current task and identify necessary provenance, time, and state. Resolve deterministic associations and permission boundaries while constructing the input; provide open-ended retrieval when needed. Do not use scores from a generative LLM to select information.
 - Distinguish source, fact, inference, intent, and completed effect. Do not put information with different epistemic status into one ambiguous field. When evidence is missing, state the query or visibility boundary rather than converting "not found" into "did not happen."
 - Separate natural-language narrative from machine fields. Include an ID only when later lookup or verification requires it, and explain what it identifies. Do not present implementation details as task facts for the model.
 - Give historical information a clear temporal perspective relative to the current task. Do not present a past motivation as a plan still awaiting execution.

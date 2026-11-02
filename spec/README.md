@@ -21,6 +21,6 @@ The adopted Git workflow is **Issue -> main**. These documents describe the proj
 1. **Define responsibility before structure.** A new field, table, tool, or state must have a clear purpose, writer, reader, and lifetime. Reuse an existing domain object when it expresses the same meaning.
 2. **Separate rules from implementation choices.** These standards capture boundaries that apply across releases. Numeric thresholds, release-specific schemas, and prompt text belong in code or release designs and may change.
 3. **Distinguish settled rules from open questions.** State confirmed constraints directly. Mark disputed directions as open; do not present a theoretical analogy or a single test result as proof.
-4. **Accept work using verifiable behavior.** Prefer automated checks for data integrity, permissions, causal links, and deterministic rules. For model-dependent behavior, record the scenario, input, and observed result; never use an LLM to score it.
+4. **Accept work using verifiable behavior.** Prefer automated checks for data integrity, permissions, causal links, and deterministic rules. For model-dependent behavior, record the scenario, input, and observed result; never use a generative LLM to score it with natural language.
 
 When revising this directory, check that its documents remain consistent with one another and with current behavior and external documentation. State an effective release boundary where one is needed.
