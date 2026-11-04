@@ -744,6 +744,9 @@ func summarizeDailyGroup(ctx context.Context, personID int64, date string, group
 		}
 	}
 	client := llm.NewChatModelWithTemperature(a.LLM.BaseURL, a.LLM.APIKey, a.LLM.ModelID, llm.TemperatureDeterministic)
+	if !dailyDateEligible(time.Now(), date) {
+		return "", fmt.Errorf("daily memory date %s left the automatic index window before model request", date)
+	}
 	summary, err := client.Chat(ctx, []llm.Message{{Role: "system", Content: fmt.Sprintf(dailySummaryPrompt, a.Name)}, {Role: "user", Content: fmt.Sprintf("Some of what reached you on %s, what you chose, and what followed:\n%s", date, text.String())}})
 	if err != nil {
 		return "", err

@@ -7,7 +7,6 @@ import (
 	"strings"
 	"time"
 
-	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
@@ -239,24 +238,6 @@ func ReadDailyMemorySources(ctx context.Context, personID, memoryID int64, limit
 	return items, more, coverage, nil
 }
 
-// runDailyMemoryIndex updates groups off the agent's decision path. On each
-// pass it discovers contact days from observations and committed own actions.
-func runDailyMemoryIndex(ctx context.Context) {
-	ticker := time.NewTicker(dailyMemoryRefreshInterval)
-	defer ticker.Stop()
-	state := dailyIndexState{pending: make(map[int64]map[string]struct{})}
-	for {
-		if err := refreshDailyMemoryIndex(ctx, &state); err != nil && ctx.Err() == nil {
-			applogger.Error("daily memory index refresh failed", "error", err)
-		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-		}
-	}
-}
-
 // dailyIndexState tracks newly discovered contact days between index passes.
 // Initial seeding covers only recent history; cursors then follow new IDs.
 type dailyIndexState struct {
@@ -273,7 +254,7 @@ func recentDailyBackfillStart(now time.Time) time.Time {
 	return today.AddDate(0, 0, -dailyMemoryRecentBackfillDays)
 }
 
-// seedRecentDailyIndex discovers seven completed dates and queues the current
+// seedRecentDailyIndex discovers seven completed dates and tracks the current
 // date without summarizing it. Cursors then follow newly committed source IDs.
 func seedRecentDailyIndex(ctx context.Context, state *dailyIndexState) error {
 	cutoff := recentDailyBackfillStart(time.Now())
@@ -337,19 +318,30 @@ func seedRecentDailyIndex(ctx context.Context, state *dailyIndexState) error {
 	return nil
 }
 
-// refreshDailyMemoryIndex discovers closed days that still need an account and
-// appends only the groups those days lack, within the configured per-pass budget.
+// refreshDailyMemoryIndex discovers source dates. The scheduler separately
+// checks which groups still lack an account and grants one group at a time.
 func refreshDailyMemoryIndex(ctx context.Context, state *dailyIndexState) error {
+	cutoff := recentDailyBackfillStart(time.Now()).Format("2006-01-02")
+	today := energy.Today()
 	type sourceKey struct {
 		PersonID  int64
 		ID        int64
 		CreatedAt time.Time
 	}
-	add := func(s sourceKey) {
+	add := func(s sourceKey, kind string) {
+		date := s.CreatedAt.In(energy.Timezone()).Format("2006-01-02")
+		if date < cutoff {
+			applogger.Warn("daily memory source arrived outside automatic window", "person_id", s.PersonID, "source_kind", kind, "source_id", s.ID, "date", date)
+			return
+		}
+		if date > today {
+			applogger.Error("daily memory source has a future contact date", "person_id", s.PersonID, "source_kind", kind, "source_id", s.ID, "date", date)
+			return
+		}
 		if state.pending[s.PersonID] == nil {
 			state.pending[s.PersonID] = make(map[string]struct{})
 		}
-		state.pending[s.PersonID][s.CreatedAt.In(energy.Timezone()).Format("2006-01-02")] = struct{}{}
+		state.pending[s.PersonID][date] = struct{}{}
 	}
 	if !state.initialized {
 		if err := seedRecentDailyIndex(ctx, state); err != nil {
@@ -362,7 +354,7 @@ func refreshDailyMemoryIndex(ctx context.Context, state *dailyIndexState) error 
 			return err
 		}
 		for _, s := range observations {
-			add(s)
+			add(s, "observation")
 			state.lastObservationID = s.ID
 		}
 		if len(observations) < dailyMemorySourceBatchSize {
@@ -378,40 +370,11 @@ func refreshDailyMemoryIndex(ctx context.Context, state *dailyIndexState) error 
 			return err
 		}
 		for _, s := range decisions {
-			add(s)
+			add(s, "decision")
 			state.lastDecisionID = s.ID
 		}
 		if len(decisions) < dailyMemorySourceBatchSize {
 			break
-		}
-	}
-	remaining := config.Get().DailyMemoryMaxGroupsPerPass
-	todayDate := energy.Today()
-	for personID, dates := range state.pending {
-		orderedDates := make([]string, 0, len(dates))
-		for date := range dates {
-			orderedDates = append(orderedDates, date)
-		}
-		sort.Sort(sort.Reverse(sort.StringSlice(orderedDates)))
-		for _, date := range orderedDates {
-			if date >= todayDate {
-				continue // The day is still open; retain it for the next local date.
-			}
-			if remaining <= 0 {
-				break
-			}
-			if ctx.Err() != nil {
-				return ctx.Err()
-			}
-			completed, err := refreshDailyMemoryDay(ctx, personID, date, &remaining)
-			if err != nil {
-				applogger.Error("daily memory day refresh failed", "person_id", personID, "date", date, "error", err)
-			} else if completed {
-				delete(dates, date)
-			}
-		}
-		if len(dates) == 0 {
-			delete(state.pending, personID)
 		}
 	}
 	return nil
@@ -489,78 +452,86 @@ func fillDailySourceText(ctx context.Context, personID int64, dayStart, dayEnd t
 	return nil
 }
 
-// refreshDailyMemoryDay appends accounts for resource groups that one completed
-// day still lacks. The day's inputs ended at local midnight, so an existing row
-// is final: it is never rewritten, and a vanished group is never deleted.
-func refreshDailyMemoryDay(ctx context.Context, personID int64, date string, remaining *int) (bool, error) {
+// dailyUnindexedGroups compares one closed date's source groups with durable
+// accounts. Existing accounts are never rewritten, even if sources changed.
+func dailyUnindexedGroups(ctx context.Context, personID int64, date string) ([]*dailyGroup, error) {
 	groups, err := dailyGroupsForDate(ctx, personID, date)
 	if err != nil {
-		return false, err
+		return nil, err
 	}
 	var existing []model.DailyMemory
-	if err := database.DB.WithContext(ctx).Where("person_id = ? AND local_date = ?", personID, date).Find(&existing).Error; err != nil {
-		return false, err
+	if err := database.DB.WithContext(ctx).Select("id, shard, group_type, group_id").Where("person_id = ? AND local_date = ?", personID, date).Find(&existing).Error; err != nil {
+		return nil, err
 	}
 	byKey := make(map[dailyGroupKey]bool, len(existing))
-	nextSlot := 0
 	for _, row := range existing {
-		if row.Shard >= nextSlot {
-			nextSlot = row.Shard + 1
-		}
 		key := dailyGroupKey{Type: row.GroupType, ID: row.GroupID}
 		if byKey[key] {
-			return false, fmt.Errorf("daily memory %d duplicates another resource %+v on %s", row.ID, key, date)
+			return nil, fmt.Errorf("daily memory %d duplicates another resource %+v on %s", row.ID, key, date)
 		}
 		byKey[key] = true
 	}
 	current := make(map[dailyGroupKey]bool, len(groups))
+	missing := make([]*dailyGroup, 0)
 	for _, group := range groups {
 		current[group.Key] = true
-		if byKey[group.Key] {
-			continue // A completed day is append-only; its account stays as written.
+		if !byKey[group.Key] {
+			missing = append(missing, group)
 		}
-		if *remaining <= 0 {
-			return false, nil
-		}
-		*remaining--
-		summary, err := summarizeDailyGroup(ctx, personID, date, group)
-		if err != nil {
-			return false, err
-		}
-		if embeddingSvc == nil {
-			return false, fmt.Errorf("daily memory embedding service is not initialized")
-		}
-		// Routing compares stored vectors, so a row must not be written without
-		// one. Failure returns the day to the pending set and the next pass
-		// regenerates the account instead of persisting an empty vector.
-		vector, err := embeddingSvc.EmbedSingle(ctx, summary)
-		if err != nil {
-			applogger.Error("daily memory embedding unavailable; row not written", "person_id", personID, "date", date, "group_type", group.Key.Type, "group_id", group.Key.ID, "error", err)
-			return false, err
-		}
-		row := model.DailyMemory{
-			PersonID:  personID,
-			LocalDate: date,
-			Shard:     nextSlot,
-			GroupType: group.Key.Type,
-			GroupID:   group.Key.ID,
-			Summary:   summary,
-			StartAt:   group.StartAt,
-			EndAt:     group.EndAt,
-			Embedding: vectorutils.Float32SliceToBlob(vector),
-		}
-		if err := database.DB.WithContext(ctx).Create(&row).Error; err != nil {
-			return false, err
-		}
-		nextSlot++
 	}
-	// A saved row without a recomputed source group means its inputs and its
-	// account disagree. Report it instead of silently rewriting or deleting it.
 	for _, row := range existing {
 		key := dailyGroupKey{Type: row.GroupType, ID: row.GroupID}
 		if !current[key] {
 			applogger.Warn("daily memory row has no source group for its date", "person_id", personID, "date", date, "group_type", row.GroupType, "group_id", row.GroupID, "memory_id", row.ID)
 		}
 	}
-	return true, nil
+	return missing, nil
+}
+
+// writeDailyMemoryGroup persists one completed resource group. A later pass
+// may find the row after a worker was canceled, so the write is idempotent.
+func writeDailyMemoryGroup(ctx context.Context, personID int64, date string, group *dailyGroup) error {
+	var existing []model.DailyMemory
+	if err := database.DB.WithContext(ctx).Select("id, shard, group_type, group_id").Where("person_id = ? AND local_date = ?", personID, date).Find(&existing).Error; err != nil {
+		return err
+	}
+	nextSlot := 0
+	for _, row := range existing {
+		if row.Shard >= nextSlot {
+			nextSlot = row.Shard + 1
+		}
+		if row.GroupType == group.Key.Type && row.GroupID == group.Key.ID {
+			return nil
+		}
+	}
+	summary, err := summarizeDailyGroup(ctx, personID, date, group)
+	if err != nil {
+		return err
+	}
+	if embeddingSvc == nil {
+		return fmt.Errorf("daily memory embedding service is not initialized")
+	}
+	vector, err := embeddingSvc.EmbedSingle(ctx, summary)
+	if err != nil {
+		applogger.Error("daily memory embedding unavailable; row not written", "person_id", personID, "date", date, "group_type", group.Key.Type, "group_id", group.Key.ID, "error", err)
+		return err
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !dailyDateEligible(time.Now(), date) {
+		return fmt.Errorf("daily memory date %s left the automatic index window", date)
+	}
+	row := model.DailyMemory{
+		PersonID:  personID,
+		LocalDate: date,
+		Shard:     nextSlot,
+		GroupType: group.Key.Type,
+		GroupID:   group.Key.ID,
+		Summary:   summary,
+		StartAt:   group.StartAt,
+		EndAt:     group.EndAt,
+		Embedding: vectorutils.Float32SliceToBlob(vector),
+	}
+	return database.DB.WithContext(ctx).Create(&row).Error
 }

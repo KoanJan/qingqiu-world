@@ -456,10 +456,9 @@ func TestDailyGroupKeepsObservationDecisionAndOwnAction(t *testing.T) {
 	if err != nil || more || len(second) != 1 || second[0].ActionID != a.ID {
 		t.Fatalf("second mixed source page=%+v more=%v err=%v", second, more, err)
 	}
-	remaining := 0
-	complete, err := refreshDailyMemoryDay(context.Background(), 1, date, &remaining)
-	if err != nil || !complete {
-		t.Fatalf("unchanged shard was not idempotent: complete=%v err=%v", complete, err)
+	missing, err := dailyUnindexedGroups(context.Background(), 1, date)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("existing shard was not recognized: missing=%d err=%v", len(missing), err)
 	}
 	later := model.AgentObservation{PersonID: 1, EventID: ev.ID, CreatedAt: base.Add(2 * time.Minute)}
 	// A second Event is needed because observations are unique by owner and event.
@@ -471,9 +470,9 @@ func TestDailyGroupKeepsObservationDecisionAndOwnAction(t *testing.T) {
 	if err := db.Create(&later).Error; err != nil {
 		t.Fatal(err)
 	}
-	complete, err = refreshDailyMemoryDay(context.Background(), 1, date, &remaining)
-	if err != nil || !complete || remaining != 0 {
-		t.Fatalf("completed day was not append-only: complete=%v remaining=%d err=%v", complete, remaining, err)
+	missing, err = dailyUnindexedGroups(context.Background(), 1, date)
+	if err != nil || len(missing) != 0 {
+		t.Fatalf("completed day was not append-only: missing=%d err=%v", len(missing), err)
 	}
 	var stored []model.DailyMemory
 	if err := db.Where("person_id = ? AND local_date = ?", 1, date).Find(&stored).Error; err != nil {
