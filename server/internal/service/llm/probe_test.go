@@ -97,7 +97,7 @@ func (f probeRoundTripper) RoundTrip(r *http.Request) (*http.Response, error) { 
 func TestOfficialDeepSeekForcedToolRequestsDisableThinking(t *testing.T) {
 	var choices []json.RawMessage
 	cfg := openai.DefaultConfig("secret")
-	cfg.BaseURL = "https://api.deepseek.com"
+	cfg.BaseURL = officialDeepSeekBaseURL
 	cfg.HTTPClient = &http.Client{Transport: probeRoundTripper(func(r *http.Request) (*http.Response, error) {
 		var request struct {
 			ToolChoice      json.RawMessage `json:"tool_choice"`
@@ -123,6 +123,15 @@ func TestOfficialDeepSeekForcedToolRequestsDisableThinking(t *testing.T) {
 	}
 	if len(choices) != 2 || string(choices[0]) != `"required"` || !strings.Contains(string(choices[1]), `"compatibility_check"`) {
 		t.Fatalf("unexpected tool choices: %q", choices)
+	}
+}
+
+func TestDeepSeekForcedToolModeIgnoresLookalikeHost(t *testing.T) {
+	cm := NewChatModel(officialDeepSeekBaseURL+".example.com", "secret", "test-model")
+	req := openai.ChatCompletionRequest{ToolChoice: "required"}
+	cm.setForcedToolMode(&req)
+	if req.ReasoningEffort != "" {
+		t.Fatalf("lookalike host changed reasoning effort to %q", req.ReasoningEffort)
 	}
 }
 

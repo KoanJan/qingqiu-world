@@ -16,7 +16,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"net/url"
 	"strings"
 	"time"
 
@@ -324,17 +323,6 @@ func (cm *ChatModel) ChatWithTools(ctx context.Context, messages []Message, tool
 // no free-text continuation. It also requests one call per model response.
 func (cm *ChatModel) ChatWithRequiredTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition) (ToolResponse, error) {
 	return cm.chatWithTools(ctx, messages, toolDefs, "required", false)
-}
-
-// DeepSeek's official API rejects forced tool choices in its default thinking mode.
-func (cm *ChatModel) setForcedToolMode(req *openai.ChatCompletionRequest) {
-	u, err := url.Parse(cm.baseURL)
-	if err != nil || !strings.EqualFold(u.Hostname(), "api.deepseek.com") {
-		return
-	}
-	if req.ToolChoice != nil && req.ToolChoice != "auto" && req.ToolChoice != "none" {
-		req.ReasoningEffort = "none"
-	}
 }
 
 func (cm *ChatModel) redactError(err error) string {

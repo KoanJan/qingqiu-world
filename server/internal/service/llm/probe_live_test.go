@@ -14,7 +14,7 @@ func TestLiveDeepSeekCompatibility(t *testing.T) {
 	if key == "" {
 		t.Fatal("DEEPSEEK_API_KEY is required for the live DeepSeek contract test")
 	}
-	result := Probe(context.Background(), "https://api.deepseek.com", key, "deepseek-flash")
+	result := Probe(context.Background(), officialDeepSeekBaseURL, key, "deepseek-flash")
 	if !result.RequiredTools.OK {
 		t.Errorf("required tool choice failed: %s", result.RequiredTools.Error)
 	}
