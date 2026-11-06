@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { QuestionCircleOutlined, WarningOutlined } from '@ant-design/icons';
 import { Tag, Tooltip, message } from 'antd';
 import { useTranslation } from 'react-i18next';
 import ConfigList from './ConfigList';
@@ -122,15 +123,20 @@ export default function LLMConfigList({ onSelectConfig, showCreate, onCreateClos
       }}
       beforeDelete={beforeDelete}
       renderMeta={(config) => <>
-        {config.id === systemLLMId && <Tag color="gold" style={{ fontSize: 11 }}>{t('llmConfig.systemTag')}</Tag>}
-        <Tooltip title={probeDetails(config)}>
-          <Tag color={config.probe.status === LLMProbeStatus.Passed ? 'green' : config.probe.status === LLMProbeStatus.Failed ? 'red' : 'default'}>
-            {t(`llmConfig.${probeStatusKeys[config.probe.status]}`)}
+        {config.id === systemLLMId && <Tooltip title={t('llmConfig.systemTag')} trigger={['hover', 'focus']}>
+          <Tag color="gold" role="img" aria-label={t('llmConfig.systemTag')} tabIndex={0} style={{ fontSize: 11 }}>S</Tag>
+        </Tooltip>}
+        {config.probe.status !== LLMProbeStatus.Passed && <Tooltip title={probeDetails(config)} trigger={['hover', 'focus']}>
+          <Tag role="img" aria-label={t(`llmConfig.${probeStatusKeys[config.probe.status]}`)} tabIndex={0}
+            color={config.probe.status === LLMProbeStatus.Failed ? 'red' : 'default'}>
+            {config.probe.status === LLMProbeStatus.Failed
+              ? <WarningOutlined aria-hidden="true" />
+              : <QuestionCircleOutlined aria-hidden="true" />}
           </Tag>
-        </Tooltip>
+        </Tooltip>}
       </>}
       renderExtraAction={(config) => <>
-        {config.id !== systemLLMId && <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')}>
+        {config.id !== systemLLMId && <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')} trigger={['hover', 'focus']}>
           <span tabIndex={config.probe.status === LLMProbeStatus.Failed ? 0 : undefined}
             aria-label={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : undefined}>
             <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.setSystemTitle')}
