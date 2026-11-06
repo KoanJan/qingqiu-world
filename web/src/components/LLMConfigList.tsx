@@ -130,9 +130,13 @@ export default function LLMConfigList({ onSelectConfig, showCreate, onCreateClos
         </Tooltip>
       </>}
       renderExtraAction={(config) => <>
-        {config.id !== systemLLMId && <Tooltip title={t('llmConfig.setSystemTitle')}>
-          <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.setSystemTitle')} style={{ fontSize: 13, fontWeight: 700 }}
-            onClick={(e) => { e.stopPropagation(); handleSetSystem(config.id); }}>S</button>
+        {config.id !== systemLLMId && <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')}>
+          <span tabIndex={config.probe.status === LLMProbeStatus.Failed ? 0 : undefined}
+            aria-label={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : undefined}>
+            <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.setSystemTitle')}
+              disabled={config.probe.status === LLMProbeStatus.Failed} style={{ fontSize: 13, fontWeight: 700 }}
+              onClick={(e) => { e.stopPropagation(); handleSetSystem(config.id); }}>S</button>
+          </span>
         </Tooltip>}
         <Tooltip title={t('llmConfig.retest')}>
           <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.retest')} disabled={probingID === config.id}

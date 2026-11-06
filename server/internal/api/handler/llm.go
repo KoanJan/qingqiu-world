@@ -1,6 +1,10 @@
 package handler
 
 import (
+	"errors"
+	"strconv"
+	"strings"
+
 	"qingqiu-world-server/internal/api/response"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -9,8 +13,6 @@ import (
 	"qingqiu-world-server/internal/schema"
 	"qingqiu-world-server/internal/service/agent"
 	"qingqiu-world-server/internal/service/llm"
-	"strconv"
-	"strings"
 
 	"github.com/gin-gonic/gin"
 )
@@ -244,6 +246,10 @@ func (h *Handler) UpdateSystemLLMConfigHandler(c *gin.Context) {
 	}
 
 	if err := dops.UpdateSystemLLMConfig(req.LLMConfigID); err != nil {
+		if errors.Is(err, dops.ErrSystemLLMProbeFailed) {
+			response.BadRequest(c, err.Error())
+			return
+		}
 		applogger.Error("Failed to update system LLM config", "error", err)
 		response.InternalError(c, "Failed to update system LLM config")
 		return

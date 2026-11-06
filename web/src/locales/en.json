@@ -137,6 +137,7 @@
     "inUseError": "Cannot delete this LLM config because it is currently set as the system LLM",
     "systemTag": "System",
     "setSystemTitle": "Set as system LLM",
+    "setSystemUnavailable": "Compatibility check failed. Retest this model before setting it as the system LLM.",
     "setSystemSuccess": "Set as system LLM",
     "probe_passed": "Checks passed",
     "probe_failed": "Probe failed",

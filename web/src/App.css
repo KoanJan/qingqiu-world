@@ -964,7 +964,8 @@
   z-index: 1;
 }
 
-.item-card:hover .item-card-actions {
+.item-card:hover .item-card-actions,
+.item-card:focus-within .item-card-actions {
   opacity: 1;
 }
 
@@ -986,8 +987,13 @@
   transition: background-color 0.15s, color 0.15s;
 }
 
-.item-card-action-btn:hover {
+.item-card-action-btn:hover:not(:disabled) {
   background-color: rgba(255, 255, 255, 0.85);
+}
+
+.item-card-action-btn:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
 }
 
 .item-card-action-btn.item-card-action-delete:hover {
