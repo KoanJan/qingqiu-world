@@ -51,7 +51,7 @@ export default function LLMConfigList({ onSelectConfig, showCreate, onCreateClos
     ].filter(Boolean).join('\n');
 
   const showProbeWarning = (config: LLMConfig) => {
-    if (config.probe.status !== LLMProbeStatus.Passed) {
+    if (config.probe.status === LLMProbeStatus.Failed) {
       message.warning(`${t('llmConfig.probeFailed')} ${probeDetails(config)}`, 8);
     }
   };
@@ -139,7 +139,8 @@ export default function LLMConfigList({ onSelectConfig, showCreate, onCreateClos
         {config.id !== systemLLMId && <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')} trigger={['hover', 'focus']}>
           <span tabIndex={config.probe.status === LLMProbeStatus.Failed ? 0 : undefined}
             aria-label={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : undefined}>
-            <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.setSystemTitle')}
+            <button className="item-card-action-btn" type="button"
+              aria-label={t(config.probe.status === LLMProbeStatus.Failed ? 'llmConfig.setSystemUnavailable' : 'llmConfig.setSystemTitle')}
               disabled={config.probe.status === LLMProbeStatus.Failed} style={{ fontSize: 13, fontWeight: 700 }}
               onClick={(e) => { e.stopPropagation(); handleSetSystem(config.id); }}>S</button>
           </span>

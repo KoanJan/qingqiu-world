@@ -2,6 +2,7 @@ package dops
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -70,6 +71,19 @@ func TestAgentAssignmentRequiresCurrentPassingProbe(t *testing.T) {
 	if err := RequirePassingLLMProbe(config.ID); !errors.Is(err, ErrLLMProbeRequired) {
 		t.Fatalf("stale probe: %v", err)
 	}
+	if createdAgent, createdPerson, err := CreateAIPerson("stale", "", "", config.ID, ""); !errors.Is(err, ErrLLMProbeRequired) || createdAgent != nil || createdPerson != nil {
+		t.Fatalf("stale probe creation: agent=%v person=%v err=%v", createdAgent, createdPerson, err)
+	}
+	var stalePersonCount, agentCount int64
+	if err := db.Model(&model.Person{}).Where("name = ?", "stale").Count(&stalePersonCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Model(&model.AgentConfig{}).Count(&agentCount).Error; err != nil {
+		t.Fatal(err)
+	}
+	if stalePersonCount != 0 || agentCount != 1 {
+		t.Fatalf("rejected creation left records: stale persons=%d agents=%d", stalePersonCount, agentCount)
+	}
 	if err := UpdateAIPerson(&AIPersonUpdates{PersonID: person.ID, LLMConfigID: &config.ID}); err != nil {
 		t.Fatalf("existing assignment should remain: %v", err)
 	}
@@ -82,6 +96,117 @@ func TestAgentAssignmentRequiresCurrentPassingProbe(t *testing.T) {
 	}
 	if err := UpdateAIPerson(&AIPersonUpdates{PersonID: person.ID, LLMConfigID: &other.ID}); err != nil {
 		t.Fatalf("retested assignment: %v", err)
+	}
+}
+
+// A configuration edit must not commit between the passing-probe read and
+// creation of the agent that uses it. The test uses the production SQLite
+// transaction settings and pauses immediately after the probe query.
+func TestAgentCreationSerializesWithLLMConfigEdit(t *testing.T) {
+	previous := database.DB
+	dsn := t.TempDir() + "/race.db?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	database.DB = db
+	sqlDB, err := db.DB()
+	if err != nil {
+		t.Fatal(err)
+	}
+	sqlDB.SetMaxOpenConns(2)
+	t.Cleanup(func() { _ = sqlDB.Close(); database.DB = previous })
+	if err := db.AutoMigrate(&model.LLMConfig{}, &model.Person{}, &model.AgentConfig{}); err != nil {
+		t.Fatal(err)
+	}
+
+	config := model.LLMConfig{
+		Name: "working", ModelID: "model", BaseURL: "http://example.test", APIKey: "key",
+		ProbeStatus: model.ProbeStatusPassed, ProbeRequiredToolsOK: true,
+		ProbeStructuredOutputOK: true, ProbeCheckedAt: time.Now().UnixMilli(),
+	}
+	config.ProbeConfigHash = config.ProbeFingerprint()
+	if err := db.Create(&config).Error; err != nil {
+		t.Fatal(err)
+	}
+
+	probeRead := make(chan struct{})
+	continueCreation := make(chan struct{})
+	defer func() {
+		select {
+		case <-continueCreation:
+		default:
+			close(continueCreation)
+		}
+	}()
+	var pauseOnce sync.Once
+	if err := db.Callback().Query().After("gorm:query").Register("test:pause_probe_read", func(tx *gorm.DB) {
+		if tx.Statement.Table == "llm_configs" {
+			pauseOnce.Do(func() {
+				close(probeRead)
+				<-continueCreation
+			})
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	creationDone := make(chan error, 1)
+	go func() {
+		_, _, err := CreateAIPerson("serialized", "", "", config.ID, "")
+		creationDone <- err
+	}()
+	select {
+	case <-probeRead:
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent creation did not reach probe read")
+	}
+
+	editStarted := make(chan struct{})
+	editDone := make(chan error, 1)
+	go func() {
+		close(editStarted)
+		editDone <- db.Model(&model.LLMConfig{}).Where("id = ?", config.ID).Updates(map[string]any{
+			"api_key": "changed", "probe_status": model.ProbeStatusUnverified,
+		}).Error
+	}()
+	<-editStarted
+	select {
+	case err := <-editDone:
+		t.Fatalf("config edit completed before agent creation: %v", err)
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	close(continueCreation)
+	select {
+	case err := <-creationDone:
+		if err != nil {
+			t.Fatalf("agent creation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("agent creation did not finish")
+	}
+	select {
+	case err := <-editDone:
+		if err != nil {
+			t.Fatalf("config edit: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("config edit did not finish")
+	}
+	var agent model.AgentConfig
+	if err := db.Joins("JOIN persons ON persons.id = agent_configs.person_id").
+		Where("persons.name = ?", "serialized").First(&agent).Error; err != nil {
+		t.Fatalf("created agent: %v", err)
+	}
+	if agent.LLMConfigID != config.ID {
+		t.Fatalf("created agent LLM config = %d, want %d", agent.LLMConfigID, config.ID)
+	}
+	if err := db.First(&config, config.ID).Error; err != nil {
+		t.Fatal(err)
+	}
+	if config.ProbePassed() {
+		t.Fatal("later config edit should invalidate the probe")
 	}
 }
 

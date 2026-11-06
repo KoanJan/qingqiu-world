@@ -88,11 +88,11 @@ func GetAIPersons() ([]model.Person, error) {
 func CreateAIPerson(name, bio string, characterSettings string, llmConfigID int64, avatar string) (*model.AgentConfig, *model.Person, error) {
 	var agent *model.AgentConfig
 	var person *model.Person
-	if err := RequirePassingLLMProbe(llmConfigID); err != nil {
-		return nil, nil, err
-	}
-
 	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := requirePassingLLMProbeTx(tx, llmConfigID); err != nil {
+			return err
+		}
+
 		p := model.Person{
 			Name:   name,
 			Bio:    bio,
