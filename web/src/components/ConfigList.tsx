@@ -30,6 +30,8 @@ interface ConfigListProps<T extends { id: number }> {
   // Optional callback after a successful create, receiving the created item
   // and the post-create list snapshot (local state, no refetch).
   onCreated?: (created: T, configs: T[]) => void;
+  onSaved?: (item: T) => void;
+  refreshKey?: number;
   beforeDelete?: (id: number) => Promise<boolean>;
   // Field rendered as the primary (top, bold) line of each card.
   primaryField: string;
@@ -59,6 +61,8 @@ export default function ConfigList<T extends { id: number }>({
   onCreateClose,
   onConfigChanged,
   onCreated,
+  onSaved,
+  refreshKey,
   beforeDelete,
   primaryField,
   secondaryField,
@@ -70,6 +74,7 @@ export default function ConfigList<T extends { id: number }>({
   const { t } = useTranslation();
   const [configs, setConfigs] = useState<T[]>([]);
   const [loading, setLoading] = useState(false);
+  const [loadFailed, setLoadFailed] = useState(false);
   const [modalVisible, setModalVisible] = useState(false);
   const [editModalVisible, setEditModalVisible] = useState(false);
   const [form] = Form.useForm();
@@ -81,7 +86,9 @@ export default function ConfigList<T extends { id: number }>({
     try {
       const response = await api.list();
       setConfigs(response.data);
+      setLoadFailed(false);
     } catch (error) {
+      setLoadFailed(true);
       logger.error(`Failed to load ${i18nPrefix}:`, error);
       message.error(t('messages.loadFailed'));
     } finally {
@@ -91,7 +98,7 @@ export default function ConfigList<T extends { id: number }>({
 
   useEffect(() => {
     loadConfigs();
-  }, [loadConfigs]);
+  }, [loadConfigs, refreshKey]);
 
   useEffect(() => {
     if (showCreate) {
@@ -116,6 +123,7 @@ export default function ConfigList<T extends { id: number }>({
       message.success(t(`${i18nPrefix}.createSuccess`));
       onSelectConfig?.(response.data);
       onCreated?.(response.data, updated);
+      onSaved?.(response.data);
       onConfigChanged?.();
     } catch (error) {
       logger.error(`Failed to create ${i18nPrefix}:`, error);
@@ -139,6 +147,7 @@ export default function ConfigList<T extends { id: number }>({
       setEditingConfig(null);
       message.success(t(`${i18nPrefix}.updateSuccess`));
       onSelectConfig?.(response.data);
+      onSaved?.(response.data);
       onConfigChanged?.();
     } catch (error) {
       logger.error(`Failed to update ${i18nPrefix}:`, error);
@@ -208,6 +217,8 @@ export default function ConfigList<T extends { id: number }>({
       <div>
         {loading ? (
           <div className="empty-state-text">{t('sidebar.loading')}</div>
+        ) : loadFailed ? (
+          <div className="empty-state-text">{t('messages.loadFailed')}</div>
         ) : configs.length === 0 ? (
           <div className="empty-state-text">{t(`${i18nPrefix}.noConfig`)}</div>
         ) : (

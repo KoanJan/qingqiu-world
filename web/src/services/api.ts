@@ -203,6 +203,7 @@ export const llmConfigApi = {
   get: (id: number) => api.get<LLMConfig>(`/llm-configs/${id}`),
   create: (data: Partial<LLMConfig>) => api.post<LLMConfig>('/llm-configs', data),
   update: (id: number, data: Partial<LLMConfig>) => api.put<LLMConfig>(`/llm-configs/${id}`, data),
+  probe: (id: number) => api.post<LLMConfig>(`/llm-configs/${id}/probe`),
   delete: (id: number) => api.delete(`/llm-configs/${id}`),
 };
 

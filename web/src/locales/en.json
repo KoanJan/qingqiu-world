@@ -137,7 +137,20 @@
     "inUseError": "Cannot delete this LLM config because it is currently set as the system LLM",
     "systemTag": "System",
     "setSystemTitle": "Set as system LLM",
-    "setSystemSuccess": "Set as system LLM"
+    "setSystemUnavailable": "Compatibility check failed. Retest this model before setting it as the system LLM.",
+    "setSystemSuccess": "Set as system LLM",
+    "probe_passed": "Checks passed",
+    "probe_failed": "Probe failed",
+    "probe_unverified": "Not tested",
+    "probePassed": "LLM compatibility check passed",
+    "probeFailed": "LLM config saved, but its compatibility check failed. Agent assignment is unavailable until it passes.",
+    "probeRequestFailed": "Could not run the LLM compatibility check",
+    "retest": "Retest compatibility",
+    "requiredTools": "Required tool calls",
+    "structuredOutput": "Structured output",
+    "notTested": "Not tested",
+    "checkedAt": "Checked",
+    "assignmentUnavailable": "Compatibility check required"
   },
   "ttsConfig": {
     "create": "Add TTS Renderer",

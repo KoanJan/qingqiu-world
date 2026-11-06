@@ -2,7 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { Button, Checkbox, Divider, Form, Input, Select, Spin, Tabs, Upload, message } from 'antd';
 import { SaveOutlined, UploadOutlined } from '@ant-design/icons';
 import { useTranslation } from 'react-i18next';
-import type { Agent, AgentVoice, LLMConfig, TTSProviderDefinition, TTSRenderer } from '../types';
+import { LLMProbeStatus, type Agent, type AgentVoice, type LLMConfig, type TTSProviderDefinition, type TTSRenderer } from '../types';
 import { API_BUSINESS_CODE, agentApi, agentVoiceApi, getAvatarUrl, llmConfigApi, ttsRendererApi, uploadApi } from '../services/api';
 import { VOICE_LOCALE_OPTIONS } from '../constants/voice';
 import { logger } from '../logger';
@@ -314,7 +314,15 @@ const AgentDetail: React.FC<AgentDetailProps> = ({ agent, onUpdated }) => {
                 <div className="agent-detail-name"><span>{t('agent.name')}</span><strong>{agent.name}</strong></div>
                 <Form.Item name="character_settings" label={t('agent.characterSettings')}><Input.TextArea rows={6} placeholder={t('agent.characterSettingsPlaceholder')} /></Form.Item>
                 <Form.Item name="llm_config_id" label={t('agent.llmConfigId')} rules={[{ required: true, message: t('agent.llmConfigIdPlaceholder') }]}>
-                  <Select placeholder={t('agent.llmConfigIdPlaceholder')} options={llmConfigs.map(config => ({ value: config.id, label: config.name }))} />
+                  <Select placeholder={t('agent.llmConfigIdPlaceholder')} onOpenChange={(open) => {
+                    if (open) void llmConfigApi.list().then(response => setLLMConfigs(response.data)).catch(error => {
+                      logger.error('Failed to refresh LLM configs', error);
+                    });
+                  }} options={llmConfigs.map(config => ({
+                    value: config.id,
+                    label: config.probe.status === LLMProbeStatus.Passed ? config.name : `${config.name} (${t('llmConfig.assignmentUnavailable')})`,
+                    disabled: config.probe.status !== LLMProbeStatus.Passed && config.id !== agent.llm_config_id,
+                  }))} />
                 </Form.Item>
                 <div className="agent-detail-save-action">
                   <Button type="primary" htmlType="submit" icon={<SaveOutlined />} loading={savingBasic} disabled={!basicDirty}>{t('agent.saveBasic')}</Button>

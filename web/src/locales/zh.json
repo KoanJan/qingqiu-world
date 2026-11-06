@@ -137,7 +137,20 @@
     "inUseError": "无法删除此LLM配置，它当前正在被用作系统LLM",
     "systemTag": "系统",
     "setSystemTitle": "设为系统模型",
-    "setSystemSuccess": "已设为系统模型"
+    "setSystemUnavailable": "兼容性检测失败，请重新检测后再将此模型设为系统模型。",
+    "setSystemSuccess": "已设为系统模型",
+    "probe_passed": "检测通过",
+    "probe_failed": "检测失败",
+    "probe_unverified": "未检测",
+    "probePassed": "LLM兼容性检测通过",
+    "probeFailed": "LLM配置已保存，但兼容性检测失败。通过检测前不可分配给Agent。",
+    "probeRequestFailed": "无法运行LLM兼容性检测",
+    "retest": "重新检测兼容性",
+    "requiredTools": "强制工具调用",
+    "structuredOutput": "结构化输出",
+    "notTested": "未检测",
+    "checkedAt": "检测时间",
+    "assignmentUnavailable": "需要通过兼容性检测"
   },
   "ttsConfig": {
     "create": "添加 TTS Renderer",

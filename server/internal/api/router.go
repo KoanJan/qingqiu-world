@@ -50,6 +50,7 @@ func SetupRouter(hub realtime.Hub) *gin.Engine {
 			llmConfigs.POST("", h.CreateLLMConfig)
 			llmConfigs.GET("", h.ListLLMConfigs)
 			llmConfigs.GET("/:id", h.GetLLMConfig)
+			llmConfigs.POST("/:id/probe", h.ProbeLLMConfig)
 			llmConfigs.PUT("/:id", h.UpdateLLMConfig)
 			llmConfigs.DELETE("/:id", h.DeleteLLMConfig)
 		}

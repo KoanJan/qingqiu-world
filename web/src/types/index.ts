@@ -42,6 +42,15 @@ export interface Message {
   updated_at: string | null;
 }
 
+/** Numeric wire values mirror the backend's persisted probe state. */
+export const LLMProbeStatus = {
+  Unverified: 0,
+  Passed: 1,
+  Failed: 2,
+} as const;
+
+export type LLMProbeStatus = typeof LLMProbeStatus[keyof typeof LLMProbeStatus];
+
 export interface LLMConfig {
   id: number;
   name: string;
@@ -49,6 +58,12 @@ export interface LLMConfig {
   base_url: string;
   api_key: string;
   description: string;
+  probe: {
+    status: LLMProbeStatus;
+    required_tools: { ok: boolean; error?: string };
+    structured_output: { ok: boolean; error?: string };
+    checked_at: string | null;
+  };
   created_at: string;
   updated_at: string | null;
 }

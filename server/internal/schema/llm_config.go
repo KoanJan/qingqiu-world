@@ -29,14 +29,27 @@ type LLMConfigUpdate struct {
 
 // LLMConfigResponse represents the API response for an LLM config.
 type LLMConfigResponse struct {
-	ID          int64     `json:"id"`
-	Name        string    `json:"name"`
-	ModelID     string    `json:"model_id"`
-	BaseURL     string    `json:"base_url"`
-	APIKey      string    `json:"api_key"`
-	Description string    `json:"description"`
-	CreatedAt   time.Time `json:"created_at"`
-	UpdatedAt   time.Time `json:"updated_at"`
+	ID          int64            `json:"id"`
+	Name        string           `json:"name"`
+	ModelID     string           `json:"model_id"`
+	BaseURL     string           `json:"base_url"`
+	APIKey      string           `json:"api_key"`
+	Description string           `json:"description"`
+	Probe       LLMProbeResponse `json:"probe"`
+	CreatedAt   time.Time        `json:"created_at"`
+	UpdatedAt   time.Time        `json:"updated_at"`
+}
+
+type LLMProbeCapabilityResponse struct {
+	OK    bool   `json:"ok"`
+	Error string `json:"error,omitempty"`
+}
+
+type LLMProbeResponse struct {
+	Status           model.ProbeStatus          `json:"status"`
+	RequiredTools    LLMProbeCapabilityResponse `json:"required_tools"`
+	StructuredOutput LLMProbeCapabilityResponse `json:"structured_output"`
+	CheckedAt        *time.Time                 `json:"checked_at"`
 }
 
 // NewLLMConfigResponse converts a model.LLMConfig to an LLMConfigResponse.
@@ -48,9 +61,26 @@ func NewLLMConfigResponse(m *model.LLMConfig) *LLMConfigResponse {
 		BaseURL:     m.BaseURL,
 		APIKey:      m.APIKey,
 		Description: m.Description,
+		Probe:       NewLLMProbeResponse(m),
 		CreatedAt:   m.CreatedAt,
 		UpdatedAt:   m.UpdatedAt,
 	}
+}
+
+func NewLLMProbeResponse(m *model.LLMConfig) LLMProbeResponse {
+	result := LLMProbeResponse{Status: model.ProbeStatusUnverified}
+	if m.ProbeConfigHash == "" || m.ProbeConfigHash != m.ProbeFingerprint() || m.ProbeCheckedAt == 0 ||
+		m.ProbeStatus == model.ProbeStatusUnverified || (m.ProbeStatus == model.ProbeStatusPassed && !m.ProbePassed()) {
+		return result
+	}
+	result.Status = m.ProbeStatus
+	result.RequiredTools = LLMProbeCapabilityResponse{OK: m.ProbeRequiredToolsOK, Error: m.ProbeRequiredToolsError}
+	result.StructuredOutput = LLMProbeCapabilityResponse{OK: m.ProbeStructuredOutputOK, Error: m.ProbeStructuredOutputError}
+	if m.ProbeCheckedAt > 0 {
+		checkedAt := time.UnixMilli(m.ProbeCheckedAt).UTC()
+		result.CheckedAt = &checkedAt
+	}
+	return result
 }
 
 // NewLLMConfigResponseList converts a list of model.LLMConfig to LLMConfigResponse list.

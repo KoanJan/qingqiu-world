@@ -1,11 +1,35 @@
 package dops
 
 import (
+	"errors"
 	"fmt"
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
+
+var ErrLLMProbeRequired = errors.New("LLM compatibility probe must pass before assigning this config to an agent")
+
+// ErrSystemLLMProbeFailed means a failed config cannot be selected manually as the system LLM.
+var ErrSystemLLMProbeFailed = errors.New("LLM compatibility probe failed; retest before setting this config as the system LLM")
+
+func RequirePassingLLMProbe(llmConfigID int64) error {
+	return requirePassingLLMProbeTx(database.DB, llmConfigID)
+}
+
+func requirePassingLLMProbeTx(tx *gorm.DB, llmConfigID int64) error {
+	var config model.LLMConfig
+	err := tx.First(&config, llmConfigID).Error
+	if err != nil {
+		return err
+	}
+	if !config.ProbePassed() {
+		return ErrLLMProbeRequired
+	}
+	return nil
+}
 
 // GetLLMConfig retrieves an LLM config by ID.
 func GetLLMConfig(llmConfigID int64) (*model.LLMConfig, error) {
@@ -42,27 +66,37 @@ func IsSystemLLMConfigured() bool {
 	return GetSystemLLMConfig() != nil
 }
 
-// UpdateSystemLLMConfig upserts the system-level LLM config (single row, id=1).
-// llmConfigID is the ID of an existing LLM config in the llm_configs table.
+// UpdateSystemLLMConfig manually selects the system-level LLM config.
+// A failed probe blocks a new manual selection; first-config auto assignment is separate.
 func UpdateSystemLLMConfig(llmConfigID int64) error {
-	var sysCfg model.SystemLLMConfig
-	err := database.DB.Where("id = ?", 1).First(&sysCfg).Error
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var config model.LLMConfig
+		if err := tx.First(&config, llmConfigID).Error; err != nil {
+			return err
+		}
+		if config.ProbeStatus == model.ProbeStatusFailed {
+			return ErrSystemLLMProbeFailed
+		}
+		return upsertSystemLLMConfig(tx, llmConfigID)
+	})
 	if err != nil {
-		applogger.Error("system LLM config not found, creating new record", "error", err)
-		sysCfg = model.SystemLLMConfig{
-			LLMConfigID: llmConfigID,
-		}
-		if createErr := database.DB.Create(&sysCfg).Error; createErr != nil {
-			return createErr
-		}
-	} else {
-		sysCfg.LLMConfigID = llmConfigID
-		if updateErr := database.DB.Save(&sysCfg).Error; updateErr != nil {
-			return updateErr
-		}
+		return err
 	}
 	applogger.Info("System LLM config updated", "llm_config_id", llmConfigID)
 	return nil
+}
+
+func upsertSystemLLMConfig(tx *gorm.DB, llmConfigID int64) error {
+	var sysCfg model.SystemLLMConfig
+	err := tx.Where("id = ?", 1).First(&sysCfg).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) {
+		return tx.Create(&model.SystemLLMConfig{LLMConfigID: llmConfigID}).Error
+	}
+	if err != nil {
+		return err
+	}
+	sysCfg.LLMConfigID = llmConfigID
+	return tx.Save(&sysCfg).Error
 }
 
 // CreateLLMConfig creates an llm config. If it is the first LLM config in the
@@ -70,7 +104,7 @@ func UpdateSystemLLMConfig(llmConfigID int64) error {
 // LLM features work out of the box without manual bootstrap.
 func CreateLLMConfig(entity *model.LLMConfig) error {
 	if err := database.DB.Select(
-		"Name", "ModelID", "BaseURL", "APIKey", "Description",
+		"Name", "ModelID", "BaseURL", "APIKey", "Description", "ProbeConfigHash", "ProbeStatus",
 	).Create(entity).Error; err != nil {
 		return err
 	}
@@ -85,7 +119,7 @@ func CreateLLMConfig(entity *model.LLMConfig) error {
 	if count != 1 {
 		return nil
 	}
-	if err := UpdateSystemLLMConfig(entity.ID); err != nil {
+	if err := upsertSystemLLMConfig(database.DB, entity.ID); err != nil {
 		// The create succeeded; a failed auto promotion is recoverable via the
 		// manual "set as system LLM" action, so log instead of failing.
 		applogger.Error("auto-set first llm config as system llm failed",

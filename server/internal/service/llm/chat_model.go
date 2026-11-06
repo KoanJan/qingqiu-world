@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	openai "github.com/sashabaranov/go-openai"
@@ -87,6 +88,7 @@ type ToolResponse struct {
 type ChatModel struct {
 	client      *openai.Client
 	baseURL     string
+	apiKey      string
 	modelID     string
 	temperature float32
 }
@@ -101,6 +103,7 @@ func NewChatModel(baseURL, apiKey, modelID string) *ChatModel {
 	return &ChatModel{
 		client:  openai.NewClientWithConfig(cfg),
 		baseURL: baseURL,
+		apiKey:  apiKey,
 		modelID: modelID,
 	}
 }
@@ -116,6 +119,7 @@ func NewChatModelWithTemperature(baseURL, apiKey, modelID string, temperature fl
 	return &ChatModel{
 		client:      openai.NewClientWithConfig(cfg),
 		baseURL:     baseURL,
+		apiKey:      apiKey,
 		modelID:     modelID,
 		temperature: temperature,
 	}
@@ -321,6 +325,16 @@ func (cm *ChatModel) ChatWithRequiredTools(ctx context.Context, messages []Messa
 	return cm.chatWithTools(ctx, messages, toolDefs, "required", false)
 }
 
+func (cm *ChatModel) redactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	if cm.apiKey == "" {
+		return err.Error()
+	}
+	return strings.ReplaceAll(err.Error(), cm.apiKey, "[redacted]")
+}
+
 // chatWithTools sends the shared tool-call request. The public wrappers set
 // toolChoice and parallelToolCalls for their respective loop protocols.
 func (cm *ChatModel) chatWithTools(ctx context.Context, messages []Message, toolDefs []FunctionDefinition, toolChoice, parallelToolCalls any) (ToolResponse, error) {
@@ -337,6 +351,7 @@ func (cm *ChatModel) chatWithTools(ctx context.Context, messages []Message, tool
 	if cm.temperature > 0 {
 		req.Temperature = cm.temperature
 	}
+	cm.setForcedToolMode(&req)
 
 	start := time.Now()
 	resp, err := cm.client.CreateChatCompletion(ctx, req)
@@ -347,7 +362,7 @@ func (cm *ChatModel) chatWithTools(ctx context.Context, messages []Message, tool
 			applogger.Info("llm call with tools canceled", "model", cm.modelID, "latency_ms", latencyMs)
 			return ToolResponse{}, fmt.Errorf("chat completion with tools canceled: %w", err)
 		}
-		applogger.Error("llm call with tools failed", "model", cm.modelID, "latency_ms", latencyMs, "error", err)
+		applogger.Error("llm call with tools failed", "model", cm.modelID, "latency_ms", latencyMs, "error", cm.redactError(err))
 		return ToolResponse{}, fmt.Errorf("chat completion with tools failed: %w", err)
 	}
 
@@ -484,18 +499,21 @@ func (cm *ChatModel) tryFunctionCallJSON(ctx context.Context, messages []Message
 		},
 		Temperature: 0,
 	}
+	cm.setForcedToolMode(&req)
 
 	start := time.Now()
 	resp, err := cm.client.CreateChatCompletion(ctx, req)
 	latencyMs := float64(time.Since(start).Milliseconds())
 
 	if err != nil {
-		applogger.Error("llm call with function_call emulation failed", "model", cm.modelID, "latency_ms", latencyMs, "error", err)
+		applogger.Error("llm call with function_call emulation failed", "model", cm.modelID, "latency_ms", latencyMs, "error", cm.redactError(err))
 		return "", fmt.Errorf("function_call emulation failed: %w", err)
 	}
 
-	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) == 0 {
-		return "", fmt.Errorf("function_call emulation: no tool call in response")
+	if len(resp.Choices) == 0 || len(resp.Choices[0].Message.ToolCalls) != 1 ||
+		resp.Choices[0].Message.ToolCalls[0].Function.Name != schemaDef.Name {
+		applogger.Error("function_call emulation returned an unexpected tool response", "model", cm.modelID, "expected_tool", schemaDef.Name)
+		return "", fmt.Errorf("function_call emulation: expected one %s tool call", schemaDef.Name)
 	}
 
 	args := resp.Choices[0].Message.ToolCalls[0].Function.Arguments

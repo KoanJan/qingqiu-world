@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"fmt"
 	"qingqiu-world-server/internal/api/response"
 	"qingqiu-world-server/internal/database"
@@ -28,6 +29,10 @@ func (h *Handler) CreateAgent(c *gin.Context) {
 		req.LLMConfigID, req.Avatar,
 	)
 	if err != nil {
+		if errors.Is(err, dops.ErrLLMProbeRequired) {
+			response.BadRequest(c, err.Error())
+			return
+		}
 		if strings.Contains(err.Error(), "UNIQUE constraint") {
 			response.BadRequest(c, fmt.Sprintf("Agent name '%s' already exists", req.Name))
 			return
@@ -103,6 +108,10 @@ func (h *Handler) UpdateAgent(c *gin.Context) {
 		Avatar:            req.Avatar,
 	}
 	if err = dops.UpdateAIPerson(aiPersonUpdates); err != nil {
+		if errors.Is(err, dops.ErrLLMProbeRequired) {
+			response.BadRequest(c, err.Error())
+			return
+		}
 		applogger.Error("UpdateAIPerson: transaction failed", "person_id", personID, "error", err)
 		response.InternalError(c, "Failed to update ai person")
 		return
