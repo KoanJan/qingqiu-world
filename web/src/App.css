@@ -1000,11 +1000,12 @@
   transition: background-color 0.15s, color 0.15s;
 }
 
-.item-card-action-btn:hover:not(:disabled) {
+.item-card-action-btn:hover:not(:disabled):not([aria-disabled="true"]) {
   background-color: rgba(255, 255, 255, 0.85);
 }
 
-.item-card-action-btn:disabled {
+.item-card-action-btn:disabled,
+.item-card-action-btn[aria-disabled="true"] {
   opacity: 0.45;
   cursor: not-allowed;
 }

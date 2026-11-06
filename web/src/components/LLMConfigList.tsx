@@ -136,15 +136,23 @@ export default function LLMConfigList({ onSelectConfig, showCreate, onCreateClos
         </Tooltip>}
       </>}
       renderExtraAction={(config) => <>
-        {config.id !== systemLLMId && <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')} trigger={['hover', 'focus']}>
-          <span tabIndex={config.probe.status === LLMProbeStatus.Failed ? 0 : undefined}
-            aria-label={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : undefined}>
-            <button className="item-card-action-btn" type="button"
-              aria-label={t(config.probe.status === LLMProbeStatus.Failed ? 'llmConfig.setSystemUnavailable' : 'llmConfig.setSystemTitle')}
-              disabled={config.probe.status === LLMProbeStatus.Failed} style={{ fontSize: 13, fontWeight: 700 }}
-              onClick={(e) => { e.stopPropagation(); handleSetSystem(config.id); }}>S</button>
-          </span>
-        </Tooltip>}
+        {config.id !== systemLLMId && <>
+          {config.probe.status === LLMProbeStatus.Failed &&
+            <span id={`system-llm-unavailable-${config.id}`} hidden>{t('llmConfig.setSystemUnavailable')}</span>}
+          <Tooltip title={config.probe.status === LLMProbeStatus.Failed ? t('llmConfig.setSystemUnavailable') : t('llmConfig.setSystemTitle')} trigger={['hover', 'focus']}>
+            <span>
+              <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.setSystemTitle')}
+                aria-disabled={config.probe.status === LLMProbeStatus.Failed || undefined}
+                aria-describedby={config.probe.status === LLMProbeStatus.Failed ? `system-llm-unavailable-${config.id}` : undefined}
+                style={{ fontSize: 13, fontWeight: 700 }}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  if (config.probe.status === LLMProbeStatus.Failed) return;
+                  void handleSetSystem(config.id);
+                }}>S</button>
+            </span>
+          </Tooltip>
+        </>}
         <Tooltip title={t('llmConfig.retest')}>
           <button className="item-card-action-btn" type="button" aria-label={t('llmConfig.retest')} disabled={probingID === config.id}
             onClick={(e) => { e.stopPropagation(); void handleRetest(config.id); }}>↻</button>
