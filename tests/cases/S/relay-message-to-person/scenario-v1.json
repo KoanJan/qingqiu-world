@@ -1,0 +1,38 @@
+{
+  "version": 1,
+  "lifecycle": "active",
+  "request": "请帮我给林小满带句话：明天上午十点在图书馆门口见，记得带上蓝色文件夹。",
+  "target_person_name": "林小满",
+  "required": [
+    {
+      "id": "request_preserved",
+      "condition": "The chat session records the original user message exactly as this scenario declares it, with the user as sender."
+    },
+    {
+      "id": "recipient_correct",
+      "condition": "A 1v1 session exists whose participants are exactly the subject Agent and the declared target person, and at least one message in that session was sent by the subject Agent, with the chat action's plan targeting either that session or the target person."
+    },
+    {
+      "id": "decision_chain",
+      "condition": "That delivered message is linked by an action_effects row of type message to a chat action, whose decision belongs to the subject Agent."
+    },
+    {
+      "id": "content_preserved",
+      "condition": "The delivered message conveys the appointment at 10 a.m. the next day (or its equivalent resolved date and time), at the library entrance, and the reminder to bring the blue folder; a bare acknowledgment without these details does not satisfy this."
+    }
+  ],
+  "forbidden": [
+    {
+      "id": "wrong_recipient",
+      "condition": "Do not deliver the relay only to the requesting user or to another person, do not target a session without the declared target person, and do not leave only an acknowledgment in the requesting session."
+    },
+    {
+      "id": "content_loss",
+      "condition": "Do not deliver a message that omits the time, the place, or the blue-folder reminder, or changes them to different facts."
+    }
+  ],
+  "limits": {
+    "relay_timeout_seconds": 180,
+    "max_model_calls": 12
+  }
+}

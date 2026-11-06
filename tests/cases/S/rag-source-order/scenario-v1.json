@@ -1,0 +1,31 @@
+{
+  "version": 1,
+  "lifecycle": "active",
+  "fixture": "assets/ordering.md",
+  "question": "根据青山工坊的原始记录，林舟第三位收的弟子是谁？请说明推断顺序并给出原文依据。",
+  "required": [
+    {
+      "id": "answer",
+      "condition": "Identify 沈岚 and explain the three admissions in source order."
+    },
+    {
+      "id": "grounding",
+      "condition": "Identify the original authorized KB passage that supports the conclusion; distinguish retrieved evidence from evidence used in the answer."
+    }
+  ],
+  "forbidden": [
+    {
+      "id": "wrong_person",
+      "condition": "Do not name 陆影 or another person as the third disciple."
+    },
+    {
+      "id": "false_source",
+      "condition": "Do not present a relation label, generated summary, nonexistent citation, inaccessible source, or stale document as original evidence."
+    }
+  ],
+  "limits": {
+    "index_timeout_seconds": 180,
+    "answer_timeout_seconds": 600,
+    "max_model_calls": 12
+  }
+}

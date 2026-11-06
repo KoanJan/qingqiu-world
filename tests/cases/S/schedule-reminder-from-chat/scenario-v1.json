@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "lifecycle": "active",
+  "request": "5分钟后提醒我喝水。",
+  "expected_delay_seconds": 300,
+  "delay_tolerance_seconds": 90,
+  "required": [
+    {
+      "id": "request_preserved",
+      "condition": "The chat session records the original user message exactly as this scenario declares it, with the user as sender."
+    },
+    {
+      "id": "reminder_record",
+      "condition": "For that original message, the recorded decision chain contains a create_alarm action whose action_effects link to a pending scheduled_events row for the same Agent and chat session."
+    },
+    {
+      "id": "time_matches",
+      "condition": "The pending scheduled event's trigger_at falls within this scenario's delay tolerance of the original message time plus this scenario's expected delay."
+    },
+    {
+      "id": "content_matches",
+      "condition": "The reminder content carried by the scheduled event, in its message note and in action_content when present, asks the user to drink water; a generic note without that reminder does not satisfy this."
+    }
+  ],
+  "forbidden": [
+    {
+      "id": "wrong_time",
+      "condition": "Do not record a reminder whose trigger_at is in the past, uses a different day or unrelated time, or otherwise falls outside this scenario's declared tolerance."
+    },
+    {
+      "id": "wrong_content",
+      "condition": "Do not record a reminder about an unrelated task, or leave both the scheduled event message and action_content without the requested drink-water reminder."
+    }
+  ],
+  "limits": {
+    "reminder_timeout_seconds": 180,
+    "max_model_calls": 12
+  }
+}

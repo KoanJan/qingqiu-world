@@ -10,6 +10,7 @@ These requirements apply to PRs in the [Issue -> main](git.md) workflow. Use the
 ## Review Responsibilities
 
 - At least one reviewer **other than the PR author** must approve the final diff. The reviewer checks the Issue's acceptance criteria, out-of-scope behavior, and whether code, data, permissions, asynchronous paths, and documentation match the description. Focus on the risks of the actual change; do not mechanically repeat every check for every PR.
+- For a case used to verify an acceptance criterion, a non-author reviewer checks out the code being reviewed and runs the relevant committed case locally. Record that run's command, revision, result, and limitations in the PR; generated case reports stay local and Git-ignored. An author's earlier successful run does not override a later product failure observed in the reviewer's run. Investigate environmental or configuration failures separately from product failures.
 - The requirement's acceptance owner confirms whether the delivered result meets the Issue goal. A reviewer may also serve as the acceptance owner. Code approval alone does not establish that the product goal has been met.
 - Resolve blocking comments before merging. If behavior or risk changes after approval, a non-author reviewer must review the final diff again. Even when a rebase leaves the effective diff unchanged, confirm that earlier verification still applies.
 

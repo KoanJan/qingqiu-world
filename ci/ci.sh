@@ -17,17 +17,15 @@ run_step() {
 }
 
 echo "=== CI: Backend (Go) ==="
+if [ "${QINGQIU_SKIP_CI_CONTRACT:-0}" != 1 ]; then
+  run_step "CI exit-status contract" bash "$ROOT/ci/test_ci_exit_status.sh"
+fi
 cd "$ROOT/server"
 
 run_step "go build ./..."        go build ./...
 run_step "go vet ./..."           go vet ./...
 
-echo "  → go test ./... (short)"
-if go test ./... -count=1 -short; then
-  echo "    ✓ OK"
-else
-  echo "    ⚠ some tests failed (may be pre-existing)"
-fi
+run_step "go test ./... (short)" go test ./... -count=1 -short
 
 
 echo ""

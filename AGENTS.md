@@ -9,6 +9,7 @@ The project-wide standards are indexed in [spec/README.md](spec/README.md). This
 | Prepare local data or restore it after a rebase | [Local data during Issue development](spec/collaboration/local_data.md) |
 | Design, implement, or change behavior | [General software design](spec/development/general.md), plus the standards for the affected area: [Go](spec/development/go_project.md), [database](spec/development/database.md), [Web](spec/development/web_project.md), or [prompts and tools](spec/development/prompt_and_tools.md) |
 | Verify an implementation | The verification requirements in the applicable [development standards](spec/README.md) and [PR review and merge](spec/collaboration/review.md) |
+| Execute and judge a versioned semantic scenario | [Test engineering](spec/development/testing/README.md) and the [test execution guide](tests/README.md) |
 | Describe a PR | [PR descriptions](spec/collaboration/pr.md) |
 | Review, approve, or merge a PR | [PR review and merge](spec/collaboration/review.md) and [Git and delivery](spec/collaboration/git.md) |
 

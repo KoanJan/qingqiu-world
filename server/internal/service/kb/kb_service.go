@@ -231,30 +231,43 @@ func activateVerifiedReadyRevision(document model.Document) error {
 
 // CreateKnowledgeBase creates a new knowledge base with its storage directories.
 func CreateKnowledgeBase(kb *model.KnowledgeBase) error {
-	if err := database.DB.Create(kb).Error; err != nil {
-		return fmt.Errorf("failed to create knowledge base: %w", err)
-	}
+	var kbDir string
+	createdDir := false
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		if err := tx.Create(kb).Error; err != nil {
+			return fmt.Errorf("failed to create knowledge base: %w", err)
+		}
 
-	kbDir := filepath.Join(config.Get().GetKBDir(), fmt.Sprintf("%d", kb.ID))
-	filesDir := filepath.Join(kbDir, "files")
-	if err := os.MkdirAll(filesDir, 0755); err != nil {
-		return fmt.Errorf("failed to create kb directories: %w", err)
-	}
+		kbRoot := config.Get().GetKBDir()
+		if err := os.MkdirAll(kbRoot, 0755); err != nil {
+			return fmt.Errorf("failed to create kb root: %w", err)
+		}
+		kbDir = filepath.Join(kbRoot, fmt.Sprintf("%d", kb.ID))
+		// Own only a newly created ID directory; an existing directory may
+		// contain earlier user data and must not be removed on failure.
+		if err := os.Mkdir(kbDir, 0755); err != nil {
+			return fmt.Errorf("failed to create kb directory: %w", err)
+		}
+		createdDir = true
+		if err := os.Mkdir(filepath.Join(kbDir, "files"), 0755); err != nil {
+			return fmt.Errorf("failed to create kb files directory: %w", err)
+		}
 
-	vectorsDBPath := filepath.Join(kbDir, "vectors.db")
-	if err := createVectorsDB(vectorsDBPath); err != nil {
-		os.RemoveAll(kbDir)
-		return fmt.Errorf("failed to create vectors database: %w", err)
+		if err := createVectorsDB(filepath.Join(kbDir, "vectors.db")); err != nil {
+			return fmt.Errorf("failed to create vectors database: %w", err)
+		}
+		kb.IndexFilePath = filepath.Join(kbDir, "index.bin")
+		if err := tx.Model(kb).Update("index_file_path", kb.IndexFilePath).Error; err != nil {
+			return fmt.Errorf("failed to update index file path: %w", err)
+		}
+		return nil
+	})
+	if err != nil && createdDir {
+		if cleanupErr := os.RemoveAll(kbDir); cleanupErr != nil {
+			return fmt.Errorf("%w; failed to remove incomplete kb directory %q: %v", err, kbDir, cleanupErr)
+		}
 	}
-
-	indexFilePath := filepath.Join(kbDir, "index.bin")
-	kb.IndexFilePath = indexFilePath
-	if err := database.DB.Model(kb).Update("index_file_path", indexFilePath).Error; err != nil {
-		os.RemoveAll(kbDir)
-		return fmt.Errorf("failed to update index file path: %w", err)
-	}
-
-	return nil
+	return err
 }
 
 // getOrCreateIndexManager returns the indexManager for a knowledge base,
