@@ -18,7 +18,7 @@ Every live S-case run requires the six LLM and embedding environment variables l
 | Directory | Kind of result | Running premise and evidence standard |
 | --- | --- | --- |
 | [`D/`](D/README.md) | Deterministic check | Fixed assertions; normally no live model. Run all cases with `python3 tests/cases/D/runall.py`; a passing runner establishes its stated contract. See [deterministic tests](../../spec/development/testing/deterministic.md). |
-| [`S/`](S/SKILL.md) | Semantic judgment | Real model configuration and independent inspection of original evidence; provider calls can cost money. A capture alone is not `PASS`. Follow the shared [S Skill](S/SKILL.md) and [semantic standard](../../spec/development/testing/semantic.md). |
+| [`S/`](S/SKILL.md) | Semantic judgment | Real model configuration and inspection of original evidence; an independent judge is preferred, and provider calls can cost money. A capture alone is not `PASS`. Follow the shared [S Skill](S/SKILL.md) and [semantic standard](../../spec/development/testing/semantic.md). |
 | [`X/`](X/README.md) | Mechanism experiment; future work | No executable case or trial-verified method yet. Future cases need comparable conditions and repeated runs, often with model cost. The [experiment standard](../../spec/development/testing/experiments.md) is preliminary and must be completed through an actual case. |
 
 | Case guide | Behavior |
@@ -29,6 +29,18 @@ Every live S-case run requires the six LLM and embedding environment variables l
 | [rag-insufficient-evidence](S/rag-insufficient-evidence/README.md) | Acknowledge that the original record does not identify a third disciple. |
 | [schedule-reminder-from-chat](S/schedule-reminder-from-chat/README.md) | Create a scheduled reminder that matches a chat request's future time and content. |
 | [relay-message-to-person](S/relay-message-to-person/README.md) | Deliver a user's relay to the named Person's session and preserve its key information. |
+
+## Current implementation notes
+
+Python runners use `RunRecord` in [`tools.py`](tools.py) to create a fresh `reports/<run>/data/`, derive `case_name` and `run_id`, write `result.json` and `report.md`, index evidence, and reject a mismatched report status or unexpected run-root files. Construct it with the case directory; use `write_data_json` for direct JSON evidence, `write_case` for a standard D result, or `write_report` and `write_result` for a custom result. Pass a case validator to `write_result` when needed. The same module supplies `free_port`, `http_json`, `call_json`, `build_server`, `start_server`, `stop_server`, `check`, `isolated_build_env`, `isolated_server_env`, `provider_endpoint`, and `git_state`. Product actions and assertions stay in the case runner.
+
+The current scripted S cases use `scenario-v1.json`, local scenario and result validators, and `data/capture.json` to pin mechanical facts before judgment. Their result validators compare `mechanical_failures`, `mechanical_checks_performed`, and `observed_model_calls` against the capture record and preserve a captured `FAIL` or `ERROR`. Capture runners return `3` for a completed capture awaiting judgment, `1` for mechanical `FAIL`, and `2` for `ERROR`. Final result validation returns `0` only for a valid `PASS`, `1` for a valid final non-`PASS` or diagnostic `ERROR`, and `2` for an incomplete or invalid result. `--capture` checks only the scaffold and returns `1` when valid. The case README gives its exact commands and evidence.
+
+| S workflow | Definition and evidence shape |
+| --- | --- |
+| [RAG source order](S/rag-source-order/README.md) and [insufficient evidence](S/rag-insufficient-evidence/README.md) | `fixture` and `question`, shared [`base_contracts.py`](S/base_contracts.py) and [`rag_contract.py`](S/rag_contract.py), with no case-specific contract file. The source is copied into the run and checked by hash; the case README defines its count semantics, and its validator requires a positive observed work-interaction count for `PASS`. |
+| [Schedule reminder](S/schedule-reminder-from-chat/README.md) | A chat `request`, expected delay, and tolerance. Its `scripts/case_contract.py` supplies workflow-specific scenario and result models without a committed source document. |
+| [Message relay](S/relay-message-to-person/README.md) | A chat `request` and target person name. Its `scripts/case_contract.py` supplies workflow-specific scenario and result models without a committed source document. |
 
 ## Add a case
 

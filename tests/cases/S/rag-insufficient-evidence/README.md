@@ -33,7 +33,7 @@ The runner creates a unique, Git-ignored `reports/<run>/` under this case and pr
 tests/cases/.venv/bin/python tests/cases/S/rag-insufficient-evidence/scripts/validate_result.py /path/to/evidence-directory
 ~~~
 
-The test result follows the observed evidence; no Issue owner or delivery flag is passed to the runner. A non-author reviewer reruns the committed case locally when using it for PR acceptance. Exit codes and result meanings follow [semantic.md](../../../../spec/development/testing/semantic.md) and [evidence.md](../../../../spec/development/testing/evidence.md). Reports stay Git-ignored and local.
+The test result follows the observed evidence; no Issue owner or delivery flag is passed to the runner. A non-author reviewer reruns the committed case locally when using it for PR acceptance. Result meanings follow [semantic.md](../../../../spec/development/testing/semantic.md) and [evidence.md](../../../../spec/development/testing/evidence.md); the shared scripted-S exit codes are recorded in the [case index](../../README.md). Reports stay Git-ignored and local.
 
 ## Expected result and evidence
 
