@@ -13,7 +13,7 @@ tests/cases/.venv/bin/pip install -r tests/cases/requirements.txt
 
 Run S validators and runners with `tests/cases/.venv/bin/python`. D cases and [`tools.py`](tools.py) remain standard-library only.
 
-Every live S-case run requires the six LLM and embedding environment variables listed in the [semantic standard](../../spec/development/testing/semantic.md#result-limits-and-execution-boundary). The shared [provider preflight](S/provider_env.py) checks their presence before any product action; missing or blank values produce a diagnostic `ERROR`. Definition validation and offline contract tests need no provider credentials.
+Every live S-case run requires **six environment variables: three for the LLM and three for the embedding provider**. The [semantic standard](../../spec/development/testing/semantic.md#result-limits-and-execution-boundary) lists each variable and its purpose. The shared [provider preflight](S/provider_env.py) checks all six before any product action; missing or blank values produce a diagnostic `ERROR`. Definition validation and offline contract tests need no provider credentials.
 
 | Directory | Kind of result | Running premise and evidence standard |
 | --- | --- | --- |

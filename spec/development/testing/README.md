@@ -47,7 +47,7 @@ Suppose a fictional meeting assistant is asked to **suggest** a 30-minute slot b
 | Contract item | Hypothetical case |
 | --- | --- |
 | Risk and subject | The assistant may propose a time outside the window, imply a booking was made, or create an event despite the request. Exercise its real chat entry point. |
-| Setup | Start the product in an isolated data root with the [six required S-track provider variables](semantic.md#result-limits-and-execution-boundary). Declare the request, date, timezone, 14:00–16:00 window, and 30-minute duration in the versioned scenario. |
+| Setup | Start the product in an isolated data root with [all six required provider variables](semantic.md#result-limits-and-execution-boundary): three for the LLM and three for embedding. Declare the request, date, timezone, 14:00–16:00 window, and 30-minute duration in the versioned scenario. |
 | Action | Send the declared request once. |
 | Oracle: mechanical | Check that the chat completed and that no new calendar event exists in this run's isolated account. Any new event is a mechanical `FAIL`; an unreadable calendar store makes this run `INCONCLUSIVE`. |
 | Oracle: semantic | A judge reads the original request and captured response. The response must propose a full 30-minute interval inside the window and present it as a suggestion. It must not claim an invitation was sent. A missing response or unsupported interpretation cannot become `PASS`. |

@@ -14,7 +14,12 @@ Calibration is optional for a test run. When used blind, it must precede observi
 
 ## Result, Limits, and Execution Boundary
 
-Every live S-case product run requires all six operator-supplied process environment variables: `QINGQIU_TEST_LLM_BASE_URL`, `QINGQIU_TEST_LLM_MODEL_ID`, `QINGQIU_TEST_LLM_API_KEY`, `QINGQIU_TEST_EMBEDDING_BASE_URL`, `QINGQIU_TEST_EMBEDDING_MODEL_ID`, and `QINGQIU_TEST_EMBEDDING_API_KEY`. Check them before starting the product or making provider calls, including for a case that exercises only one provider type. An absent or blank value stops the run as a diagnostic `ERROR`; record missing names only, without printing values or substituting product configuration. A corrected attempt is a new run. Scenario validation, offline contract tests, and judgment of already captured evidence do not start a product run and do not require these credentials.
+Before every live S-case product run, configure **six operator-supplied process environment variables**:
+
+- **LLM (three):** `QINGQIU_TEST_LLM_BASE_URL` for the endpoint, `QINGQIU_TEST_LLM_MODEL_ID` for the model, and `QINGQIU_TEST_LLM_API_KEY` for its key.
+- **Embedding (three):** `QINGQIU_TEST_EMBEDDING_BASE_URL` for the endpoint, `QINGQIU_TEST_EMBEDDING_MODEL_ID` for the model, and `QINGQIU_TEST_EMBEDDING_API_KEY` for its key.
+
+Check all six before starting the product or making provider calls, including for a case that exercises only one provider type. An absent or blank value stops the run as a diagnostic `ERROR`; record missing names only, without printing values or substituting product configuration. A corrected attempt is a new run. Scenario validation, offline contract tests, and judgment of already captured evidence do not start a product run and do not require these credentials.
 
 The test result describes this run's observed product behavior and evidence. `PASS` means every criterion is supported and the required mechanical checks succeeded; `FAIL` means an observed contradiction; `INCONCLUSIVE` means the evidence cannot decide; `ERROR` means setup or execution failed. An Issue's acceptance owner, a PR's review policy, a clean worktree, and provider cost controls do not change that result. Record the tested revision and worktree state for reproducibility. A non-author developer reruns the committed case on the code being reviewed and makes the delivery decision under the [PR review rules](../../collaboration/review.md); an earlier successful run cannot override a later observed product failure. Generated run reports remain local and are not committed.
 
