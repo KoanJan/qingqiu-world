@@ -12,10 +12,10 @@ request, the target person name, the criteria, and the limits.
 | Item | Value |
 | --- | --- |
 | Track | Semantic (`S`) |
-| Executor | [`scripts/run.py`](scripts/run.py) |
-| Definition validator | [`scripts/validate_scenario.py`](scripts/validate_scenario.py) |
-| Result validator | [`scripts/validate_result.py`](scripts/validate_result.py) |
-| Case contract | [`scripts/case_contract.py`](scripts/case_contract.py) |
+| Executor | [`scripts/run.ts`](scripts/run.ts) |
+| Definition validator | [`scripts/validate_scenario.ts`](scripts/validate_scenario.ts) |
+| Result validator | [`scripts/validate_result.ts`](scripts/validate_result.ts) |
+| Case contract | [`scripts/case_contract.ts`](scripts/case_contract.ts) |
 | Product entry | `POST /api/chat/new`, `POST /api/agents`, `GET /api/messages/:id`; read-only `SELECT` on `persons`, `sessions`, `participant_sessions`, `messages`, `events`, `decisions`, `actions`, `action_effects` |
 | Data | The fixed request and target name in `scenario-v1.json`; no committed source document |
 | Calibration source | [assets/calibration-claims.md](assets/calibration-claims.md) |
@@ -23,7 +23,7 @@ request, the target person name, the criteria, and the limits.
 ## Prerequisites
 
 - A built Go toolchain for `server/`.
-- The S Python environment described in [tests/cases/README.md](../../README.md).
+- Node.js 20.19+ (20.x) or 22.12+ and the [pinned test dependencies](../../README.md#typescript-environment).
 - Six provider variables. Values are never written to evidence:
 
     ~~~bash
@@ -49,17 +49,17 @@ retries no run; a transport or setup failure is retained as a diagnostic
 Run from the repository root:
 
 ~~~bash
-tests/cases/.venv/bin/python tests/cases/S/relay-message-to-person/scripts/validate_scenario.py
-tests/cases/.venv/bin/python tests/cases/S/relay-message-to-person/scripts/run.py
-tests/cases/.venv/bin/python tests/cases/S/relay-message-to-person/scripts/validate_result.py --capture <run-dir>
-tests/cases/.venv/bin/python tests/cases/S/relay-message-to-person/scripts/validate_result.py <run-dir>
+npm --prefix tests run case -- cases/S/relay-message-to-person/scripts/validate_scenario.ts
+npm --prefix tests run case -- cases/S/relay-message-to-person/scripts/run.ts
+npm --prefix tests run case -- cases/S/relay-message-to-person/scripts/validate_result.ts --capture <run-dir>
+npm --prefix tests run case -- cases/S/relay-message-to-person/scripts/validate_result.ts <run-dir>
 ~~~
 
 A completed capture is `INCONCLUSIVE`, not `PASS`. Follow the shared
 [Skill](../SKILL.md) to judge the captured evidence; record the `judge` object,
 each criterion's observation and evidence references, and any optional
 `data/calibration.json`. List new evidence in `artifacts`, then run
-`validate_result.py`. A non-author reviewer reruns the committed case locally
+`validate_result.ts`. A non-author reviewer reruns the committed case locally
 for PR acceptance; generated reports remain Git-ignored.
 
 ## Expected result

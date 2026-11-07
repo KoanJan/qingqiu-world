@@ -4,33 +4,33 @@ This semantic case checks whether the Agent identifies a third disciple from an 
 
 | Item | This case uses |
 | --- | --- |
-| Executor | This case's [product runner](scripts/run.py), followed by the shared [semantic testing Skill](../SKILL.md) and [result validator](scripts/validate_result.py). |
-| Contract checks | [scenario validator](scripts/validate_scenario.py), shared [semantic contracts](../base_contracts.py), and the [RAG workflow contract](../rag_contract.py) define the Pydantic rules; this case has no extra contract file. Shared [contract tests](../test_base_contracts.py) check evidence and boundary rules. |
+| Executor | This case's [product runner](scripts/run.ts), followed by the shared [semantic testing Skill](../SKILL.md) and [result validator](scripts/validate_result.ts). |
+| Contract checks | [scenario validator](scripts/validate_scenario.ts), shared [semantic contracts](../base_contracts.ts), and the [RAG workflow contract](../rag_contract.ts) define the Zod rules; this case has no extra contract file. Shared [contract tests](../test_base_contracts.ts) check evidence and boundary rules. |
 | Data | [ordering.md](assets/ordering.md), uploaded through the document API into a new KB. It records 江澜, then 许砚, then 沈岚 as 林舟's disciples; 陆影 is a companion who did not become a disciple. |
 | Product entry | The runner creates an isolated user, Agent, KB, and chat session, then asks the question through `POST /api/chat/new` and reads the answer through `GET /api/messages/:id` and activities through `GET /api/sessions/:id/activities`. |
 
 ## Run from the repository root
 
-Use Python 3.10 or later and Go 1.26.1 or later. Load these `QINGQIU_TEST_*` variables from your shell profile or CI secret store and start the runner in the same command; the [shared Skill](../SKILL.md) gives the run and judgment procedure. Never print or grep values. This case is outside the offline CI suite. Credential provenance and isolation follow [evidence.md](../../../../spec/development/testing/evidence.md).
+Use Node.js 20.19+ (20.x) or 22.12+ and Go 1.26.1 or later. Load these `QINGQIU_TEST_*` variables from your shell profile or CI secret store and start the runner in the same command; the [shared Skill](../SKILL.md) gives the run and judgment procedure. Never print or grep values. This case is outside the offline CI suite. Credential provenance and isolation follow [evidence.md](../../../../spec/development/testing/evidence.md).
 
 | Variable | Value |
 | --- | --- |
 | `QINGQIU_TEST_LLM_BASE_URL`, `QINGQIU_TEST_LLM_MODEL_ID`, `QINGQIU_TEST_LLM_API_KEY` | OpenAI-compatible subject LLM endpoint, model, and key. |
 | `QINGQIU_TEST_EMBEDDING_BASE_URL`, `QINGQIU_TEST_EMBEDDING_MODEL_ID`, `QINGQIU_TEST_EMBEDDING_API_KEY` | OpenAI-compatible embedding endpoint, model, and key; indexing expects 1536 dimensions. |
 
-Create the shared Python environment once as described in the [test cases README](../../README.md#python-environment); do not install into the system interpreter.
+Install the pinned test dependencies as described in the [test cases README](../../README.md#typescript-environment).
 
 This executor's retry limit is **zero**: it does not repeat a failed capture or product action. Readiness and answer polling stay within the scenario's timeouts. The scenario's `max_model_calls` sets `COGNITIVE_MAX_REQUESTS` per cognitive process and `FOCUSED_WORK_MAX_ITERATIONS` per focused work; it does not cap all provider calls in a run. Product or provider internal retries are outside this executor's control; record any known exposure in the run limitations.
 
 ~~~bash
-tests/cases/.venv/bin/python tests/cases/S/rag-source-order/scripts/validate_scenario.py
-tests/cases/.venv/bin/python tests/cases/S/rag-source-order/scripts/run.py
+npm --prefix tests run case -- cases/S/rag-source-order/scripts/validate_scenario.ts
+npm --prefix tests run case -- cases/S/rag-source-order/scripts/run.ts
 ~~~
 
 The runner creates a unique, Git-ignored `reports/<run>/` under this case and prints its path. A completed capture is not a `PASS`. Follow the shared [Skill](../SKILL.md) to judge, then validate with:
 
 ~~~bash
-tests/cases/.venv/bin/python tests/cases/S/rag-source-order/scripts/validate_result.py /path/to/evidence-directory
+npm --prefix tests run case -- cases/S/rag-source-order/scripts/validate_result.ts /path/to/evidence-directory
 ~~~
 
 The test result follows the observed evidence; no Issue owner or delivery flag is passed to the runner. A non-author reviewer reruns the committed case locally when using it for PR acceptance. Result meanings follow [semantic.md](../../../../spec/development/testing/semantic.md) and [evidence.md](../../../../spec/development/testing/evidence.md); the shared scripted-S exit codes are recorded in the [case index](../../README.md). Reports stay Git-ignored and local.
@@ -55,4 +55,4 @@ This table is for the operator. Calibration is optional; blind calibration, when
 | C2: 陆影 is 林舟's third disciple. | Contradicted by the companion passage. |
 | C3: 沈岚 later became the workshop leader. | Insufficient evidence in this source. |
 
-If a relevant reference is misclassified, use another judge or record `INCONCLUSIVE`. A valid final `PASS` is returned only by `scripts/validate_result.py` after the supported verdict and evidence are recorded.
+If a relevant reference is misclassified, use another judge or record `INCONCLUSIVE`. A valid final `PASS` is returned only by `scripts/validate_result.ts` after the supported verdict and evidence are recorded.

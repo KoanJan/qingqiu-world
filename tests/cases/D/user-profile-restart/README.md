@@ -4,17 +4,17 @@ This deterministic case verifies the server's user-profile API and SQLite persis
 
 | Item | This case uses |
 | --- | --- |
-| Executor | [scripts/run.py](scripts/run.py), using the actual server binary and HTTP API. No Agent Skill or semantic judge is needed. |
+| Executor | [scripts/run.ts](scripts/run.ts), using the actual server binary and HTTP API. No Agent Skill or semantic judge is needed. |
 | Data | A fresh, isolated SQLite database created by the server. The runner creates `profile-restart-user` with a short test bio; it uses no fixture file or real provider. |
 | Product entry | `GET /api/user-profile` and `PUT /api/user-profile`, before and after a graceful server restart. |
 | Oracle | Exact response codes, ID, name, bio, and person type; one persisted human row after both processes stop. |
 
 ## Run from the repository root
 
-Requires Python 3.10 or later, Go 1.26.1 or later, and locally available Go dependencies. The runner builds `server/cmd`, starts two owned processes on an available loopback port, and assigns a unique `DATA_ROOT`, `LOG_DIR`, and related storage roots. It does not call an LLM or embedding provider and does not use a developer's data directory.
+Requires Node.js 20.19+ (20.x) or 22.12+, Go 1.26.1 or later, and locally available Go dependencies. The runner builds `server/cmd`, starts two owned processes on an available loopback port, and assigns a unique `DATA_ROOT`, `LOG_DIR`, and related storage roots. It does not call an LLM or embedding provider and does not use a developer's data directory.
 
 ~~~bash
-python3 tests/cases/D/user-profile-restart/scripts/run.py
+npm --prefix tests run case -- cases/D/user-profile-restart/scripts/run.ts
 ~~~
 
 The command creates a unique, Git-ignored `reports/<run>/` under this case, prints its path, and exits `0` for `PASS`, `1` for an observed contract `FAIL`, or `2` for a setup or execution `ERROR`. Every invocation starts with a new data root and build cache. Keep the printed directory when reviewing a failure; remove it when no longer needed.

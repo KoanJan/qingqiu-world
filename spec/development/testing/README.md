@@ -61,10 +61,10 @@ tests/cases/S/meeting-slot-suggestion/    # hypothetical; does not exist here
   README.md
   scenario-v1.json
   scripts/
-    run.py
-    validate_scenario.py
-    validate_result.py
-    case_contract.py                 # defines this workflow's input and result rules
+    run.ts
+    validate_scenario.ts
+    validate_result.ts
+    case_contract.ts                 # defines this workflow's input and result rules
   reports/<run>/
     result.json
     report.md
