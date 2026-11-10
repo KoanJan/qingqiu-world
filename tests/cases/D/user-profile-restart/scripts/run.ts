@@ -12,7 +12,6 @@ import {
   callJson,
   check,
   freePort,
-  gitState,
   isolatedServerEnv,
   readSqlite,
   startServer,
@@ -37,12 +36,10 @@ export async function main() {
   const responses: HttpCall[] = [];
   const checks: CheckRecord[] = [];
   let processHandle = null;
-  let revision = null;
   let status: Status = "ERROR";
   let detail = "Case did not start";
   console.log("Evidence directory: " + record.root);
   try {
-    revision = gitState(ROOT);
     const binary = await buildServer(ROOT, dataDir);
     const port = await freePort();
     const base = "http://127.0.0.1:" + port;
@@ -135,7 +132,6 @@ export async function main() {
       detail,
       executionCommand: command,
       startedAtUtc: started,
-      testedRevision: revision,
       checks,
       notes:
         "The runner used a fresh data root and two owned server processes. " +

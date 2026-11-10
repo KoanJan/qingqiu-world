@@ -38,6 +38,8 @@ function setup(t: TestContext) {
     "report.md",
     "data/session.json",
     "data/db_evidence.json",
+    "data/stop_monitor.json",
+    "data/server_pre_stop.log",
     "data/" + fixtureName,
   ];
   for (const name of artifacts) {
@@ -46,6 +48,7 @@ function setup(t: TestContext) {
     writeFileSync(file, "evidence");
   }
   copyFileSync(path.join(CASE_DIR, scenario.fixture), path.join(dataDir, fixtureName));
+  writeFileSync(path.join(dataDir, "stop_monitor.json"), JSON.stringify({ reason: "reply_complete" }));
 
   /** Write the runner capture record that judgment may not rewrite. */
   const writeCapture = (overrides: Record<string, unknown> = {}) => {
@@ -82,7 +85,6 @@ function setup(t: TestContext) {
     schema_version: 1,
     run_id: path.basename(runDir),
     case_name: path.basename(CASE_DIR),
-    scenario_version: scenario.version,
     scenario_sha256: sha256(readFileSync(scenarioPath)),
     track: "semantic",
     status: "PASS",
@@ -96,8 +98,6 @@ function setup(t: TestContext) {
     environment: { os: "TestOS", arch: "arm64", node: "v26", isolated_data_root: true },
     limits: scenario.limits,
     fixture_sha256: sha256(fixtureBytes),
-    tested_revision: { head: "test-sha", status: "", tracked_diff_sha256: "test" },
-    finished_revision: { head: "test-sha", status: "", tracked_diff_sha256: "test" },
     mechanical_failures: [],
     observed_model_calls: 2,
     mechanical_checks_performed: true,
@@ -141,6 +141,12 @@ test(caseName + ": complete, artifact-backed PASS result is accepted", (t) => {
   fixture.validate(fixture.result);
 });
 
+test(caseName + ": timeout capture cannot be judged PASS", (t) => {
+  const fixture = setup(t);
+  writeFileSync(path.join(fixture.dataDir, "stop_monitor.json"), JSON.stringify({ reason: "timeout" }));
+  assert.throws(() => fixture.validate(fixture.result), /completed capture before the scenario timeout/);
+});
+
 test(caseName + ": final CLI rejects stale report status", (t) => {
   const fixture = setup(t);
   fixture.writeReport("INCONCLUSIVE");
@@ -160,22 +166,6 @@ test(caseName + ": delivery fields are outside the result schema", (t) => {
     () => fixture.validate({ ...fixture.result, acceptance_owner: "someone" }),
     /unrecognized|Unrecognized/,
   );
-});
-
-test(caseName + ": PASS does not require identical or clean worktrees", (t) => {
-  const fixture = setup(t);
-  const result = structuredClone(fixture.result);
-  result.tested_revision.status = " M tested.ts";
-  result.finished_revision.head = "later-sha";
-  fixture.validate(result);
-  fixture.writeResult(result);
-  const completed = spawnSync(
-    process.execPath,
-    ["--import", "tsx", path.join(CASE_DIR, "scripts", "validate_result.ts"), fixture.runDir],
-    { encoding: "utf8" },
-  );
-  assert.equal(completed.status, 0, completed.stderr);
-  assert.match(completed.stdout, /FINAL VALID/);
 });
 
 test(caseName + ": same-session judgment can pass", (t) => {
@@ -369,16 +359,16 @@ test(caseName + ": RAG limit rules belong to the RAG scenario subclass", (t) => 
   );
 });
 
-test(caseName + ": proposed scenario can be checked before activation", (t) => {
+test(caseName + ": scenario definition can be checked", (t) => {
   const fixture = setup(t);
-  validateScenario({ ...fixture.scenario, lifecycle: "proposed" }, fixture.scenarioPath, CASE_DIR);
+  validateScenario(fixture.scenario, fixture.scenarioPath, CASE_DIR);
   const completed = spawnSync(
     process.execPath,
-    ["--import", "tsx", path.join(CASE_DIR, "scripts", "validate_scenario.ts"), "--file", fixture.scenarioPath],
+    ["--import", "tsx", path.join(CASE_DIR, "scripts", "validate_scenario.ts")],
     { encoding: "utf8" },
   );
   assert.equal(completed.status, 0, completed.stderr);
-  assert.match(completed.stdout, new RegExp(caseName + " v1 active"));
+  assert.match(completed.stdout, new RegExp(`VALID: ${caseName} \\(`));
 });
 
 }

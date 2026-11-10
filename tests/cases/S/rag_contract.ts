@@ -6,6 +6,8 @@ export const MESSAGES_PATH = "/api/messages";
 export const ACTIVITIES_PATH = "/api/sessions";
 export const SUBJECT_ENTRY =
   "POST /api/chat/new; GET /api/messages/:id; GET /api/sessions/:id/activities";
+// The versioned answer timeout bounds the whole post-request capture, including
+// provisional replies, state polls, and stop reviews.
 export const LIMIT_KEYS = ["index_timeout_seconds", "answer_timeout_seconds", "max_model_calls"];
 
 /** Require precisely the limits consumed by the shared RAG runner. */

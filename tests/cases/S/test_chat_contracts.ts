@@ -14,16 +14,18 @@ const S_DIR = path.dirname(fileURLToPath(import.meta.url));
 for (const name of ["schedule-reminder-from-chat", "relay-message-to-person"] as const) {
   test(`${name}: final PASS requires matching capture, report, and evidence`, () => {
     const caseDir = path.join(S_DIR, name);
-    const scenario = JSON.parse(readFileSync(path.join(caseDir, "scenario-v1.json"), "utf8"));
+    const scenario = JSON.parse(readFileSync(path.join(caseDir, "scenario.json"), "utf8"));
     const runDir = mkdtempSync(path.join(os.tmpdir(), `qingqiu-${name}-`));
     const dataDir = path.join(runDir, "data");
     mkdirSync(dataDir);
-    const artifacts = ["data/metadata.json", "data/capture.json", "data/session.json", "data/db_evidence.json", "report.md"];
+    const artifacts = ["data/metadata.json", "data/capture.json", "data/session.json",
+      "data/db_evidence.json", "data/stop_monitor.json", "data/server_pre_stop.log", "report.md"];
     try {
       for (const artifact of artifacts) {
         const target = path.join(runDir, artifact);
         writeFileSync(target, artifact === "report.md" ? "# Result\n\nStatus: PASS\n" : "evidence");
       }
+      writeFileSync(path.join(dataDir, "stop_monitor.json"), JSON.stringify({ reason: "reply_complete" }));
       const capture: { status: string; mechanical_failures: string[]; mechanical_checks_performed: boolean; observed_model_calls: null } = {
         status: "INCONCLUSIVE", mechanical_failures: [], mechanical_checks_performed: true,
         observed_model_calls: null,
@@ -32,12 +34,10 @@ for (const name of ["schedule-reminder-from-chat", "relay-message-to-person"] as
       writeCapture();
       const result = {
         schema_version: 1, run_id: path.basename(runDir), case_name: name,
-        scenario_version: scenario.version, scenario_sha256: "0".repeat(64),
+        scenario_sha256: "0".repeat(64),
         track: "semantic", status: "PASS", detail: "All criteria supported",
         execution_command: `npm --prefix tests run case -- cases/S/${name}/scripts/run.ts`,
         started_at_utc: "2026-11-05T00:00:00Z", ended_at_utc: "2026-11-05T00:01:00Z",
-        tested_revision: { head: "tested-sha", status: " M tested.ts", tracked_diff_sha256: "test" },
-        finished_revision: { head: "later-sha", status: " M tested.ts", tracked_diff_sha256: "test" },
         request: scenario.request, subject_entry: "chat", model: { llm: "subject-model" },
         environment: { os: "TestOS", arch: "arm64", node: "26", isolated_data_root: true },
         limits: scenario.limits, observed_model_calls: null, mechanical_failures: [],
@@ -55,6 +55,9 @@ for (const name of ["schedule-reminder-from-chat", "relay-message-to-person"] as
         ? validateChatResult(value, runDir, scenario, caseDir, RelayResult)
         : validateChatResult(value, runDir, scenario, caseDir, ScheduleResult);
       assert.doesNotThrow(() => validate(result));
+      writeFileSync(path.join(dataDir, "stop_monitor.json"), JSON.stringify({ reason: "timeout" }));
+      assert.throws(() => validate(result), /completed capture before the scenario timeout/);
+      writeFileSync(path.join(dataDir, "stop_monitor.json"), JSON.stringify({ reason: "reply_complete" }));
       writeFileSync(path.join(runDir, "report.md"), "Status: INCONCLUSIVE\n");
       assert.throws(() => validate(result), /report.md status must match/);
       writeFileSync(path.join(runDir, "report.md"), "Status: PASS\n");

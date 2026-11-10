@@ -5,7 +5,7 @@ and reminder content in chat, the Agent creates a scheduled reminder that matche
 the request rather than replying only, dropping the reminder, or scheduling a
 different time or topic.
 
-The versioned [scenario-v1.json](scenario-v1.json) is authoritative for the chat
+The [scenario.json](scenario.json) is authoritative for the chat
 request, the expected delay, the tolerance, the criteria, and the limits.
 
 | Item | Value |
@@ -16,7 +16,7 @@ request, the expected delay, the tolerance, the criteria, and the limits.
 | Result validator | [`scripts/validate_result.ts`](scripts/validate_result.ts) |
 | Case contract | [`scripts/case_contract.ts`](scripts/case_contract.ts) |
 | Product entry | `POST /api/chat/new`, `GET /api/messages/:id`, `GET /api/sessions/:id/activities`; read-only `SELECT` on `messages`, `events`, `decisions`, `actions`, `action_effects`, `scheduled_events` |
-| Data | The fixed request in `scenario-v1.json`; no committed source document |
+| Data | The fixed request in `scenario.json`; no committed source document |
 | Calibration source | [assets/calibration-claims.md](assets/calibration-claims.md) |
 
 ## Prerequisites
@@ -39,9 +39,12 @@ configures a user, LLM, embedding, and a fresh Agent, then sends the declared
 request in a new chat session. It retries no run; a transport or setup failure
 is retained as a diagnostic `ERROR`.
 
-The executor does not wait for `trigger_at` to arrive. It stops as soon as the
-alarm record is captured, so run duration is bounded by model latency and the
-180-second reminder wait, not by the reminder delay itself.
+The executor does not wait for `trigger_at` to arrive. The shared S-case monitor
+asks the AI test agent whether a new reply ends the request. Otherwise it checks
+durable state every 30 seconds, including events without Agent observations,
+Actions, and Works. Two identical ongoing polls trigger an AI stop review that
+also examines new runtime logs. The 180-second scenario limit bounds capture.
+Follow the stop-review handshake in the shared [Skill](../SKILL.md).
 
 ## Commands
 
@@ -88,13 +91,15 @@ evidence. Forbidden outcomes are:
 
 Each run directory contains:
 
-- `data/metadata.json`: scenario checksum, tested revision, provider model
+- `data/metadata.json`: scenario checksum, provider model
   identifiers, limits, and the executor command.
 - `data/capture.json`: runner mechanical facts, written before judgment.
 - `data/session.json`: chat creation response, messages, and visible activities.
-  `completed` is false when the product produced neither an alarm nor a reply.
+  It includes the full pre-stop message snapshot and stop reason.
+- `data/stop_monitor.json`: stop reason, state polls, and AI stop reviews.
 - `data/db_evidence.json`: read-only `messages`, `events`, `decisions`, `actions`,
   `action_effects`, and `scheduled_events` rows.
+- `data/server_pre_stop.log`: runtime output captured before the runner stops the server.
 - `data/build.log` and `data/server.log`: build and owned-process output.
 
 The chain to inspect is:

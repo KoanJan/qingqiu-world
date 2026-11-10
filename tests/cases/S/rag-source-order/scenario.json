@@ -1,8 +1,6 @@
 {
-  "version": 1,
-  "lifecycle": "active",
   "fixture": "assets/ordering.md",
-  "question": "根据青山工坊的原始记录，林舟第三位收的弟子是谁？请说明推断顺序并给出原文依据。",
+  "question": "请检索你可访问的知识库中的青山工坊原始记录：林舟第三位收的弟子是谁？请说明收徒顺序并给出原文依据。",
   "required": [
     {
       "id": "answer",

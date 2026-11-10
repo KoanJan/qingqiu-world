@@ -1,10 +1,9 @@
 /** Run the message relay case against an isolated product server. */
-import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { sleep } from "../../../tools.ts";
-import { readRows, request, runChatCase, ScenarioError } from "../../chat_runner.ts";
+import { readRows, request, runChatCase } from "../../chat_runner.ts";
 import type { ChatSession, DbEvidence } from "../../chat_runner.ts";
+import { monitorSemanticCase, readBaseline } from "../../capture_monitor.ts";
 import { Result, Scenario } from "./case_contract.ts";
 import type { RelayScenario } from "./case_contract.ts";
 
@@ -16,7 +15,6 @@ const ACTION_TYPE_CHAT = 0;
 const EFFECT_TYPE_MESSAGE = 2;
 const CHAT_PATH = "/api/chat/new";
 const MESSAGES_PATH = "/api/messages";
-const RELAY_POLL_MS = 1_000;
 const SUBJECT_ENTRY =
   `POST ${CHAT_PATH}; POST /api/agents; GET ${MESSAGES_PATH}/:id; read-only SELECT on ` +
   "messages, events, decisions, actions, action_effects, sessions, participant_sessions, persons";
@@ -30,33 +28,6 @@ async function findTargetSessionIds(dbPath: string, agentId: number, targetId: n
     WHERE p1.participant_id = ? AND p2.participant_id = ?
     ORDER BY p1.session_id`, [agentId, targetId]);
   return rows.map((item) => item.session_id);
-}
-
-/** Find nonblank messages the Agent sent in a session shared with the target. */
-async function findRelayMessages(dbPath: string, agentId: number, targetId: number, sourceSessionId: number) {
-  return readRows(dbPath, `
-    SELECT DISTINCT m.* FROM messages m
-    JOIN participant_sessions p1 ON p1.session_id = m.session_id AND p1.participant_id = ?
-    JOIN participant_sessions p2 ON p2.session_id = m.session_id AND p2.participant_id = ?
-    WHERE m.person_id = ? AND m.session_id != ? AND length(trim(m.content)) > 0
-    ORDER BY m.id`, [agentId, targetId, agentId, sourceSessionId]);
-}
-
-/** Wait for a relay message or an Agent reply in the requesting session. */
-async function waitForRelay(base: string, dbPath: string, sourceSessionId: number,
-  agentId: number, targetId: number, child: ChildProcess, seconds: number) {
-  const deadline = Date.now() + seconds * 1000;
-  let sawReply = false;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null)
-      throw new ScenarioError("server exited while waiting for a relay: " + (child.exitCode ?? child.signalCode));
-    const relay = await findRelayMessages(dbPath, agentId, targetId, sourceSessionId);
-    if (relay.length) return { relay, sawReply };
-    const messages = await request<Array<Record<string, any>>>(base, "GET", `${MESSAGES_PATH}/${sourceSessionId}`);
-    sawReply ||= messages.some((item) => item.person_id === agentId && String(item.content ?? "").trim().length > 0);
-    await sleep(RELAY_POLL_MS);
-  }
-  return { relay: [], sawReply };
 }
 
 /** Check record, state, and target facts; leave delivered message meaning to the judge. */
@@ -141,6 +112,8 @@ export async function run() {
         character_settings: "Careful and reliable about names, times, places, and details.",
         llm_config_id: llmId,
       });
+      const dbPath = path.join(record.dataDir, "product/db/database.db");
+      const baseline = await readBaseline(dbPath);
       const route = CHAT_PATH + "?" + new URLSearchParams({ agent_id: String(agent.id), message: scenario.request });
       const chat = await request(base, "POST", route);
       const session: ChatSession = {
@@ -148,16 +121,18 @@ export async function run() {
         source_messages: [], target_sessions: [], completed: false,
       };
       record.writeDataJson("session.json", session);
-      const dbPath = path.join(record.dataDir, "product/db/database.db");
-      const { relay, sawReply } = await waitForRelay(base, dbPath, chat.session_id,
-        agent.id, target.id, child, scenario.limits.relay_timeout_seconds);
-      if (!relay.length && !sawReply)
-        throw new ScenarioError(`agent produced neither a reply nor a relay message within ${scenario.limits.relay_timeout_seconds} seconds`);
+      const stopped = await monitorSemanticCase({
+        record, dbPath, logPath: path.join(record.dataDir, "server.log"), child,
+        agentId: agent.id, triggerMessageId: chat.message_id, requestText: scenario.request,
+        baseline, timeoutSeconds: scenario.limits.relay_timeout_seconds,
+      });
       session.source_messages = await request(base, "GET", `${MESSAGES_PATH}/${chat.session_id}`);
       const targetViews = [];
       for (const id of await findTargetSessionIds(dbPath, agent.id, target.id))
         targetViews.push({ session_id: id, messages: await request(base, "GET", `${MESSAGES_PATH}/${id}`) });
       session.target_sessions = targetViews;
+      session.agent_messages = stopped.messages;
+      session.stop_reason = stopped.reason;
       session.completed = true;
       record.writeDataJson("session.json", session);
     },

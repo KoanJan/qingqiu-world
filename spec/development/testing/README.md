@@ -36,9 +36,9 @@ Then implement in this order:
 2. Choose the smallest boundary that can observe the risk. Use a package test for a domain invariant, real SQLite for persistence, an HTTP test for an API contract, an owned process for startup or restart, and a real model scenario only for behavior that actually depends on model semantics. A test of a recovery function does not by itself prove process restart behavior.
 3. Construct isolated starting state. Trigger the action through the boundary named in the contract. Capture actual outputs and final state. Assert both the required effect and a relevant forbidden effect, including an error or interrupted path when that is the risk.
 4. Run the case alone, then the relevant package or component suite, then the checks needed for the PR or release. When feasible for a high-risk regression, confirm the case fails against the known faulty behavior or a deliberately invalid fixture and accepts a valid boundary result; a test that cannot distinguish them is not useful evidence.
-5. Record the command, result, tested revision, and any unverified path. If the case cannot be executed, report the reason and remaining risk instead of writing `PASS`.
+5. Record the command, result, and any unverified path. If the case cannot be executed, report the reason and remaining risk instead of writing `PASS`.
 
-The contract can be a short note in an Issue, a test name and comments, or a versioned scenario file. Do not add a separate manifest for every ordinary Go test.
+The contract can be a short note in an Issue, a test name and comments, or a scenario file. Do not add a separate manifest for every ordinary Go test.
 
 ## One Hypothetical S Case
 
@@ -47,7 +47,7 @@ Suppose a fictional meeting assistant is asked to **suggest** a 30-minute slot b
 | Contract item | Hypothetical case |
 | --- | --- |
 | Risk and subject | The assistant may propose a time outside the window, imply a booking was made, or create an event despite the request. Exercise its real chat entry point. |
-| Setup | Start the product in an isolated data root with [all six required provider variables](semantic.md#result-limits-and-execution-boundary): three for the LLM and three for embedding. Declare the request, date, timezone, 14:00–16:00 window, and 30-minute duration in the versioned scenario. |
+| Setup | Start the product in an isolated data root with [all six required provider variables](semantic.md#result-limits-and-execution-boundary): three for the LLM and three for embedding. Declare the request, date, timezone, 14:00–16:00 window, and 30-minute duration in the scenario. |
 | Action | Send the declared request once. |
 | Oracle: mechanical | Check that the chat completed and that no new calendar event exists in this run's isolated account. Any new event is a mechanical `FAIL`; an unreadable calendar store makes this run `INCONCLUSIVE`. |
 | Oracle: semantic | A judge reads the original request and captured response. The response must propose a full 30-minute interval inside the window and present it as a suggestion. It must not claim an invitation was sent. A missing response or unsupported interpretation cannot become `PASS`. |
@@ -59,7 +59,7 @@ One possible directory layout is below. `reports/` is generated and Git-ignored;
 ~~~text
 tests/cases/S/meeting-slot-suggestion/    # hypothetical; does not exist here
   README.md
-  scenario-v1.json
+  scenario.json
   scripts/
     run.ts
     validate_scenario.ts
@@ -75,7 +75,7 @@ tests/cases/S/meeting-slot-suggestion/    # hypothetical; does not exist here
       calendar_state.json
 ~~~
 
-The case README would give the exact command, prerequisites, input and outcome, evidence paths, and result meanings. `scenario-v1.json` would own the request, time constraints, `required` and `forbidden` criteria, and limits; the runner would load them rather than repeat them in code. A successful capture would remain `INCONCLUSIVE` while awaiting judgment. The judge would record an observation and evidence for each criterion, then final validation would check the judgment, immutable mechanical facts, artifact references, and agreement between `result.json` and `report.md`. The [hypothetical D case](deterministic.md#one-hypothetical-d-case) applies the same contract where code can decide the complete verdict without semantic judgment.
+The case README would give the exact command, prerequisites, input and outcome, evidence paths, and result meanings. `scenario.json` would own the request, time constraints, `required` and `forbidden` criteria, and limits; the runner would load them rather than repeat them in code. A successful capture would remain `INCONCLUSIVE` while awaiting judgment. The judge would record an observation and evidence for each criterion, then final validation would check the judgment, immutable mechanical facts, artifact references, and agreement between `result.json` and `report.md`. The [hypothetical D case](deterministic.md#one-hypothetical-d-case) applies the same contract where code can decide the complete verdict without semantic judgment.
 
 ## Review Whether a Case Is Ready
 

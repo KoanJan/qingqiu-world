@@ -27,7 +27,7 @@ export class Scenario {
   readonly value: ScheduleScenario;
   constructor(value: ScheduleScenario) { this.value = value; }
   validateContext(scenarioPath: string, caseDir: string) {
-    validateChatScenarioContext(this.value, scenarioPath, caseDir);
+    validateChatScenarioContext(scenarioPath, caseDir);
   }
 }
 

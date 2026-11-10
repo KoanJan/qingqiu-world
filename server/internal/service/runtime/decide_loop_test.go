@@ -126,6 +126,9 @@ func TestDecideLoopBoundsNetworkRequests(t *testing.T) {
 			for _, tool := range input.Tools {
 				names[tool.Function.Name] = true
 			}
+			if names["recall_memory"] || !names["recall_event"] {
+				t.Errorf("unexpected recall tool set: %+v", names)
+			}
 			for _, name := range []string{"list_sent_jinshu", "list_received_jinshu", "read_jinshu"} {
 				if !names[name] {
 					t.Errorf("initial decision request is missing %s", name)
@@ -138,7 +141,7 @@ func TestDecideLoopBoundsNetworkRequests(t *testing.T) {
 		if requests > 1 && (len(input.Messages) < 3 || input.Messages[len(input.Messages)-1].Role != "tool") {
 			t.Errorf("request %d lost the previous recall result", requests)
 		}
-		name, arguments := "recall_history", "{}"
+		name, arguments := "recall_event", `{"session_id":1}`
 		if requests == maxDecideRequests {
 			name, arguments = "decide", `{"thoughts":"enough information","actions":[]}`
 		}
@@ -294,7 +297,7 @@ func TestDecideLoopReportsRecallFailureAndRepeatedCall(t *testing.T) {
 		if requests == 3 && (len(input.Messages) == 0 || !strings.Contains(input.Messages[len(input.Messages)-1].Content, "already made")) {
 			t.Errorf("duplicate recall was not identified: %+v", input.Messages)
 		}
-		name, arguments := "recall_history", `{"query":"x","session_id":1}`
+		name, arguments := "recall_event", `{"query":"x","session_id":1}`
 		if requests == 3 {
 			name, arguments = "decide", `{"thoughts":"source unavailable","actions":[]}`
 		}
@@ -534,8 +537,9 @@ func TestRecallToolArgumentsRejectScopeExpansion(t *testing.T) {
 		name string
 		args recallArguments
 	}{
-		{"recall_history", recallArguments{}},
-		{"recall_history", recallArguments{Query: "青丘", SessionID: 1}},
+		{"recall_memory", recallArguments{Query: "青丘"}},
+		{"recall_event", recallArguments{PersonID: 2}},
+		{"recall_event", recallArguments{Query: "青丘", SessionID: 1}},
 		{"recall_message", recallArguments{DecisionID: 1}},
 		{"recall_action", recallArguments{EventID: 1}},
 		{"recall_entity_profile", recallArguments{EntityID: 1, EntityType: 1, Query: "青丘"}},
@@ -549,7 +553,7 @@ func TestRecallToolArgumentsRejectScopeExpansion(t *testing.T) {
 		name string
 		args recallArguments
 	}{
-		{"recall_history", recallArguments{FromTime: "2026-01-01T00:00:00Z"}},
+		{"recall_event", recallArguments{FromTime: "2026-01-01T00:00:00Z"}},
 		{"recall_work", recallArguments{WorkID: 1}},
 		{"recall_entity_profile", recallArguments{EntityID: 1, EntityType: 1}},
 	} {

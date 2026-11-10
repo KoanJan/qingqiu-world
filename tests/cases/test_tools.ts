@@ -53,7 +53,6 @@ function sampleResult() {
     execution_command: "npm --prefix tests run case -- cases/D/example-case/scripts/run.ts",
     started_at_utc: "2026-01-01T00:00:00Z",
     ended_at_utc: "2026-01-01T00:00:01Z",
-    tested_revision: { head: "test" },
     limitations: [],
   };
 }
@@ -116,7 +115,6 @@ test("writeCase assembles a standard report and result", (t) => {
     detail: "Checks passed",
     executionCommand: "npm --prefix tests run case -- cases/D/example-case/scripts/run.ts",
     startedAtUtc: "2026-01-01T00:00:00Z",
-    testedRevision: { head: "abc", status: "" },
     checks,
     notes: "Inspect data/observed.json.",
   });
@@ -198,6 +196,8 @@ test("isolated build and server environments own all product paths", (t) => {
   assert.equal(build.GOCACHE, path.join(dataDir, "go-cache"));
   assert.equal(server.DATA_ROOT, path.join(dataDir, "product"));
   assert.equal(server.PORT, "12345");
+  assert.equal(server.LOG_LEVEL, "DEBUG");
+  assert.equal(isolatedServerEnv(dataDir, 12345, { LOG_LEVEL: "INFO" }).LOG_LEVEL, "DEBUG");
   assert.equal(server.CASE_LIMIT, "4");
   assert.equal(existsSync(path.join(dataDir, "tmp")), true);
   assert.equal(existsSync(path.join(dataDir, "logs")), true);

@@ -1,14 +1,14 @@
 /** Shared isolated execution and evidence mechanics for chat-driven S cases. */
 import type { ChildProcess } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { copyFileSync, existsSync, readFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
-  HttpRequestError, RunRecord, buildServer, caseCommand, errorMessage, freePort, gitState,
+  HttpRequestError, RunRecord, buildServer, caseCommand, errorMessage, freePort,
   httpJson, isolatedServerEnv, providerEndpoint, readSqlite, sha256, startServer, stopServer, utcNow,
 } from "../tools.ts";
-import type { Revision, Status } from "../tools.ts";
+import type { Status } from "../tools.ts";
 import { missingProviderEnv } from "./provider_env.ts";
 import { loadChatScenario, validateChatResult } from "./chat_contract.ts";
 import type { ChatResult, ChatResultModel, ChatScenario, ChatScenarioModel } from "./chat_contract.ts";
@@ -54,13 +54,11 @@ export async function readTables(dbPath: string, tables: string[]): Promise<DbEv
 
 type Metadata = {
   case_name: string;
-  scenario_version: number;
   scenario_sha256: string;
   started_at_utc: string;
   environment: { os: string; arch: string; node: string; isolated_data_root: boolean };
   subject_entry: string;
   execution_command: string;
-  git: Revision;
   run_dir: string;
   llm_endpoint?: { host: string; sha256: string };
   llm_model_id?: string;
@@ -101,18 +99,18 @@ export async function runChatCase<S extends ChatScenario, T extends ChatResult>(
     record.writeResult({
       track: "semantic", status: "ERROR", detail, execution_command: command,
       started_at_utc: started, ended_at_utc: utcNow(),
-      tested_revision: gitState(ROOT, true), limitations: ["Scenario definition could not be validated"],
+      limitations: ["Scenario definition could not be validated"],
     });
     console.error(`${detail}\nEvidence directory: ${record.root}`);
     return 2;
   }
 
   const metadata: Metadata = {
-    case_name: record.caseName, scenario_version: scenario.version,
+    case_name: record.caseName,
     scenario_sha256: sha256(readFileSync(scenarioPath)), started_at_utc: started,
     environment: { os: os.type(), arch: os.arch(), node: process.version, isolated_data_root: true },
     subject_entry: workflow.subjectEntry, execution_command: command,
-    git: gitState(ROOT, true), run_dir: record.root,
+    run_dir: record.root,
   };
 
   function finalize(status: Status, detail: string, failures: string[] = [], checksPerformed = false) {
@@ -128,10 +126,9 @@ export async function runChatCase<S extends ChatScenario, T extends ChatResult>(
       observed_model_calls: null,
     });
     const result = {
-      schema_version: 1, scenario_version: scenario.version,
+      schema_version: 1,
       scenario_sha256: metadata.scenario_sha256, track: "semantic", status, detail,
       execution_command: command, started_at_utc: started, ended_at_utc: utcNow(),
-      tested_revision: metadata.git, finished_revision: gitState(ROOT, true),
       request: scenario.request, subject_entry: workflow.subjectEntry,
       model: { llm: metadata.llm_model_id ?? null, embedding: metadata.embedding_model_id ?? null },
       environment: metadata.environment, limits: scenario.limits,
@@ -143,17 +140,19 @@ export async function runChatCase<S extends ChatScenario, T extends ChatResult>(
       limitations, deviations: [], ...workflow.extraResult?.(scenario),
     };
     record.writeReport(
-      `# ${record.caseName} v${scenario.version} run\n\nStatus: ${status}\n\n${detail}\n\n` +
+      `# ${record.caseName} run\n\nStatus: ${status}\n\n${detail}\n\n` +
       `Request: \`${scenario.request}\`\n\n${workflow.extraReport?.(scenario) ?? ""}` +
-      `Command: \`${command}\`\n\nTested revision: \`${metadata.git.head}\`\n\n` +
+      `Command: \`${command}\`\n\n` +
       `Mechanical checks: ${checksPerformed ? "completed" : "not completed"}.\n\n` +
       `Mechanical failures: ${failures.length ? failures.join("; ") : "none recorded"}.\n\n` +
       `Failure prefixes: ${workflow.failurePrefixes}.\n\n` +
       "Semantic criteria: awaiting independent judgment.\n\n## Evidence\n\n" +
-      "- `data/metadata.json`: scenario checksum, tested revision, provider models, limits.\n" +
+      "- `data/metadata.json`: scenario checksum, provider models, limits.\n" +
       "- `data/capture.json`: runner-captured mechanical facts, written before judgment.\n" +
       "- `data/session.json`: chat and visible session responses, if available.\n" +
+      "- `data/stop_monitor.json`: status polls and AI stop reviews, if capture reached monitoring.\n" +
       `- \`data/db_evidence.json\`: read-only ${workflow.evidenceTables.join(", ")} rows, if available.\n` +
+      "- `data/server_pre_stop.log`: runtime output before runner shutdown.\n" +
       "- `data/build.log` and `data/server.log`: build and owned-process output.\n\n" +
       workflow.evidenceExplanation + " Record the independent semantic verdict and evidence locations here.\n",
     );
@@ -206,24 +205,29 @@ export async function runChatCase<S extends ChatScenario, T extends ChatResult>(
     child = await startServer(binary, dataDir, env, base, "server.log", SERVER_START_TIMEOUT_MS);
     await workflow.perform(base, user.id, llm.id, scenario, record, child);
     status = "INCONCLUSIVE";
-    detail = "Real product run completed; independent semantic judgment is required";
+    const completedSession = JSON.parse(readFileSync(path.join(dataDir, "session.json"), "utf8")) as ChatSession;
+    detail = completedSession.stop_reason === "timeout"
+      ? "Capture reached the scenario timeout; semantic completion is unverified"
+      : `Capture stopped (${completedSession.stop_reason}); independent semantic judgment is required`;
   } catch (error) {
     detail = errorMessage(error);
   } finally {
-    if (child !== null) {
-      try {
-        await stopServer(child, SERVER_STOP_TIMEOUT_MS);
-      } catch (error) {
-        detail += "; cleanup: " + errorMessage(error);
-      }
-    }
+    // Freeze the observed state before shutdown can interrupt an active Work.
     const sessionPath = path.join(dataDir, "session.json");
     if (existsSync(sessionPath)) {
       const session = JSON.parse(readFileSync(sessionPath, "utf8")) as ChatSession;
       try {
-        const evidence = await readTables(path.join(dataDir, "product", "db", "database.db"), workflow.evidenceTables);
+        const dbPath = path.join(dataDir, "product", "db", "database.db");
+        const [latestMessages] = await readSqlite(dbPath, [{
+          sql: "SELECT id, session_id, person_id, content FROM messages " +
+            "WHERE session_id = ? OR (person_id = ? AND id >= ?) ORDER BY id",
+          params: [session.chat.session_id, session.agent_id, session.chat.message_id],
+        }]);
+        session.pre_stop_messages = latestMessages;
+        record.writeDataJson("session.json", session);
+        const evidence = await readTables(dbPath, workflow.evidenceTables);
         record.writeDataJson("db_evidence.json", evidence);
-        if (session.completed) {
+        if (session.completed && status !== "ERROR") {
           failures = workflow.checkEvidence(evidence, session, scenario);
           checksPerformed = true;
           if (failures.length) {
@@ -234,6 +238,19 @@ export async function runChatCase<S extends ChatScenario, T extends ChatResult>(
       } catch (error) {
         if (status !== "ERROR") status = "INCONCLUSIVE";
         detail += "; read-only DB evidence unavailable or malformed: " + errorMessage(error);
+      }
+    }
+    try {
+      if (existsSync(path.join(dataDir, "server.log")))
+        copyFileSync(path.join(dataDir, "server.log"), path.join(dataDir, "server_pre_stop.log"));
+    } catch (error) {
+      detail += "; pre-stop log capture failed: " + errorMessage(error);
+    }
+    if (child !== null) {
+      try {
+        await stopServer(child, SERVER_STOP_TIMEOUT_MS);
+      } catch (error) {
+        detail += "; cleanup: " + errorMessage(error);
       }
     }
     finalize(status, detail, failures, checksPerformed);

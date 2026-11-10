@@ -14,11 +14,6 @@ const criterionResult = z.strictObject({
   observed: z.string(),
   evidence: z.array(z.strictObject({ artifact: nonblank, location: nonblank })),
 });
-const revision = z.strictObject({
-  head: nonblank,
-  status: z.string(),
-  tracked_diff_sha256: z.string(),
-});
 const environment = z.strictObject({
   os: nonblank,
   arch: nonblank,
@@ -27,10 +22,8 @@ const environment = z.strictObject({
 });
 const positiveInt = z.number().int().positive();
 
-/** Fields shared by versioned chat scenarios; each case extends this schema. */
+/** Fields shared by chat scenarios; each case extends this schema. */
 export const ChatScenarioSchema = z.strictObject({
-  version: positiveInt,
-  lifecycle: z.enum(["proposed", "reviewed", "active", "deprecated"]),
   request: nonblank,
   required: z.array(criterion).min(1),
   forbidden: z.array(criterion).min(1),
@@ -43,7 +36,6 @@ export const ChatResultSchema = z.strictObject({
   schema_version: z.literal(1),
   run_id: nonblank,
   case_name: nonblank,
-  scenario_version: positiveInt,
   scenario_sha256: z.string().regex(/^[0-9a-f]{64}$/),
   track: z.literal("semantic"),
   status,
@@ -51,8 +43,6 @@ export const ChatResultSchema = z.strictObject({
   execution_command: nonblank,
   started_at_utc: nonblank,
   ended_at_utc: nonblank,
-  tested_revision: revision,
-  finished_revision: revision,
   request: nonblank,
   subject_entry: nonblank,
   model: z.record(z.string(), z.unknown()),
@@ -73,8 +63,8 @@ function requireThat(value: unknown, message: string): asserts value {
   if (!value) throw new Error(message);
 }
 
-/** Check the directory and versioned filename of a chat scenario. */
-export function validateChatScenarioContext(scenario: ChatScenario, scenarioPath: string, caseDir: string) {
+/** Check the directory and filename of a chat scenario. */
+export function validateChatScenarioContext(scenarioPath: string, caseDir: string) {
   const resolvedCase = realpathSync(caseDir);
   const resolvedPath = realpathSync(scenarioPath);
   requireThat(
@@ -82,8 +72,7 @@ export function validateChatScenarioContext(scenario: ChatScenario, scenarioPath
       /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(path.basename(resolvedCase)),
     resolvedPath + ": invalid semantic case directory",
   );
-  requireThat(path.basename(resolvedPath) === `scenario-v${scenario.version}.json`,
-    resolvedPath + ": scenario filename must match its version");
+  requireThat(path.basename(resolvedPath) === "scenario.json", resolvedPath + ": expected scenario.json");
 }
 
 export type ChatScenarioModel<T extends ChatScenario> = {
@@ -95,18 +84,12 @@ export type ChatResultModel<T extends ChatResult, S extends ChatScenario> = {
   new (value: T): { value: T; validateContext(runDir: string, scenario: S, caseDir: string): void; validateFinal(): void };
 };
 
-/** Return the one active scenario after case-specific schema and context checks. */
+/** Return the scenario after case-specific schema and context checks. */
 export function loadChatScenario<T extends ChatScenario>(caseDir: string, model: ChatScenarioModel<T>): [T, string] {
-  const matches: Array<[T, string]> = [];
-  for (const filename of readdirSync(caseDir).filter((name) => /^scenario-v.*\.json$/.test(name))) {
-    const scenarioPath = path.join(caseDir, filename);
-    const scenario = new model(model.schema.parse(JSON.parse(readFileSync(scenarioPath, "utf8"))));
-    scenario.validateContext(scenarioPath, caseDir);
-    if (scenario.value.lifecycle === "active") matches.push([scenario.value, scenarioPath]);
-  }
-  requireThat(matches.length === 1,
-    `expected one active scenario in ${path.basename(caseDir)}, found ${matches.length}`);
-  return matches[0];
+  const scenarioPath = path.join(caseDir, "scenario.json");
+  const scenario = new model(model.schema.parse(JSON.parse(readFileSync(scenarioPath, "utf8"))));
+  scenario.validateContext(scenarioPath, caseDir);
+  return [scenario.value, scenarioPath];
 }
 
 type Judge = { kind: string; model: string; rationale: string; judgement: string };
@@ -120,7 +103,7 @@ function validJudge(value: Record<string, unknown> | null): value is Judge {
 export function validateChatResultContext(result: ChatResult, scenario: ChatScenario, runDir: string, caseDir: string) {
   const resolvedRun = realpathSync(runDir);
   const resolvedCase = realpathSync(caseDir);
-  requireThat(result.case_name === path.basename(resolvedCase) && result.scenario_version === scenario.version &&
+  requireThat(result.case_name === path.basename(resolvedCase) &&
     result.request === scenario.request && isDeepStrictEqual(result.limits, scenario.limits),
     "result changed the scenario input or limits");
   requireThat(result.run_id === path.basename(resolvedRun), "result run ID mismatch");
@@ -163,8 +146,12 @@ export function validateChatResultContext(result: ChatResult, scenario: ChatScen
       "PASS requires evidence for every criterion");
     requireThat(!result.mechanical_failures.length, "PASS cannot have mechanical failures");
     requireThat(result.mechanical_checks_performed, "PASS requires mechanical checks");
-    requireThat(["data/session.json", "data/db_evidence.json"].every((item) => result.artifacts.includes(item)),
-      "PASS requires session and database evidence");
+    requireThat(["data/session.json", "data/db_evidence.json", "data/stop_monitor.json",
+      "data/server_pre_stop.log"].every((item) => result.artifacts.includes(item)),
+      "PASS requires pre-stop session, monitor, log, and database evidence");
+    const stopMonitor = JSON.parse(readFileSync(path.join(dataRoot, "stop_monitor.json"), "utf8"));
+    requireThat(stopMonitor.reason && stopMonitor.reason !== "timeout",
+      "PASS requires a completed capture before the scenario timeout");
     if (result.artifacts.includes("data/calibration.json")) {
       const calibration = JSON.parse(readFileSync(path.join(dataRoot, "calibration.json"), "utf8"));
       requireThat(Array.isArray(calibration) && calibration.length &&
@@ -202,16 +189,9 @@ export function validateChatResult<S extends ChatScenario, T extends ChatResult>
 /** CLI for a case-specific scenario validator. */
 export function chatScenarioCli<T extends ChatScenario>(caseDir: string, model: ChatScenarioModel<T>, args = process.argv.slice(2)) {
   try {
-    let scenario: T, scenarioPath: string;
-    if (!args.length) [scenario, scenarioPath] = loadChatScenario(caseDir, model);
-    else if (args.length === 2 && args[0] === "--file") {
-      scenarioPath = path.resolve(args[1]);
-      requireThat(path.dirname(scenarioPath) === path.resolve(caseDir), "scenario file must be inside this case directory");
-      const instance = new model(model.schema.parse(JSON.parse(readFileSync(scenarioPath, "utf8"))));
-      instance.validateContext(scenarioPath, caseDir);
-      scenario = instance.value;
-    } else throw new Error("usage: validate_scenario.ts [--file path]");
-    console.log(`VALID: ${path.basename(caseDir)} v${scenario.version} ${scenario.lifecycle} (${scenarioPath})`);
+    requireThat(!args.length, "usage: validate_scenario.ts");
+    const [, scenarioPath] = loadChatScenario(caseDir, model);
+    console.log(`VALID: ${path.basename(caseDir)} (${scenarioPath})`);
     return 0;
   } catch (error) {
     console.error("INVALID: " + (error instanceof Error ? error.message : String(error)));

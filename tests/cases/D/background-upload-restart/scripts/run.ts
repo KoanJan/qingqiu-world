@@ -6,10 +6,10 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   CASE_HTTP_TIMEOUT_MS, CheckFailure, HttpShapeError, HttpStatusError, HttpTransportError, RunRecord, SetupError,
-  buildServer, callJson, caseCommand, check, errorMessage, freePort, gitState, httpJson, inside,
+  buildServer, callJson, caseCommand, check, errorMessage, freePort, httpJson, inside,
   isolatedServerEnv, sha256, startServer, stopServer, utcNow,
 } from "../../../tools.ts";
-import type { CheckRecord, HttpCall, Revision, Status } from "../../../tools.ts";
+import type { CheckRecord, HttpCall, Status } from "../../../tools.ts";
 
 const CASE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.resolve(CASE_DIR, "../../../..");
@@ -97,13 +97,11 @@ export async function main(): Promise<number> {
   const responses: HttpCall[] = [];
   const checks: CheckRecord[] = [];
   let processHandle: ChildProcess | null = null;
-  let revision: Revision | null = null;
   let status: Status = "ERROR";
   let detail = "Case did not start";
   let binaryEvidence: Record<string, unknown> = {};
   console.log("Evidence directory: " + record.root);
   try {
-    revision = gitState(ROOT);
     if (!existsSync(ASSET_PNG) || !existsSync(ASSET_INVALID)) {
       throw new SetupError("missing committed asset under " + path.join(CASE_DIR, "assets"));
     }
@@ -214,7 +212,7 @@ export async function main(): Promise<number> {
     }
     record.writeDataJson("responses.json", responses);
     record.writeCase({ track: "deterministic", status, detail, executionCommand: command,
-      startedAtUtc: started, testedRevision: revision, checks, extra: { binary_evidence: binaryEvidence },
+      startedAtUtc: started, checks, extra: { binary_evidence: binaryEvidence },
       limitations: [
         "Covers the server process and HTTP API only; it does not inspect browser rendering or Electron packaging.",
         "Uses committed assets rather than real user photos.",

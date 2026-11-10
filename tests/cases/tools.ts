@@ -6,7 +6,7 @@
  * transport.
  */
 import { createHash } from "node:crypto";
-import { execFileSync, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import type { ChildProcess, SpawnOptions } from "node:child_process";
 import {
   existsSync,
@@ -46,7 +46,6 @@ export class SetupError extends Error {}
 export class CheckFailure extends Error {}
 
 export type Status = "PASS" | "FAIL" | "INCONCLUSIVE" | "ERROR";
-export type Revision = { head: string; status: string; tracked_diff_sha256?: string };
 export type CheckRecord = { name: string; passed: boolean; observed: unknown; expected: unknown };
 export type HttpCall = {
   method: string;
@@ -211,17 +210,6 @@ export function providerEndpoint(url: string) {
   return { host: new URL(url).hostname, sha256: sha256(url) };
 }
 
-/** Record the tested revision and worktree state, optionally hashing the diff. */
-export function gitState(root: string, includeDiff = false): Revision {
-  const state: Revision = {
-    head: execFileSync("git", ["rev-parse", "HEAD"], { cwd: root, encoding: "utf8" }).trim(),
-    status: execFileSync("git", ["status", "--short"], { cwd: root, encoding: "utf8" }).trim(),
-  };
-  if (includeDiff)
-    state.tracked_diff_sha256 = sha256(execFileSync("git", ["diff", "--binary"], { cwd: root }));
-  return state;
-}
-
 /** Require one report status declaration matching the machine result. */
 export function validateReportStatus(reportPath: string, status: Status) {
   const declarations = readFileSync(reportPath, "utf8")
@@ -247,7 +235,7 @@ export function isolatedBuildEnv(dataDir: string) {
   };
 }
 
-/** Give an owned server its own product state, logs, temp files, and port. */
+/** Give every owned test server isolated state and DEBUG application logs. */
 export function isolatedServerEnv(
   dataDir: string,
   port: number,
@@ -283,6 +271,7 @@ export function isolatedServerEnv(
     TMP: tmp,
     TEMP: tmp,
     ...extra,
+    LOG_LEVEL: "DEBUG",
   };
 }
 
@@ -461,7 +450,6 @@ export class RunRecord {
       "execution_command",
       "started_at_utc",
       "ended_at_utc",
-      "tested_revision",
       "limitations",
     ]) {
       if (!(key in result)) throw new Error("result missing common field: " + key);
@@ -492,7 +480,6 @@ export class RunRecord {
     detail,
     executionCommand,
     startedAtUtc,
-    testedRevision,
     checks = null,
     limitations = [],
     notes = "",
@@ -504,7 +491,6 @@ export class RunRecord {
     detail: string;
     executionCommand: string;
     startedAtUtc: string;
-    testedRevision: Revision | null;
     checks?: CheckRecord[] | null;
     limitations?: string[];
     notes?: string;
@@ -520,8 +506,6 @@ export class RunRecord {
       detail +
       "\n\nCommand: " +
       executionCommand +
-      "\n\nTested revision: " +
-      (testedRevision?.head ?? "unavailable") +
       "\n\n";
     if (checks !== null)
       report +=
@@ -541,7 +525,6 @@ export class RunRecord {
       execution_command: executionCommand,
       started_at_utc: startedAtUtc,
       ended_at_utc: utcNow(),
-      tested_revision: testedRevision,
       environment: { os: os.type(), arch: os.arch(), node: process.version },
       limitations,
       ...(checks === null ? {} : { checks }),

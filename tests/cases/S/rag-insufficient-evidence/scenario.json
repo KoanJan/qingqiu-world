@@ -1,8 +1,6 @@
 {
-  "version": 1,
-  "lifecycle": "active",
   "fixture": "assets/incomplete.md",
-  "question": "根据青山工坊的原始记录，林舟第三位收的弟子是谁？如果资料不足，请明确说明，并给出原文依据。",
+  "question": "请检索你可访问的知识库中的青山工坊原始记录：林舟第三位收的弟子是谁？如果记录不足以确定，请明确说明，并给出原文依据。",
   "required": [
     {
       "id": "uncertainty",

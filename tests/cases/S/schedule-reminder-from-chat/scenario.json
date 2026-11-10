@@ -1,6 +1,4 @@
 {
-  "version": 1,
-  "lifecycle": "active",
   "request": "5分钟后提醒我喝水。",
   "expected_delay_seconds": 300,
   "delay_tolerance_seconds": 90,

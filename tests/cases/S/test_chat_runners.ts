@@ -8,7 +8,7 @@ import { checkDbEvidence as checkReminder } from "./schedule-reminder-from-chat/
 import { checkDbEvidence as checkRelay } from "./relay-message-to-person/scripts/run.ts";
 
 const root = path.dirname(fileURLToPath(import.meta.url));
-const scenario = (name: string) => JSON.parse(readFileSync(path.join(root, name, "scenario-v1.json"), "utf8"));
+const scenario = (name: string) => JSON.parse(readFileSync(path.join(root, name, "scenario.json"), "utf8"));
 
 test("reminder provenance links the original request to a timely pending alarm", () => {
   const definition = scenario("schedule-reminder-from-chat");

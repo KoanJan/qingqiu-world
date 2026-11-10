@@ -16,7 +16,6 @@ import {
   buildServer,
   caseCommand,
   freePort,
-  gitState,
   httpJson,
   isolatedServerEnv,
   providerEndpoint,
@@ -28,10 +27,11 @@ import {
   utcNow,
 } from "../tools.ts";
 import { errorMessage } from "../tools.ts";
-import type { Revision, Status } from "../tools.ts";
+import type { Status } from "../tools.ts";
 import { loadCaseContract, loadScenario, ResultBase, validateResult } from "./base_contracts.ts";
 import type { ScenarioData } from "./base_contracts.ts";
 import { missingProviderEnv } from "./provider_env.ts";
+import { monitorSemanticCase, readBaseline } from "./capture_monitor.ts";
 import {
   ACTIVITIES_PATH,
   CHAT_PATH,
@@ -46,7 +46,6 @@ const DOCUMENT_STATUS_READY = 2;
 const DOCUMENT_STATUS_FAILED = 3;
 const INTERACTION_TYPE_RESPONSE = 2;
 const INDEX_POLL_MS = 1_000;
-const ANSWER_POLL_MS = 2_000;
 const SERVER_START_TIMEOUT_MS = 60_000;
 const SERVER_STOP_TIMEOUT_MS = 10_000;
 const ACTIVITY_PAGE_LIMIT = 200;
@@ -66,14 +65,12 @@ type DbEvidence = {
 };
 type Metadata = {
   case_name: string;
-  scenario_version: number;
   scenario_sha256: string;
   fixture_sha256: string;
   started_at_utc: string;
   environment: { os: string; arch: string; node: string; isolated_data_root: boolean };
   subject_entry_point: string;
   execution_command: string;
-  git: Revision;
   run_dir: string;
   llm_endpoint?: { host: string; sha256: string };
   llm_model_id?: string;
@@ -149,30 +146,6 @@ export async function waitReady(
   throw new ScenarioError(
     "document did not reach an active ready revision within " + seconds + " seconds",
   );
-}
-
-export async function waitAnswer(
-  base: string,
-  sessionId: number,
-  agentId: number,
-  child: ChildProcess,
-  seconds: number,
-): Promise<[Message[], Message]> {
-  const deadline = Date.now() + seconds * 1000;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new ScenarioError(
-        "server exited before answer: " + (child.exitCode ?? child.signalCode),
-      );
-    }
-    const messages = await request<Message[]>(base, "GET", MESSAGES_PATH + "/" + sessionId);
-    const answers = messages.filter(
-      (item) => item.person_id === agentId && String(item.content ?? "").trim(),
-    );
-    if (answers.length) return [messages, answers.at(-1)!];
-    await sleep(ANSWER_POLL_MS);
-  }
-  throw new ScenarioError("agent produced no message within " + seconds + " seconds");
 }
 
 export async function readDbEvidence(
@@ -312,7 +285,6 @@ function writeResult(
   }
   const result = {
     schema_version: 1,
-    scenario_version: scenario.version,
     scenario_sha256: metadata.scenario_sha256,
     track: "semantic",
     status,
@@ -320,8 +292,6 @@ function writeResult(
     execution_command: metadata.execution_command,
     started_at_utc: metadata.started_at_utc,
     ended_at_utc: utcNow(),
-    tested_revision: metadata.git,
-    finished_revision: gitState(ROOT, true),
     fixture_sha256: metadata.fixture_sha256,
     question: scenario.question,
     subject_entry: SUBJECT_ENTRY,
@@ -377,7 +347,6 @@ export async function run(caseDir: string) {
       execution_command: command,
       started_at_utc: started,
       ended_at_utc: utcNow(),
-      tested_revision: gitState(ROOT, true),
       limitations: ["Scenario definition could not be validated"],
     });
     console.error(detail + "\nEvidence directory: " + record.root);
@@ -388,7 +357,6 @@ export async function run(caseDir: string) {
   const fixtureBytes = readFileSync(sourceFixture);
   const metadata: Metadata = {
     case_name: record.caseName,
-    scenario_version: scenario.version,
     scenario_sha256: sha256(readFileSync(scenarioPath)),
     fixture_sha256: sha256(fixtureBytes),
     started_at_utc: started,
@@ -400,7 +368,6 @@ export async function run(caseDir: string) {
     },
     subject_entry_point: SUBJECT_ENTRY,
     execution_command: command,
-    git: gitState(ROOT, true),
     run_dir: record.root,
   };
   const missing = missingProviderEnv();
@@ -413,8 +380,6 @@ export async function run(caseDir: string) {
         detail +
         "\n\nCommand: " +
         command +
-        "\n\nTested revision: " +
-        metadata.git.head +
         "\n\nNo product action ran. Inspect data/metadata.json for setup details.\n",
     );
     record.writeDataJson("metadata.json", metadata);
@@ -486,15 +451,21 @@ export async function run(caseDir: string) {
     const access = await request<ApiObject[]>(base, "GET", "/api/kb/" + kb.id + "/access");
     if (!access.some((item) => item.id === agent.id))
       throw new ScenarioError("agent KB grant was not visible");
+    const dbPath = path.join(dataDir, "product", "db", "database.db");
+    const baseline = await readBaseline(dbPath);
     const query = new URLSearchParams({ agent_id: String(agent.id), message: scenario.question });
     const chat = await request(base, "POST", CHAT_PATH + "?" + query);
-    const [messages, answer] = await waitAnswer(
-      base,
-      chat.session_id,
-      agent.id,
-      child,
-      scenario.limits.answer_timeout_seconds,
-    );
+    const session = { user_id: user.id, agent_id: agent.id, kb_id: kb.id,
+      document: doc, chat, messages: [] as Message[], agent_messages: [] as ApiObject[],
+      activities: [] as ApiObject[], stop_reason: "" };
+    record.writeDataJson("session.json", session);
+    const stopped = await monitorSemanticCase({
+      record, dbPath, logPath: path.join(dataDir, "server.log"), child,
+      agentId: agent.id, triggerMessageId: chat.message_id,
+      requestText: scenario.question, baseline,
+      timeoutSeconds: scenario.limits.answer_timeout_seconds,
+    });
+    const messages = await request<Message[]>(base, "GET", MESSAGES_PATH + "/" + chat.session_id);
     if (
       !messages.some((item) => item.id === chat.message_id && item.content === scenario.question)
     ) {
@@ -505,33 +476,31 @@ export async function run(caseDir: string) {
       "GET",
       ACTIVITIES_PATH + "/" + chat.session_id + "/activities?limit=" + ACTIVITY_PAGE_LIMIT,
     );
-    record.writeDataJson("session.json", {
-      user_id: user.id,
-      agent_id: agent.id,
-      kb_id: kb.id,
-      document: doc,
-      chat,
-      messages,
-      answer,
-      activities,
-    });
+    session.messages = messages;
+    session.agent_messages = stopped.messages;
+    session.activities = activities as ApiObject[];
+    session.stop_reason = stopped.reason;
+    record.writeDataJson("session.json", session);
     status = "INCONCLUSIVE";
-    detail = "Real product run completed; independent semantic judgment is required";
+    detail = stopped.reason === "timeout"
+      ? "Capture reached the scenario timeout; semantic completion is unverified"
+      : "Capture stopped (" + stopped.reason + "); independent semantic judgment is required";
   } catch (error) {
     detail = errorMessage(error);
   } finally {
-    if (child !== null) {
-      try {
-        await stopServer(child, SERVER_STOP_TIMEOUT_MS);
-      } catch (error) {
-        detail += "; cleanup: " + errorMessage(error);
-      }
-    }
     const sessionPath = path.join(dataDir, "session.json");
     let modelCalls = null;
+    // Freeze evidence while the product is still running. Shutdown can change
+    // Work status and would otherwise contaminate the observed product state.
     if (existsSync(sessionPath)) {
       const session = JSON.parse(readFileSync(sessionPath, "utf8"));
       try {
+        const [latestMessages] = await readSqlite(path.join(dataDir, "product", "db", "database.db"), [{
+          sql: "SELECT id, session_id, person_id, content FROM messages WHERE session_id = ? ORDER BY id",
+          params: [session.chat.session_id],
+        }]);
+        session.messages = latestMessages;
+        record.writeDataJson("session.json", session);
         const evidence = await readDbEvidence(
           path.join(dataDir, "product", "db", "database.db"),
           session.chat.session_id,
@@ -542,16 +511,31 @@ export async function run(caseDir: string) {
         modelCalls = evidence.works.length
           ? evidence.interactions.filter((item) => item.type === INTERACTION_TYPE_RESPONSE).length
           : null;
-        const failures = checkDbEvidence(evidence, session, fixture);
-        mechanicalChecksPerformed = true;
-        if (failures.length) {
-          mechanicalFailures = failures;
-          status = "FAIL";
-          detail = "Mechanical provenance checks failed: " + failures.join("; ");
+        if (status !== "ERROR") {
+          const failures = checkDbEvidence(evidence, session, fixture);
+          mechanicalChecksPerformed = true;
+          if (failures.length) {
+            mechanicalFailures = failures;
+            status = "FAIL";
+            detail = "Mechanical provenance checks failed: " + failures.join("; ");
+          }
         }
       } catch (error) {
-        status = "INCONCLUSIVE";
+        if (status !== "ERROR") status = "INCONCLUSIVE";
         detail += "; read-only DB evidence unavailable: " + errorMessage(error);
+      }
+    }
+    try {
+      if (existsSync(path.join(dataDir, "server.log")))
+        copyFileSync(path.join(dataDir, "server.log"), path.join(dataDir, "server_pre_stop.log"));
+    } catch (error) {
+      detail += "; pre-stop log capture failed: " + errorMessage(error);
+    }
+    if (child !== null) {
+      try {
+        await stopServer(child, SERVER_STOP_TIMEOUT_MS);
+      } catch (error) {
+        detail += "; cleanup: " + errorMessage(error);
       }
     }
     record.writeDataJson("capture.json", {
@@ -563,8 +547,6 @@ export async function run(caseDir: string) {
     record.writeReport(
       "# " +
         record.caseName +
-        " v" +
-        scenario.version +
         " run\n\n" +
         "Status: " +
         status +
@@ -573,8 +555,6 @@ export async function run(caseDir: string) {
         "\n\n" +
         "Command: " +
         command +
-        "\n\nTested revision: " +
-        metadata.git.head +
         "\n\n" +
         "Mechanical checks: " +
         (mechanicalChecksPerformed ? "completed" : "not completed") +
@@ -591,16 +571,18 @@ export async function run(caseDir: string) {
         "retrieval (lookup returned no source evidence), state (product state contradicts setup).\n\n" +
         "Semantic criteria: awaiting independent judgment.\n\n" +
         "## Artifacts and checks\n\n" +
-        "- data/metadata.json: tested Git revision, run time, fixture checksum, and provider models.\n" +
+        "- data/metadata.json: run time, scenario and fixture checksums, and provider models.\n" +
         "- data/capture.json: runner-captured mechanical facts, written before judgment.\n" +
         "- data/" +
         path.basename(fixture) +
         ": exact source uploaded through the API.\n" +
-        "- data/session.json: product responses, exact answer, and visible activities, if chat completed.\n" +
+        "- data/session.json: full observed reply sequence, stop reason, and visible activities.\n" +
+        "- data/stop_monitor.json: status polls and AI stop reviews, if capture reached monitoring.\n" +
         "- data/db_evidence.json: read-only document, access, chunk, trace, and raw interaction records, if available.\n" +
+        "- data/server_pre_stop.log: runtime output before runner shutdown.\n" +
         "- data/build.log and data/server.log: build and owned-process output.\n\n" +
         "The runner checks active document state, uploaded source bytes, the sole KB grant, indexed chunks, " +
-        "retrieval scope, and evidence handle provenance. Review the exact answer against the versioned " +
+        "retrieval scope, and evidence handle provenance. Review the exact answer against the " +
         "scenario criteria and original source. Record the independent semantic verdict, criterion " +
         "reasoning, and evidence locations here.\n",
     );

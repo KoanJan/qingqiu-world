@@ -6,7 +6,7 @@ recipient's session and carries the request's key information, instead of
 replying only in the requesting chat, addressing the wrong Person, or dropping
 details.
 
-The versioned [scenario-v1.json](scenario-v1.json) is authoritative for the chat
+The [scenario.json](scenario.json) is authoritative for the chat
 request, the target person name, the criteria, and the limits.
 
 | Item | Value |
@@ -17,7 +17,7 @@ request, the target person name, the criteria, and the limits.
 | Result validator | [`scripts/validate_result.ts`](scripts/validate_result.ts) |
 | Case contract | [`scripts/case_contract.ts`](scripts/case_contract.ts) |
 | Product entry | `POST /api/chat/new`, `POST /api/agents`, `GET /api/messages/:id`; read-only `SELECT` on `persons`, `sessions`, `participant_sessions`, `messages`, `events`, `decisions`, `actions`, `action_effects` |
-| Data | The fixed request and target name in `scenario-v1.json`; no committed source document |
+| Data | The fixed request and target name in `scenario.json`; no committed source document |
 | Calibration source | [assets/calibration-claims.md](assets/calibration-claims.md) |
 
 ## Prerequisites
@@ -43,6 +43,12 @@ reach it by resolving the name in its contactable-persons context. The runner
 sends the declared request in a new chat session with the subject Agent. It
 retries no run; a transport or setup failure is retained as a diagnostic
 `ERROR`.
+
+The shared S-case monitor asks the AI test agent whether each new reply ends
+the request. While the reply remains open, it checks durable state every 30
+seconds; two identical ongoing polls trigger an AI stop review using the new
+runtime logs. The scenario timeout bounds capture. Follow the stop-review
+handshake in the shared [Skill](../SKILL.md).
 
 ## Commands
 
@@ -98,16 +104,18 @@ are captured for judgment but are not part of the required delivery record.
 
 Each run directory contains:
 
-- `data/metadata.json`: scenario checksum, tested revision, provider model
+- `data/metadata.json`: scenario checksum, provider model
   identifiers, limits, and the executor command.
 - `data/capture.json`: runner mechanical facts, written before judgment.
 - `data/session.json`: the requesting chat response, requesting-session
-  messages, and every target-session message snapshot. `completed` is false
-  when the product produced neither an Agent reply nor a relay.
+  messages, every target-session message snapshot, full pre-stop messages, and
+  the stop reason.
+- `data/stop_monitor.json`: stop reason, state polls, and AI stop reviews.
 - `data/db_evidence.json`: read-only `persons`, `sessions`,
   `participant_sessions`, `messages`, `events`, `decisions`, `actions`, and
   `action_effects` rows.
 - `data/build.log` and `data/server.log`: build and owned-process output.
+- `data/server_pre_stop.log`: runtime output captured before runner shutdown.
 
 The chain to inspect is:
 `messages` (original request) -> `events` (`event_type=1`, `ref_id=message.id`)

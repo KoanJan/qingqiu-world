@@ -30,8 +30,6 @@ export type Criterion = z.infer<typeof criterionSchema>;
 /** Fields in the current scripted RAG scenario format. */
 export const ScenarioSchema = z
   .strictObject({
-    version: z.number().int().min(1),
-    lifecycle: z.enum(["proposed", "reviewed", "active", "deprecated"]),
     fixture: nonblank,
     question: nonblank,
     required: z.array(criterionSchema).min(1),
@@ -67,14 +65,6 @@ const criterionResultSchema = z.strictObject({
 });
 export type CriterionResult = z.infer<typeof criterionResultSchema>;
 
-/** Git identity captured before and after a run. */
-const revisionSchema = z.strictObject({
-  head: nonblank,
-  status: z.string(),
-  tracked_diff_sha256: z.string(),
-});
-export type Revision = z.infer<typeof revisionSchema>;
-
 /** Platform identity of the process that executed the case. */
 const environmentSchema = z.strictObject({
   os: nonblank,
@@ -89,7 +79,6 @@ export const ResultSchema = z.strictObject({
   schema_version: z.literal(1),
   run_id: nonblank,
   case_name: nonblank,
-  scenario_version: z.number().int().min(1),
   scenario_sha256: z.string().regex(/^[0-9a-f]{64}$/),
   track: z.literal("semantic"),
   status,
@@ -97,8 +86,6 @@ export const ResultSchema = z.strictObject({
   execution_command: nonblank,
   started_at_utc: nonblank,
   ended_at_utc: nonblank,
-  tested_revision: revisionSchema,
-  finished_revision: revisionSchema,
   fixture_sha256: z.string().regex(/^[0-9a-f]{64}$/),
   question: nonblank,
   subject_entry: nonblank,
@@ -137,10 +124,7 @@ export class ScenarioBase {
         /^[a-z][a-z0-9]*(?:-[a-z0-9]+)*$/.test(path.basename(resolvedCase)),
       resolvedPath + ": invalid semantic case directory",
     );
-    requireThat(
-      path.basename(resolvedPath) === "scenario-v" + scenario.version + ".json",
-      resolvedPath + ": scenario filename must match its version",
-    );
+    requireThat(path.basename(resolvedPath) === "scenario.json", resolvedPath + ": expected scenario.json");
     const fixture = path.resolve(resolvedCase, scenario.fixture);
     requireThat(
       inside(fixture, resolvedCase) &&
@@ -165,23 +149,14 @@ export function validateScenario(
   return instance;
 }
 
-/** Return the single active scenario and its path for one case. */
+/** Return the scenario and its path for one case. */
 export function loadScenario(
   caseDir: string,
   model: typeof ScenarioBase = ScenarioBase,
 ): [ScenarioData, string] {
-  const matches: Array<[ScenarioData, string]> = [];
-  for (const filename of readdirSync(caseDir).filter((name) => /^scenario-v.*\.json$/.test(name))) {
-    const scenarioPath = path.join(caseDir, filename);
-    const value = JSON.parse(readFileSync(scenarioPath, "utf8"));
-    const scenario = validateScenario(value, scenarioPath, caseDir, model).value;
-    if (scenario.lifecycle === "active") matches.push([scenario, scenarioPath]);
-  }
-  requireThat(
-    matches.length === 1,
-    "expected one active scenario in " + path.basename(caseDir) + ", found " + matches.length,
-  );
-  return matches[0];
+  const scenarioPath = path.join(caseDir, "scenario.json");
+  const value = JSON.parse(readFileSync(scenarioPath, "utf8"));
+  return [validateScenario(value, scenarioPath, caseDir, model).value, scenarioPath];
 }
 
 /** Validate a result's run context after schema parsing. */
@@ -199,7 +174,6 @@ export class ResultBase {
     const resolvedCase = realpathSync(caseDir);
     requireThat(
       result.case_name === path.basename(resolvedCase) &&
-        result.scenario_version === scenario.version &&
         result.question === scenario.question &&
         isDeepStrictEqual(result.limits, scenario.limits),
       "result changed the scenario input or limits",
@@ -301,11 +275,15 @@ export class ResultBase {
       requireThat(!result.mechanical_failures.length, "PASS cannot have mechanical failures");
       requireThat(result.mechanical_checks_performed, "PASS requires mechanical checks");
       requireThat(
-        ["data/session.json", "data/db_evidence.json", fixtureArtifact].every((item) =>
+        ["data/session.json", "data/db_evidence.json", "data/stop_monitor.json",
+          "data/server_pre_stop.log", fixtureArtifact].every((item) =>
           result.artifacts.includes(item),
         ),
-        "PASS requires session, database evidence, and exact source",
+        "PASS requires pre-stop session, monitor, log, database evidence, and exact source",
       );
+      const stopMonitor = JSON.parse(readFileSync(path.join(dataRoot, "stop_monitor.json"), "utf8"));
+      requireThat(stopMonitor.reason && stopMonitor.reason !== "timeout",
+        "PASS requires a completed capture before the scenario timeout");
       requireThat(
         typeof result.observed_model_calls === "number" &&
           Number.isInteger(result.observed_model_calls) &&
@@ -401,33 +379,9 @@ export function scenarioCli(
   args = process.argv.slice(2),
 ) {
   try {
-    let value: ScenarioData;
-    let scenarioPath: string;
-    if (!args.length) [value, scenarioPath] = loadScenario(caseDir, model);
-    else if (args.length === 2 && args[0] === "--file") {
-      scenarioPath = path.resolve(args[1]);
-      requireThat(
-        path.dirname(scenarioPath) === path.resolve(caseDir),
-        "scenario file must be inside this case directory",
-      );
-      value = validateScenario(
-        JSON.parse(readFileSync(scenarioPath, "utf8")),
-        scenarioPath,
-        caseDir,
-        model,
-      ).value;
-    } else throw new Error("usage: validate_scenario.ts [--file path]");
-    console.log(
-      "VALID: " +
-        path.basename(caseDir) +
-        " v" +
-        value.version +
-        " " +
-        value.lifecycle +
-        " (" +
-        scenarioPath +
-        ")",
-    );
+    requireThat(!args.length, "usage: validate_scenario.ts");
+    const [, scenarioPath] = loadScenario(caseDir, model);
+    console.log("VALID: " + path.basename(caseDir) + " (" + scenarioPath + ")");
     return 0;
   } catch (error) {
     console.error("INVALID: " + errorMessage(error));

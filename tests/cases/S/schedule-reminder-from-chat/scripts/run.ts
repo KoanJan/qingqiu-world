@@ -1,12 +1,11 @@
 /** Run the chat-to-reminder case against an isolated product server. */
-import type { ChildProcess } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { sleep } from "../../../tools.ts";
 import {
-  readRows, request, runChatCase, ScenarioError,
+  request, runChatCase,
 } from "../../chat_runner.ts";
 import type { ChatSession, DbEvidence } from "../../chat_runner.ts";
+import { monitorSemanticCase, readBaseline } from "../../capture_monitor.ts";
 import { Result, Scenario } from "./case_contract.ts";
 import type { ScheduleScenario } from "./case_contract.ts";
 
@@ -17,7 +16,6 @@ const EVENT_TYPE_MESSAGE = 1;
 const ACTION_TYPE_CREATE_ALARM = 4;
 const EFFECT_TYPE_SCHEDULED_EVENT = 3;
 const SCHEDULED_STATUS_PENDING = 0;
-const EVENT_POLL_MS = 1_000;
 const ACTIVITY_PAGE_LIMIT = 200;
 const CHAT_PATH = "/api/chat/new";
 const MESSAGES_PATH = "/api/messages";
@@ -25,23 +23,6 @@ const ACTIVITIES_PATH = "/api/sessions";
 const SUBJECT_ENTRY =
   `POST ${CHAT_PATH}; GET ${MESSAGES_PATH}/:id; GET ${ACTIVITIES_PATH}/:id/activities; ` +
   "read-only SELECT on messages, events, decisions, actions, action_effects, scheduled_events";
-
-/** Wait for a persisted alarm or an Agent reply in this chat session. */
-async function waitForScheduledEvent(base: string, dbPath: string, sessionId: number, agentId: number,
-  child: ChildProcess, seconds: number) {
-  const deadline = Date.now() + seconds * 1000;
-  let sawReply = false;
-  while (Date.now() < deadline) {
-    if (child.exitCode !== null || child.signalCode !== null)
-      throw new ScenarioError("server exited while waiting for a reminder: " + (child.exitCode ?? child.signalCode));
-    const rows = await readRows(dbPath, "SELECT * FROM scheduled_events WHERE session_id = ? ORDER BY id", [sessionId]);
-    if (rows.length) return { rows, sawReply };
-    const messages = await request<Array<Record<string, any>>>(base, "GET", `${MESSAGES_PATH}/${sessionId}`);
-    sawReply ||= messages.some((item) => item.person_id === agentId && String(item.content ?? "").trim().length > 0);
-    await sleep(EVENT_POLL_MS);
-  }
-  return { rows: [], sawReply };
-}
 
 /** Parse SQLite/GORM timestamps with a space between date and time. */
 function parseTime(value: unknown) {
@@ -115,17 +96,21 @@ export async function run() {
         character_settings: "Reliable and literal about requested reminder times and content.",
         llm_config_id: llmId,
       });
+      const dbPath = path.join(record.dataDir, "product/db/database.db");
+      const baseline = await readBaseline(dbPath);
       const route = CHAT_PATH + "?" + new URLSearchParams({ agent_id: String(agent.id), message: scenario.request });
       const chat = await request(base, "POST", route);
       const session: ChatSession = { user_id: userId, agent_id: agent.id, chat, messages: [], activities: [], completed: false };
       record.writeDataJson("session.json", session);
-      const dbPath = path.join(record.dataDir, "product/db/database.db");
-      const { rows, sawReply } = await waitForScheduledEvent(
-        base, dbPath, chat.session_id, agent.id, child, scenario.limits.reminder_timeout_seconds);
-      if (!rows.length && !sawReply)
-        throw new ScenarioError(`agent produced neither a reply nor a scheduled event within ${scenario.limits.reminder_timeout_seconds} seconds`);
+      const stopped = await monitorSemanticCase({
+        record, dbPath, logPath: path.join(record.dataDir, "server.log"), child,
+        agentId: agent.id, triggerMessageId: chat.message_id, requestText: scenario.request,
+        baseline, timeoutSeconds: scenario.limits.reminder_timeout_seconds,
+      });
       session.messages = await request(base, "GET", `${MESSAGES_PATH}/${chat.session_id}`);
       session.activities = await request(base, "GET", `${ACTIVITIES_PATH}/${chat.session_id}/activities?limit=${ACTIVITY_PAGE_LIMIT}`);
+      session.agent_messages = stopped.messages;
+      session.stop_reason = stopped.reason;
       session.completed = true;
       record.writeDataJson("session.json", session);
     },

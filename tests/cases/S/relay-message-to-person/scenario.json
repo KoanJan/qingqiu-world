@@ -1,6 +1,4 @@
 {
-  "version": 1,
-  "lifecycle": "active",
   "request": "请帮我给林小满带句话：明天上午十点在图书馆门口见，记得带上蓝色文件夹。",
   "target_person_name": "林小满",
   "required": [
