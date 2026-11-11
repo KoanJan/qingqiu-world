@@ -7,7 +7,7 @@ An Issue defines a shared boundary for development and acceptance. It describes 
 | Item | Question to answer |
 | --- | --- |
 | Goal | What problem or need does this address, and what observable result should completion produce? |
-| Acceptance | Which scenarios, inputs, and results show that the goal has been met? Give checkable conditions for deterministic behavior. For model-dependent behavior, specify the scenario and evidence. Do not use a generative LLM to score it with natural language. |
+| Acceptance | Which scenarios, inputs, and results show that the goal has been met? Give checkable conditions for deterministic behavior. For model-dependent behavior, predefine the scenario, qualitative criteria, and evidence under the [test engineering standard](../development/testing/README.md); do not use a generative LLM quality score as proof. |
 | Scope | Which changes are required? Which adjacent problems remain for later? State exclusions when omitting them could cause confusion. |
 | Dependencies | Does this depend on another unmerged Issue, a design decision, or an external resource? Who owns each prerequisite? |
 | Owners | Who drives implementation, and who confirms the scope and acceptance result? One person may hold both roles, but the PR still needs review by someone other than its author. |

@@ -23,10 +23,11 @@ These principles apply across codebases and technology stacks. Use them to asses
 ## Project-wide Implementation Rules
 
 - Do not use mocks in non-test code. When a required external resource is unavailable, state the dependency and ask the requirement owner for it; do not substitute fake data for real behavior.
+- Do not use magic values: a literal that controls behavior must have an understandable meaning at its use site. Name domain thresholds, limits, timeouts, status codes, and other fixed rules with a constant or domain type in their owning module; use configuration only when the value must vary by deployment. Keep one authoritative default when several callers need the same rule. Obvious local values and explicit test inputs or expected results do not need a named constant merely to avoid a literal.
 - Start with readable code. Add English comments where responsibilities, boundaries, or reasons remain unclear from code alone. Packages or modules, types, functions, important branches, and easily misunderstood logic need appropriate explanation.
 - Log every occurrence that violates expected business behavior; never handle it silently. Logs should support diagnosis without exposing sensitive content.
 - Use integers, not strings, for enum values. Follow the relevant technology-specific standard for type declarations and persistence.
 - Every independently running service provides `start.sh`, `stop.sh`, and `restart.sh` in its root directory. Keep those scripts consistent with actual service behavior.
-- Never use a generative LLM to produce scores with natural language.
+- Never use a generative LLM to assign a numeric or free-form quality score as proof of correctness. An independent test agent may give an evidence-backed, qualitative verdict for a predefined scenario under the [test engineering standard](testing/README.md).
 
 These principles constrain one another. For example, removing duplication should not create a false abstraction, and reducing coupling should not scatter one coherent responsibility. Review the concrete change and usage rather than citing a principle's name as the whole argument.

@@ -30,7 +30,6 @@ Choose the source that can answer your question:
 - "recall_memo" browses memos you wrote to yourself or reads one in full, including how it was changed.
 - "list_pending_alarms" shows alarms you set that have not fired or been cancelled. Use an alarm_id from that list to cancel one.
 - "recall_entity_profile" reads an impression you formed of a known person or conversation; it is not direct access to anyone's inner state.
-- "recall_history" discovers records across sources by text or time; person_id narrows to your visible dealings with one known person.
 - "recall_daily_memory" finds summaries of completed contact days; today's records remain available through original-record recall. Use original records to verify details.
 - "recall_cognitive_memory" finds your past understandings and revisions, which may need checking against original records.
 Record references appear in tool ID fields or in parentheses in descriptive text; they are for follow-up lookups. Search results may be incomplete: a limited page or lexical miss does not prove absence. Recall reads records, not AOS file contents or paths; inspect files inside Focus. Decide when the evidence is sufficient, or state what remains uncertain.`
@@ -241,10 +240,6 @@ func recallToolDefinitions(hasCurrentEvent bool) []llm.FunctionDefinition {
 		return llm.FunctionDefinition{Name: name, Description: description, Parameters: map[string]interface{}{"type": "object", "properties": props}}
 	}
 	return []llm.FunctionDefinition{
-		makeTool("recall_history", "Discover accessible, observed events (including messages and Jinshu metadata), your actions, works, and Focus handoffs across sources. Provide query or from_time, or person_id to browse explicit dealings with one person.", map[string]interface{}{
-			"query":     map[string]interface{}{"type": "string", "description": "Optional terms from record text or Workspace name/purpose; not a search of AOS file paths or contents. At least one of query, from_time, or person_id is required."},
-			"person_id": map[string]interface{}{"type": "integer", "description": "Optional other person's ID for observed two-person conversation, Jinshu, and causally linked behavior."},
-		}),
 		makeTool("recall_event", eventDescription, map[string]interface{}{"event_id": map[string]interface{}{"type": "integer"}, "action_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_message", "Search or browse observed messages across accessible sessions. Omit session_id to discover conversations; provide it to narrow the search, or use message_id to read one message.", map[string]interface{}{"session_id": map[string]interface{}{"type": "integer"}, "message_id": map[string]interface{}{"type": "integer"}}),
 		makeTool("recall_action", "Read your recorded action by action_id, one decision's actions, or actions related to a work_id. For observed effects, use recall_event.", map[string]interface{}{"action_id": map[string]interface{}{"type": "integer"}, "decision_id": map[string]interface{}{"type": "integer"}, "work_id": map[string]interface{}{"type": "integer"}}),
@@ -265,7 +260,7 @@ func recallToolDefinitions(hasCurrentEvent bool) []llm.FunctionDefinition {
 // recallArguments decodes the union of all read-only recall tool parameters.
 // validateRecallArguments rejects fields irrelevant to the selected tool.
 type recallArguments struct {
-	// PersonID limits cross-source history to explicit dealings with another person.
+	// PersonID is retained only to reject calls using the removed cross-source filter.
 	PersonID int64 `json:"person_id"`
 	// EventID selects one occurrence for recall_event.
 	EventID int64 `json:"event_id"`
@@ -310,9 +305,6 @@ func executeRecallTool(personID, eventID int64, name, arguments string) (string,
 	}
 	req := memory.RecallRequest{PersonID: personID, Query: args.Query, PageSize: args.PageSize, Cursor: args.Cursor}
 	switch name {
-	case "recall_history":
-		req.Scope = memory.RecallAll
-		req.CounterpartID = args.PersonID
 	case "recall_event":
 		req.Scope = memory.RecallEvents
 		req.SourceID = args.EventID
@@ -437,8 +429,8 @@ func parseRecallTime(value string, location *time.Location) (time.Time, error) {
 // validateRecallArguments rejects keys that a tool cannot apply. Silently
 // ignoring an anchor would make a broader result look like a scoped read.
 func validateRecallArguments(name string, a recallArguments) error {
-	if a.PersonID < 0 || (a.PersonID != 0 && name != "recall_history") {
-		return fmt.Errorf("person_id is only valid for recall_history")
+	if a.PersonID != 0 {
+		return fmt.Errorf("person_id is not supported by recall tools")
 	}
 	other := func(ids ...int64) bool {
 		for _, id := range ids {
@@ -449,13 +441,6 @@ func validateRecallArguments(name string, a recallArguments) error {
 		return false
 	}
 	switch name {
-	case "recall_history":
-		if other(a.EventID, a.SessionID, a.MessageID, a.ActionID, a.DecisionID, a.WorkID, a.HandoffID, int64(a.EntityType), a.EntityID) {
-			return fmt.Errorf("recall_history does not accept source IDs")
-		}
-		if strings.TrimSpace(a.Query) == "" && a.FromTime == "" && a.PersonID == 0 {
-			return fmt.Errorf("recall_history needs query words, from_time, or person_id to bound cross-source discovery")
-		}
 	case "recall_event":
 		if other(a.SessionID, a.MessageID, a.DecisionID, a.WorkID, a.HandoffID, int64(a.EntityType), a.EntityID) {
 			return fmt.Errorf("recall_event received unrelated IDs")

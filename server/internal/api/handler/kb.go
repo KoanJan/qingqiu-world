@@ -230,10 +230,11 @@ func (h *Handler) UploadDocument(c *gin.Context) {
 
 // GetDocument handles retrieving a single document by ID.
 func (h *Handler) GetDocument(c *gin.Context) {
+	kbID := getPathID(c)
 	docID := getPathIDByParam(c, "doc_id")
 	entity, err := dops.Get[model.Document](docID)
-	if err != nil {
-		response.NotFound(c, err.Error())
+	if err != nil || entity.KnowledgeBaseID != kbID {
+		response.NotFound(c, "Document not found in knowledge base")
 		return
 	}
 	response.Success(c, entity)
@@ -241,10 +242,11 @@ func (h *Handler) GetDocument(c *gin.Context) {
 
 // DeleteDocument handles deleting a document and its chunks.
 func (h *Handler) DeleteDocument(c *gin.Context) {
+	kbID := getPathID(c)
 	docID := getPathIDByParam(c, "doc_id")
 	doc, err := dops.Get[model.Document](docID)
-	if err != nil {
-		response.NotFound(c, err.Error())
+	if err != nil || doc.KnowledgeBaseID != kbID {
+		response.NotFound(c, "Document not found in knowledge base")
 		return
 	}
 

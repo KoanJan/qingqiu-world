@@ -1,0 +1,3 @@
+This file exists only to exercise the rejected-extension branch of the
+background upload API. It is not an image, and its .txt suffix is not in the
+server's allowed background extensions (.jpg, .jpeg, .png, .webp).

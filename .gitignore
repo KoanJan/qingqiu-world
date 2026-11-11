@@ -52,6 +52,8 @@ Thumbs.db
 # Project specific
 server/data/
 draft
+/tests/cases/*/*/reports/
+/tests/cases/.venv/
 
 # Go build artifacts
 server/qingqiu-world-server
@@ -69,3 +71,5 @@ server/.pid
 data/
 .gocache
 .gotmp
+__pycache__/
+*.py[cod]
