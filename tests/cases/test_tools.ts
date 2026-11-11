@@ -74,6 +74,9 @@ test("RunRecord isolates runs and generates the evidence index", (t) => {
   const first = new RunRecord(caseDir);
   const second = new RunRecord(caseDir);
   assert.notEqual(first.root, second.root);
+  for (const record of [first, second]) {
+    assert.match(path.basename(record.root), /^\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}Z-[A-Za-z0-9]{6}$/);
+  }
   first.writeDataJson("observed.json", { value: 1 });
   first.writeReport("# Result\n\nStatus: PASS\n");
   first.writeResult(sampleResult());

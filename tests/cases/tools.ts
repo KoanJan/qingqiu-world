@@ -393,7 +393,8 @@ export class RunRecord {
     this.caseName = path.basename(this.caseDir);
     const reports = path.join(this.caseDir, "reports");
     mkdirSync(reports, { recursive: true });
-    this.root = mkdtempSync(path.join(reports, "run-"));
+    const runPrefix = utcNow().slice(0, 19).replace(/:/g, "-") + "Z-";
+    this.root = mkdtempSync(path.join(reports, runPrefix));
     this.dataDir = path.join(this.root, "data");
     mkdirSync(this.dataDir);
   }
