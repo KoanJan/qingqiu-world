@@ -6,6 +6,7 @@ import path from "node:path";
 
 const trackDir = path.dirname(fileURLToPath(import.meta.url));
 const testsDir = path.resolve(trackDir, "../..");
+// Every directory under D/ is a case; a missing runner is reported, not skipped.
 const cases = readdirSync(trackDir, { withFileTypes: true })
   .filter((item) => item.isDirectory() && item.name !== "__pycache__")
   .map((item) => item.name)
@@ -23,6 +24,8 @@ if (!cases.length) {
       continue;
     }
     console.log("\n=== D/" + name + " ===");
+    // Each case owns its process and exit code; this orchestrator only relays
+    // output and never shares state between runs.
     const completed = spawnSync(process.execPath, ["--import", "tsx", runner], {
       cwd: testsDir, stdio: "inherit",
     });

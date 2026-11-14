@@ -1,32 +1,25 @@
 /** Check user-profile persistence through real HTTP calls and a server restart. */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { unlinkSync } from "node:fs";
+import { rmSync } from "node:fs";
 import {
   CheckFailure,
+  EXIT_CODE,
   HttpShapeError,
   HttpStatusError,
+  IsolatedServer,
   RunRecord,
-  buildServer,
   caseCommand,
-  callJson,
   check,
-  freePort,
-  isolatedServerEnv,
-  readSqlite,
-  startServer,
-  stopServer,
   utcNow,
   errorMessage,
 } from "../../../tools.ts";
 import type { CheckRecord, HttpCall, Status } from "../../../tools.ts";
+import { prepareData } from "./prepare_data.ts";
+import { executeTest } from "./execute_test.ts";
 
 const CASE_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const ROOT = path.resolve(CASE_DIR, "../../../..");
-const NAME = "profile-restart-user";
-const ORIGINAL_BIO = "Created before restart";
-const UPDATED_BIO = "Updated before restart";
-const PERSON_TYPE_HUMAN = 2;
 
 export async function main() {
   const started = utcNow();
@@ -35,72 +28,26 @@ export async function main() {
   const command = caseCommand(ROOT, fileURLToPath(import.meta.url));
   const responses: HttpCall[] = [];
   const checks: CheckRecord[] = [];
-  let processHandle = null;
+  let server: IsolatedServer | null = null;
   let status: Status = "ERROR";
   let detail = "Case did not start";
   console.log("Evidence directory: " + record.root);
   try {
-    const binary = await buildServer(ROOT, dataDir);
-    const port = await freePort();
-    const base = "http://127.0.0.1:" + port;
-    const env = isolatedServerEnv(dataDir, port);
-    processHandle = await startServer(binary, dataDir, env, base, "server-1.log");
+    // Phase 1: build and start an owned server against a fresh data root.
+    const instance = await IsolatedServer.prepare(ROOT, dataDir);
+    server = instance;
+    await instance.start("server-1.log");
 
-    const initial = await callJson(base, "GET", "/api/user-profile", null, responses);
-    check(checks, "initial profile response", initial.code, 0);
-    check(checks, "fresh data has no user", initial.data, {});
+    // Phase 2: create and update the profile, then stop the process.
+    await prepareData(instance.base, responses, checks);
 
-    const created = await callJson(
-      base,
-      "PUT",
-      "/api/user-profile",
-      { name: NAME, bio: ORIGINAL_BIO },
-      responses,
-    );
-    check(checks, "create response", created.code, 0);
-    const personId = created.data?.id;
-    check(checks, "created profile name", created.data?.name, NAME);
-    check(checks, "created profile bio", created.data?.bio, ORIGINAL_BIO);
-    check(checks, "created profile type", created.data?.type, 2);
-    if (!Number.isInteger(personId) || personId <= 0) {
-      throw new CheckFailure("created profile has invalid ID: " + JSON.stringify(personId));
-    }
-
-    const updated = await callJson(
-      base,
-      "PUT",
-      "/api/user-profile",
-      { name: "attempted-rename", bio: UPDATED_BIO },
-      responses,
-    );
-    check(checks, "update response", updated.code, 0);
-    check(checks, "user ID is stable", updated.data?.id, personId);
-    check(checks, "user name is immutable", updated.data?.name, NAME);
-    check(checks, "bio update took effect", updated.data?.bio, UPDATED_BIO);
-
-    const firstExit = await stopServer(processHandle);
-    processHandle = null;
+    const firstExit = await instance.stop();
     check(checks, "first process stopped cleanly", firstExit, 0);
-    processHandle = await startServer(binary, dataDir, env, base, "server-2.log");
-    const restored = await callJson(base, "GET", "/api/user-profile", null, responses);
-    check(checks, "read after restart", restored.code, 0);
-    for (const [field, expected] of [
-      ["id", personId],
-      ["name", NAME],
-      ["bio", UPDATED_BIO],
-      ["type", PERSON_TYPE_HUMAN],
-    ]) {
-      check(checks, "persisted " + field, restored.data?.[field], expected);
-    }
-    const secondExit = await stopServer(processHandle);
-    processHandle = null;
+    // Phase 3: restart and verify the persisted profile through HTTP and SQLite.
+    await instance.start("server-2.log");
+    await executeTest(instance.base, record, responses, checks);
+    const secondExit = await instance.stop();
     check(checks, "second process stopped cleanly", secondExit, 0);
-    const [profiles] = await readSqlite(path.join(dataDir, "product", "db", "database.db"), [
-      { sql: "SELECT id, name, bio, type FROM persons WHERE type = ?", params: [PERSON_TYPE_HUMAN] },
-    ]);
-    const rows = profiles!.map((row) => [row.id, row.name, row.bio, row.type]);
-    record.writeDataJson("db_state.json", rows);
-    check(checks, "exactly one persisted human profile", rows, [[personId, NAME, UPDATED_BIO, PERSON_TYPE_HUMAN]]);
     status = "PASS";
     detail = "Profile update and immutable name survived a real server restart";
   } catch (error) {
@@ -112,18 +59,19 @@ export async function main() {
         : "ERROR";
     detail = errorMessage(error);
   } finally {
-    if (processHandle !== null) {
+    // Cleanup failures are infrastructure, so they override a product PASS.
+    if (server?.hasProcess) {
       try {
-        await stopServer(processHandle);
+        await server.stop();
       } catch (error) {
         status = "ERROR";
         detail += "; cleanup: " + errorMessage(error);
       }
     }
+    // Keep run evidence small; a successful build no longer needs its executable.
     if (status === "PASS") {
-      try {
-        unlinkSync(path.join(dataDir, "qingqiu-server"));
-      } catch {}
+      try { rmSync(path.join(dataDir, "bin"), { recursive: true, force: true }); }
+      catch (error) { status = "ERROR"; detail += "; binary cleanup: " + errorMessage(error); }
     }
     record.writeDataJson("responses.json", responses);
     record.writeCase({
@@ -140,7 +88,7 @@ export async function main() {
     });
   }
   console.log(record.caseName + ": " + status + ": " + detail);
-  return { PASS: 0, FAIL: 1, ERROR: 2 }[status];
+  return EXIT_CODE[status];
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

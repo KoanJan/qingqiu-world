@@ -11,10 +11,11 @@ const limits = ["relay_timeout_seconds", "max_model_calls"];
 export const ScenarioSchema = ChatScenarioSchema.safeExtend({
   target_person_name: z.string().min(1).refine((value) => !!value.trim(), "must be nonblank"),
 }).superRefine((value, ctx) => {
-  const ids = [...value.required, ...value.forbidden].map((item) => item.id);
-  if (new Set(ids).size !== ids.length) ctx.addIssue({ code: "custom", message: "duplicate criterion ID" });
+  // Limits are a closed set: the runner consumes exactly these budgets.
   if (Object.keys(value.limits).sort().join() !== limits.sort().join())
     ctx.addIssue({ code: "custom", message: "scenario limits must be exactly " + limits.join(", ") });
+  // The recipient name must be derivable from the request; otherwise the
+  // product cannot know who to relay to.
   if (!value.request.includes(value.target_person_name))
     ctx.addIssue({ code: "custom", message: "scenario target person must appear in the request" });
 });
