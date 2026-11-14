@@ -45,7 +45,12 @@ export class SetupError extends Error {}
 /** An observed product response contradicted the case contract. */
 export class CheckFailure extends Error {}
 
-export type Status = "PASS" | "FAIL" | "INCONCLUSIVE" | "ERROR";
+export const STATUSES = ["PASS", "FAIL", "INCONCLUSIVE", "ERROR"] as const;
+export type Status = (typeof STATUSES)[number];
+/** Process exit code for each final case status. */
+export const EXIT_CODE: Record<Status, number> = { PASS: 0, FAIL: 1, ERROR: 2, INCONCLUSIVE: 3 };
+/** The process facts that scenario monitors may observe without owning the process. */
+export type ServerStatus = Readonly<Pick<ChildProcess, "exitCode" | "signalCode">>;
 export type CheckRecord = { name: string; passed: boolean; observed: unknown; expected: unknown };
 export type HttpCall = {
   method: string;
@@ -323,8 +328,65 @@ export async function buildServer(root: string, dataDir: string) {
   return binary;
 }
 
+/** Own one isolated test server's configuration and process lifecycle. */
+export class IsolatedServer implements ServerStatus {
+  private child: ChildProcess | null = null;
+  private readonly binary: string;
+  private readonly dataDir: string;
+  private readonly env: NodeJS.ProcessEnv;
+  readonly base: string;
+  private readonly startTimeout: number;
+
+  constructor(
+    binary: string, dataDir: string, env: NodeJS.ProcessEnv,
+    base: string, startTimeout = SERVER_START_TIMEOUT_MS,
+  ) {
+    this.binary = binary;
+    this.dataDir = dataDir;
+    this.env = env;
+    this.base = base;
+    this.startTimeout = startTimeout;
+  }
+
+  /** Prepare an isolated binary, data root, and port without starting the server. */
+  static async prepare(root: string, dataDir: string,
+    extraEnv: Record<string, string> = {}, startTimeout = SERVER_START_TIMEOUT_MS): Promise<IsolatedServer> {
+    const binary = await buildServer(root, dataDir);
+    const port = await freePort();
+    const env = isolatedServerEnv(dataDir, port, extraEnv);
+    return new IsolatedServer(binary, dataDir, env, `http://127.0.0.1:${port}`, startTimeout);
+  }
+
+  private get process(): ChildProcess {
+    if (this.child === null) throw new SetupError("isolated server has not started");
+    return this.child;
+  }
+
+  get exitCode(): number | null { return this.process.exitCode; }
+  get signalCode(): NodeJS.Signals | null { return this.process.signalCode; }
+  get hasProcess(): boolean { return this.child !== null; }
+
+  /** Start the prepared server and wait until it answers the readiness request. */
+  async start(logName = "server.log"): Promise<void> {
+    if (this.child !== null) throw new SetupError("isolated server already has a process");
+    this.child = await startServer(this.binary, this.dataDir, this.env, this.base,
+      logName, this.startTimeout);
+  }
+
+  /** Stop the owned process and release its handle, including an already exited process. */
+  async stop(timeout = SERVER_STOP_TIMEOUT_MS): Promise<number> {
+    const child = this.child;
+    if (child === null) throw new SetupError("isolated server has no process to stop");
+    try {
+      return await stopServer(child, timeout);
+    } finally {
+      if (child.exitCode !== null || child.signalCode !== null) this.child = null;
+    }
+  }
+}
+
 /** Start one owned server, appending output, and wait until it answers. */
-export async function startServer(
+async function startServer(
   binary: string,
   dataDir: string,
   env: NodeJS.ProcessEnv,
@@ -333,37 +395,51 @@ export async function startServer(
   timeout = SERVER_START_TIMEOUT_MS,
 ): Promise<ChildProcess> {
   const fd = openSync(path.join(dataDir, logName), "a");
-  const child = spawn(binary, [], { cwd: dataDir, env, stdio: ["ignore", fd, fd] });
-  closeSync(fd);
+  let child: ChildProcess;
+  try {
+    child = spawn(binary, [], { cwd: dataDir, env, stdio: ["ignore", fd, fd] });
+  } finally {
+    closeSync(fd);
+  }
   let startError: Error | null = null;
   child.once("error", (error) => {
     startError = error;
   });
   const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (startError) throw new SetupError("server could not start: " + errorMessage(startError));
-    if (child.exitCode !== null || child.signalCode !== null) {
-      throw new SetupError(
-        "server exited during startup with " + (child.exitCode ?? child.signalCode),
-      );
+  try {
+    while (Date.now() < deadline) {
+      if (startError) throw new SetupError("server could not start: " + errorMessage(startError));
+      if (child.exitCode !== null || child.signalCode !== null) {
+        throw new SetupError(
+          "server exited during startup with " + (child.exitCode ?? child.signalCode),
+        );
+      }
+      try {
+        const response = await httpJson(base, "GET", "/api/version", null, {
+          timeout: CASE_HTTP_TIMEOUT_MS,
+          expectedStatus: HTTP_OK,
+        });
+        if (response.code === 0) return child;
+      } catch (error) {
+        if (!(error instanceof HttpRequestError)) throw error;
+      }
+      await sleep(SERVER_READY_POLL_MS);
     }
-    try {
-      const response = await httpJson(base, "GET", "/api/version", null, {
-        timeout: CASE_HTTP_TIMEOUT_MS,
-        expectedStatus: HTTP_OK,
-      });
-      if (response.code === 0) return child;
-    } catch (error) {
-      if (!(error instanceof HttpRequestError)) throw error;
+    throw new SetupError("server did not become ready within " + timeout / 1000 + " seconds");
+  } catch (error) {
+    // A process that started but never became ready still belongs to this run.
+    if (child.pid !== undefined && child.exitCode === null && child.signalCode === null) {
+      try { await stopServer(child); }
+      catch (cleanupError) {
+        throw new SetupError(errorMessage(error) + "; cleanup: " + errorMessage(cleanupError));
+      }
     }
-    await sleep(SERVER_READY_POLL_MS);
+    throw error;
   }
-  await stopServer(child);
-  throw new SetupError("server did not become ready within " + timeout / 1000 + " seconds");
 }
 
 /** Stop one owned server gracefully and return its exit code. */
-export async function stopServer(child: ChildProcess, timeout = SERVER_STOP_TIMEOUT_MS): Promise<number> {
+async function stopServer(child: ChildProcess, timeout = SERVER_STOP_TIMEOUT_MS): Promise<number> {
   if (child.exitCode !== null || child.signalCode !== null) return child.exitCode ?? -1;
   const exited = once(child, "exit");
   child.kill("SIGTERM");

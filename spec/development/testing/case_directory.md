@@ -17,7 +17,7 @@ This standard defines **where files live** for cross-component cases under `test
 | `<case>/scenario.json` or another definition | When the case has a separate definition | The case's input and criteria. Keep the definition at the case root so it is visible before opening implementation files. |
 | `<case>/SKILL.md` | Only when the case needs Agent instructions beyond its track's shared method | Case-specific Agent procedure. An S case normally uses the shared [`S/SKILL.md`](../../../tests/cases/S/SKILL.md); a case is not automatically a separate Skill. |
 | `<case>/assets/` | Only when committed input files are needed | This case's source documents, fixtures, or other nonsensitive inputs. |
-| `<case>/scripts/` | When executable code is needed | Runner, validators, and focused tests of those scripts. A D case uses `run.ts`; other tracks document their entry point. |
+| `<case>/scripts/` | When executable code is needed | Runner, validators, and focused tests of those scripts. An implemented case uses `run.ts` as its entry point, `prepare_data.ts` for starting product state, and `execute_test.ts` for the tested action and observations. Identical workflows may delegate to track-level implementations. |
 | `<case>/schemas/` | Only when another consumer needs a declarative schema | Optional declarative schemas. TypeScript case contracts live in `scripts/case_contract.ts`. |
 | `<case>/reports/` | Created for the first run | Git-ignored, uniquely named run directories with the report layout below. |
 
@@ -25,13 +25,13 @@ Create optional source directories only when they contain committed files. Each 
 
 ~~~text
 <case>/reports/<run>/
-  result.json    # machine-readable status and evidence index
+  result.json    # machine-readable status and evidence index, when a valid result exists
   report.md      # human-readable conclusion, Status line, and evidence guide
   data/          # copied inputs, product state, logs, traces, and judge evidence
     product/     # application data root when a product process runs
 ~~~
 
-Create `data/` even if setup fails before starting the product. Put additional run files under `data/`; do not scatter them beside the two report files. A case may organize `data/` further as its evidence requires. Never reuse another case's run directory or put generated output in `assets/` or `schemas/`. The case README tells the contributor how to locate and interpret its runs.
+Create `data/` even if setup fails before starting the product. Put additional run files under `data/`; do not scatter them beside the two report files. A case may organize `data/` further as its evidence requires. Never reuse another case's run directory or put generated output in `assets/` or `schemas/`. The case README tells the contributor how to locate and interpret its runs. A run that fails before a valid result record can be assembled, such as an invalid scenario definition, still writes `report.md` and `data/`; the report explains the diagnostic state, and omitting `result.json` keeps an incomplete record from claiming a status or evidence index. A failure after the definition validates, including input preparation or execution, writes a diagnostic `ERROR` result when the record can satisfy its track contract.
 
 TypeScript runners use `RunRecord` from the shared [`tools.ts`](../../../tests/cases/tools.ts) to create a fresh run directory, derive case identity, enforce report layout and status agreement, and apply any required track or case validator before claiming a final result. Product actions and assertions remain with the case. The [case index](../../../tests/cases/README.md) documents the shared API.
 
@@ -39,7 +39,7 @@ An executor or validator derives the case name from its directory. `result.json`
 
 ## Deterministic Cross-Component Case
 
-A D case has `README.md` and `scripts/run.ts`. The runner contains this case's fixed setup and assertions; the [hypothetical D case](deterministic.md#one-hypothetical-d-case) shows the minimum layout and evidence. Add `assets/` if it needs committed input files. Add a versioned definition only if data or criteria must be maintained separately from the runner; put case-specific validation in `scripts/` when a separate definition needs it. Add `schemas/` only if another consumer needs a declarative schema. Do not create a manifest merely to follow a directory template. Add `SKILL.md` only if an Agent has a real execution or judgment role.
+A D case has `README.md` and `scripts/run.ts`. The runner coordinates its preparation, execution, cleanup, and report; `prepare_data.ts` and `execute_test.ts` own the corresponding case actions and checks. The [hypothetical D case](deterministic.md#one-hypothetical-d-case) shows the minimum layout and evidence. Add `assets/` if it needs committed input files. Add a versioned definition only if data or criteria must be maintained separately from the runner; put case-specific validation in `scripts/` when a separate definition needs it. Add `schemas/` only if another consumer needs a declarative schema. Do not create a manifest merely to follow a directory template. Add `SKILL.md` only if an Agent has a real execution or judgment role.
 
 The track-level [`D/runall.ts`](../../../tests/cases/D/runall.ts) discovers every direct case directory and invokes its `scripts/run.ts` through the tests package. A new D case must provide that runner to participate. The aggregate command fails if any case fails, cannot start, or has no runner; it does not replace an individual case's README or evidence.
 

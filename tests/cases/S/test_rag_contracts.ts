@@ -14,9 +14,8 @@ import { test } from "node:test";
 import type { TestContext } from "node:test";
 import { sha256 } from "../tools.ts";
 import type { Status } from "../tools.ts";
-import { loadScenario, validateResult, validateScenario } from "./base_contracts.ts";
-import type { ScenarioData as Scenario, SemanticResult } from "./base_contracts.ts";
-import { Scenario as RagScenario, SUBJECT_ENTRY } from "./rag_contract.ts";
+import { loadScenario, Scenario as RagScenario, SUBJECT_ENTRY, validateResult, validateScenario } from "./rag_contract.ts";
+import type { ScenarioData as Scenario, SemanticResult } from "./rag_contract.ts";
 
 for (const caseName of ["rag-source-order", "rag-insufficient-evidence"]) {
 const CASE_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), caseName);

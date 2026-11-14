@@ -5,7 +5,7 @@ This semantic case checks whether the Agent resists inventing a third disciple w
 | Item | This case uses |
 | --- | --- |
 | Executor | This case's [product runner](scripts/run.ts), followed by the shared [semantic testing Skill](../SKILL.md) and [result validator](scripts/validate_result.ts). |
-| Contract checks | [scenario validator](scripts/validate_scenario.ts), shared [semantic contracts](../base_contracts.ts), and the [RAG workflow contract](../rag_contract.ts) define the Zod rules; this case has no extra contract file. Shared [contract tests](../test_base_contracts.ts) check evidence and boundary rules. |
+| Contract checks | [scenario validator](scripts/validate_scenario.ts), shared [semantic contracts](../semantic_contract.ts), and the [RAG workflow contract](../rag_contract.ts) define the Zod rules; this case has no extra contract file. Shared [contract tests](../test_rag_contracts.ts) check evidence and boundary rules. |
 | Data | [incomplete.md](assets/incomplete.md), uploaded through the document API into a new KB. It names 江澜 and 许砚 as disciples, says later admissions are unrecorded, and describes 陆影 only as a companion. |
 | Product entry | The runner creates an isolated user, Agent, KB, and chat session, then asks the question through `POST /api/chat/new` and reads the answer through `GET /api/messages/:id` and activities through `GET /api/sessions/:id/activities`. |
 
