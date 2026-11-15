@@ -1,15 +1,19 @@
-/** Check that RAG capture distinguishes missing traces from empty retrievals. */
+/** Offline checks for semantic capture, runner boundaries, and RAG evidence. */
 import assert from "node:assert/strict";
-import { appendFileSync, existsSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdtempSync, readFileSync, readdirSync, renameSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
 import type { TestContext } from "node:test";
 import sqlite3 from "sqlite3";
-import type { ChildProcess } from "node:child_process";
-import type { RunRecord } from "../tools.ts";
+import type { ServerStatus } from "../tools.ts";
 import { classifyState, monitorSemanticCase } from "./capture_monitor.ts";
-import { checkDbEvidence } from "./semantic_runner.ts";
+import type { EvidenceSink } from "./capture_monitor.ts";
+import { checkDbEvidence } from "./rag_execute_test.ts";
+import { runSemanticCase, statusAfterInfrastructureFailure } from "./semantic_runner.ts";
+import type { SemanticWorkflow } from "./semantic_runner.ts";
+import type { BaseScenario } from "./semantic_contract.ts";
+import { REQUIRED_PROVIDER_ENV } from "./provider_env.ts";
 
 test("missing retrieval trace differs from a completed lookup that returned no evidence", (t) => {
   const temp = mkdtempSync(path.join(os.tmpdir(), "qingqiu-semantic-"));
@@ -93,14 +97,14 @@ async function monitorFixture(t: TestContext, withReply: boolean) {
   await new Promise<void>((resolve, reject) => db.close((error) => error ? reject(error) : resolve()));
   const logPath = path.join(dir, "server.log");
   writeFileSync(logPath, "startup\n");
-  const record = {
+  const sink: EvidenceSink = {
     dataDir: dir,
     writeDataJson(filename: string, value: unknown) {
       writeFileSync(path.join(dir, filename), JSON.stringify(value));
     },
-  } as RunRecord;
-  const child = { exitCode: null, signalCode: null } as ChildProcess;
-  return { dir, dbPath, logPath, record, child };
+  };
+  const child: ServerStatus = { exitCode: null, signalCode: null };
+  return { dir, dbPath, logPath, sink, child };
 }
 
 async function answerReview(dir: string, expectedPhase: string, requestId = 1,
@@ -178,4 +182,100 @@ test("unchanged ongoing state sends new runtime logs to the AI tester", async (t
   const review = await answerReview(fixture.dir, "stalled");
   assert.match(review.new_log.text, /runtime error/);
   assert.equal((await running).reason, "tester_stopped");
+});
+
+test("a definition failure returns the setup exit code without a judgeable result", async (t) => {
+  const caseDir = mkdtempSync(path.join(os.tmpdir(), "qingqiu-definition-"));
+  t.after(() => rmSync(caseDir, { recursive: true, force: true }));
+  // Every product hook asserts it was not reached: a definition failure must
+  // stop before setup, capture, or judgment.
+  const unreachable = async () => { throw new Error("product phase must not run"); };
+  const workflow: SemanticWorkflow<BaseScenario> = {
+    caseDir,
+    subjectEntry: "none",
+    failurePrefixes: "none",
+    evidenceDescription: "none",
+    evidenceExplanation: "none",
+    async loadDefinition() { throw new Error("invalid scenario definition"); },
+    prepareData: unreachable,
+    executeTest: unreachable,
+    capturedSession: () => null,
+    async captureEvidence() { throw new Error("product phase must not run"); },
+    resultFields: () => ({}),
+    limitations: () => [],
+    reportSections: () => "",
+  };
+  assert.equal(await runSemanticCase(workflow), 2);
+  const runs = readdirSync(path.join(caseDir, "reports"));
+  assert.equal(runs.length, 1);
+  const runDir = path.join(caseDir, "reports", runs[0]!);
+  assert.match(readFileSync(path.join(runDir, "report.md"), "utf8"), /Status: ERROR/);
+  const capture = JSON.parse(readFileSync(path.join(runDir, "data", "capture.json"), "utf8"));
+  assert.equal(capture.status, "ERROR");
+  assert.equal(capture.mechanical_checks_performed, false);
+  // A pre-definition failure has no scenario identity or criteria, so it must
+  // not emit a result.json that violates the semantic result contract.
+  assert.equal(existsSync(path.join(runDir, "result.json")), false);
+});
+
+test("an unusable provider endpoint still finalizes a diagnostic ERROR run", async (t) => {
+  const caseDir = mkdtempSync(path.join(os.tmpdir(), "qingqiu-input-"));
+  t.after(() => rmSync(caseDir, { recursive: true, force: true }));
+  const scenarioPath = path.join(caseDir, "scenario.json");
+  writeFileSync(scenarioPath, "{}");
+  const scenario: BaseScenario = {
+    required: [{ id: "required-check", condition: "criterion" }],
+    forbidden: [{ id: "forbidden-check", condition: "criterion" }],
+    limits: { answer_timeout_seconds: 1 },
+  };
+  const unreachable = async () => { throw new Error("product phase must not run"); };
+  const workflow: SemanticWorkflow<BaseScenario> = {
+    caseDir,
+    subjectEntry: "none",
+    failurePrefixes: "none",
+    evidenceDescription: "none",
+    evidenceExplanation: "none",
+    async loadDefinition() {
+      return { scenario, scenarioPath, validateResult() {} };
+    },
+    prepareData: unreachable,
+    executeTest: unreachable,
+    capturedSession: () => null,
+    captureEvidence: unreachable,
+    resultFields: () => ({}),
+    limitations: () => [],
+    reportSections: () => "",
+  };
+  const saved = REQUIRED_PROVIDER_ENV.map((name) => [name, process.env[name]] as const);
+  // Restore the caller's provider environment after the test mutates it.
+  t.after(() => {
+    for (const [name, value] of saved) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  });
+  process.env.QINGQIU_TEST_LLM_BASE_URL = "not a url";
+  // The remaining inputs are valid, so the only failure is URL parsing during
+  // input preparation; the run must still finalize with a result.
+  process.env.QINGQIU_TEST_LLM_MODEL_ID = "model";
+  process.env.QINGQIU_TEST_LLM_API_KEY = "key";
+  process.env.QINGQIU_TEST_EMBEDDING_BASE_URL = "https://embedding.invalid";
+  process.env.QINGQIU_TEST_EMBEDDING_MODEL_ID = "model";
+  process.env.QINGQIU_TEST_EMBEDDING_API_KEY = "key";
+
+  assert.equal(await runSemanticCase(workflow), 2);
+  const runDir = path.join(caseDir, "reports", readdirSync(path.join(caseDir, "reports"))[0]!);
+  assert.match(readFileSync(path.join(runDir, "report.md"), "utf8"), /Status: ERROR/);
+  const result = JSON.parse(readFileSync(path.join(runDir, "result.json"), "utf8"));
+  assert.equal(result.status, "ERROR");
+  assert.match(result.detail, /Run input could not be prepared/);
+  assert.equal(result.model.llm, null);
+  assert.ok(result.artifacts.includes("data/metadata.json"));
+  assert.ok(result.artifacts.includes("data/capture.json"));
+});
+
+test("an infrastructure failure cannot turn a mechanical FAIL into ERROR", () => {
+  assert.equal(statusAfterInfrastructureFailure("FAIL"), "FAIL");
+  assert.equal(statusAfterInfrastructureFailure("INCONCLUSIVE"), "ERROR");
+  assert.equal(statusAfterInfrastructureFailure("ERROR"), "ERROR");
 });

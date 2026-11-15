@@ -146,7 +146,7 @@ automated scoring step.
 
 | Status | Meaning |
 | --- | --- |
-| `INCONCLUSIVE` | A capture completed and passed mechanical checks; semantic judgment is still required. |
+| `INCONCLUSIVE` | Judgment is pending, or capture timed out without confirmed completion; neither supports `PASS`. |
 | `PASS` | A supported judgment and the captured evidence satisfy every criterion and mechanical check for this run. |
 | `FAIL` | The product completed but a required record, state, recipient, or criterion contradicts the scenario. |
 | `ERROR` | Setup or execution did not reach a completed observation; inspect the logs and kept diagnostic run. |

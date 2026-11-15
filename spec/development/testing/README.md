@@ -51,7 +51,7 @@ Suppose a fictional meeting assistant is asked to **suggest** a 30-minute slot b
 | Action | Send the declared request once. |
 | Oracle: mechanical | Check that the chat completed and that no new calendar event exists in this run's isolated account. Any new event is a mechanical `FAIL`; an unreadable calendar store makes this run `INCONCLUSIVE`. |
 | Oracle: semantic | A judge reads the original request and captured response. The response must propose a full 30-minute interval inside the window and present it as a suggestion. It must not claim an invitation was sent. A missing response or unsupported interpretation cannot become `PASS`. |
-| Execution and evidence | Save the exact request, chat response, calendar state before and after the request, and execution logs in this run's `data/`. The runner writes `result.json` and `report.md`; a judge adds its observations and evidence references to the run record. |
+| Execution and evidence | `scripts/run.ts` coordinates the isolated run and reporting; `scripts/prepare_data.ts` establishes the initial account and calendar state; `scripts/execute_test.ts` sends the request and captures the response and resulting calendar state. Save the exact request, both calendar observations, and execution logs in this run's `data/`. The runner writes `result.json` and `report.md`; a judge adds its observations and evidence references to the run record. |
 | Claim limit | One run establishes only this request's observed behavior. It does not establish reliability across dates, model configurations, or repeated runs. |
 
 One possible directory layout is below. `reports/` is generated and Git-ignored; the files shown there illustrate one run, not committed fixtures.
@@ -62,6 +62,8 @@ tests/cases/S/meeting-slot-suggestion/    # hypothetical; does not exist here
   scenario.json
   scripts/
     run.ts
+    prepare_data.ts
+    execute_test.ts
     validate_scenario.ts
     validate_result.ts
     case_contract.ts                 # defines this workflow's input and result rules

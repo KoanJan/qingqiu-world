@@ -5,7 +5,7 @@ This semantic case checks whether the Agent identifies a third disciple from an 
 | Item | This case uses |
 | --- | --- |
 | Executor | This case's [product runner](scripts/run.ts), followed by the shared [semantic testing Skill](../SKILL.md) and [result validator](scripts/validate_result.ts). |
-| Contract checks | [scenario validator](scripts/validate_scenario.ts), shared [semantic contracts](../base_contracts.ts), and the [RAG workflow contract](../rag_contract.ts) define the Zod rules; this case has no extra contract file. Shared [contract tests](../test_base_contracts.ts) check evidence and boundary rules. |
+| Contract checks | [scenario validator](scripts/validate_scenario.ts), shared [semantic contracts](../semantic_contract.ts), and the [RAG workflow contract](../rag_contract.ts) define the Zod rules; this case has no extra contract file. Shared [contract tests](../test_rag_contracts.ts) check evidence and boundary rules. |
 | Data | [ordering.md](assets/ordering.md), uploaded through the document API into a new KB. It records 江澜, then 许砚, then 沈岚 as 林舟's disciples; 陆影 is a companion who did not become a disciple. |
 | Product entry | The runner creates an isolated user, Agent, KB, and chat session, then asks the question through `POST /api/chat/new` and reads the answer through `GET /api/messages/:id` and activities through `GET /api/sessions/:id/activities`. |
 

@@ -21,6 +21,7 @@ import {
   HttpShapeError,
   HttpStatusError,
   HttpTransportError,
+  IsolatedServer,
   RunRecord,
   SetupError,
   buildServer,
@@ -32,8 +33,6 @@ import {
   isolatedServerEnv,
   providerEndpoint,
   readSqlite,
-  startServer,
-  stopServer,
 } from "./tools.ts";
 import type { CheckRecord, HttpCall } from "./tools.ts";
 
@@ -283,7 +282,7 @@ test("buildServer uses isolated Go state and reports a build failure", async (t)
   );
 });
 
-test("startServer waits for readiness and stopServer returns a clean exit", async (t) => {
+test("isolated server owns startup, stop, and restart", async (t) => {
   const { temp } = caseDirectory(t);
   const dataDir = path.join(temp, "data");
   mkdirSync(dataDir);
@@ -299,17 +298,25 @@ test("startServer waits for readiness and stopServer returns a clean exit", asyn
   );
   chmodSync(fakeServer, 0o755);
   const port = await freePort();
-  const child = await startServer(
+  const server = new IsolatedServer(
     fakeServer,
     dataDir,
     { ...process.env, PORT: String(port) },
     "http://127.0.0.1:" + port,
-    "server.log",
     5000,
   );
-  t.after(() => {
-    if (child.exitCode === null) child.kill("SIGKILL");
+  t.after(async () => {
+    if (server.hasProcess) await server.stop();
   });
+  assert.equal(server.hasProcess, false);
+  await assert.rejects(server.stop(), SetupError);
+  await server.start("server.log");
+  assert.equal(server.hasProcess, true);
+  await assert.rejects(server.start("server-2.log"), SetupError);
   assert.equal(existsSync(path.join(dataDir, "server.log")), true);
-  assert.equal(await stopServer(child), 0);
+  assert.equal(await server.stop(), 0);
+  assert.equal(server.hasProcess, false);
+  await server.start("server-2.log");
+  assert.equal(existsSync(path.join(dataDir, "server-2.log")), true);
+  assert.equal(await server.stop(), 0);
 });

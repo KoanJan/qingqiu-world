@@ -1,6 +1,9 @@
-/** Run this case through the shared S-track semantic runner. */
+/** Run this case through the shared semantic runner with the RAG workflow. */
 import { fileURLToPath } from "node:url";
 import path from "node:path";
-import { run } from "../../semantic_runner.ts";
+import { ragWorkflow } from "../../rag_workflow.ts";
+import { runSemanticCase } from "../../semantic_runner.ts";
+// The case directory is the parent of scripts/; the shared runner reads
+// scenario.json from there and owns the run directory and result.
 const caseDir = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-process.exitCode = await run(caseDir);
+process.exitCode = await runSemanticCase(ragWorkflow(caseDir));

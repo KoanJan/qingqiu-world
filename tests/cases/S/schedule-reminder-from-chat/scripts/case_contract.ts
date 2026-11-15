@@ -12,10 +12,11 @@ export const ScenarioSchema = ChatScenarioSchema.safeExtend({
   expected_delay_seconds: z.number().int().positive(),
   delay_tolerance_seconds: z.number().int().positive(),
 }).superRefine((value, ctx) => {
-  const ids = [...value.required, ...value.forbidden].map((item) => item.id);
-  if (new Set(ids).size !== ids.length) ctx.addIssue({ code: "custom", message: "duplicate criterion ID" });
+  // Limits are a closed set: the runner consumes exactly these budgets.
   if (Object.keys(value.limits).sort().join() !== limits.sort().join())
     ctx.addIssue({ code: "custom", message: "scenario limits must be exactly " + limits.join(", ") });
+  // The tolerance must be narrower than the delay, or an immediate alarm could
+  // satisfy the timing check.
   if (value.delay_tolerance_seconds >= value.expected_delay_seconds)
     ctx.addIssue({ code: "custom", message: "delay tolerance must be smaller than the expected delay" });
 });

@@ -9,7 +9,7 @@
   "scripts": {
     "typecheck": "tsc --project tsconfig.json",
     "case": "node --import tsx",
-    "test:unit": "node --import tsx --test cases/test_tools.ts cases/S/test_base_contracts.ts cases/S/test_chat_contracts.ts cases/S/test_chat_runners.ts cases/S/test_provider_env.ts cases/S/test_semantic_runner.ts",
+    "test:unit": "node --import tsx --test cases/test_tools.ts cases/S/test_rag_contracts.ts cases/S/test_chat_contracts.ts cases/S/test_chat_evidence.ts cases/S/test_provider_env.ts cases/S/test_semantic_runner.ts",
     "test:d": "node --import tsx cases/D/runall.ts",
     "test:s:scenario": "node --import tsx cases/S/rag-source-order/scripts/validate_scenario.ts && node --import tsx cases/S/rag-insufficient-evidence/scripts/validate_scenario.ts && node --import tsx cases/S/schedule-reminder-from-chat/scripts/validate_scenario.ts && node --import tsx cases/S/relay-message-to-person/scripts/validate_scenario.ts"
   },
