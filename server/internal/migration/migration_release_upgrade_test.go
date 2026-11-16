@@ -1,61 +1,58 @@
 package migration
 
 import (
-	"path/filepath"
+	"os"
 	"testing"
 
 	"qingqiu-world-server/internal/config"
-	"qingqiu-world-server/internal/database"
-	"qingqiu-world-server/internal/model"
-
-	"github.com/glebarez/sqlite"
-	"gorm.io/gorm"
 )
 
-// TestUpgradeFrom0117PreservesObservationHistory checks the formal release
-// path. Version 0.1.17 had no Decision table, and its read boundary does not
-// prove that every earlier message entered comprehension. This test checks
-// the 0.1.19 release target rather than later version transitions.
-func TestUpgradeFrom0117PreservesObservationHistory(t *testing.T) {
-	if config.AppVersion != "0.1.19" {
-		t.Skipf("0.1.19 release upgrade test does not apply to %s", config.AppVersion)
-	}
-	previousDB := database.DB
-	db, err := gorm.Open(sqlite.Open(filepath.Join(t.TempDir(), "release-upgrade.db")), &gorm.Config{})
+// TestUpgradeFrom010Baseline runs every release step against the schema from
+// the 0.1.0 tag, including data migrations for an existing agent and document.
+func TestUpgradeFrom010Baseline(t *testing.T) {
+	db := startupTestDB(t)
+	schema, err := os.ReadFile("testdata/0.1.0.sql")
 	if err != nil {
 		t.Fatal(err)
 	}
-	database.DB = db
-	t.Cleanup(func() { database.DB = previousDB })
-	if err := db.AutoMigrate(&model.DBVersion{}, &model.Person{}, &model.Work{}, &model.Workspace{}, &model.WorkspaceUse{}, &model.Action{}, &model.AgentEventBuffer{}, &model.Message{}, &model.Event{}, &model.ParticipantSession{}, &model.AgentObservation{}); err != nil {
-		t.Fatal(err)
+	if err := db.Exec(string(schema)).Error; err != nil {
+		t.Fatalf("create 0.1.0 schema: %v", err)
 	}
-	if err := db.Create(&model.DBVersion{Version: "0.1.17"}).Error; err != nil {
-		t.Fatal(err)
+	for _, statement := range []string{
+		`INSERT INTO db_versions (version, description, applied_at) VALUES ('0.1.0', 'baseline', CURRENT_TIMESTAMP)`,
+		`INSERT INTO persons (id, name, type, created_at, updated_at) VALUES (1, 'historical-agent', 1, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO knowledge_bases (id, name, created_at, updated_at) VALUES (1, 'historical-kb', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO documents (id, knowledge_base_id, title, file_path, chunk_count, status, created_at, updated_at)
+		 VALUES (1, 1, 'Historical document', 'document.txt', 1, 2, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)`,
+		`INSERT INTO document_chunks (id, knowledge_base_id, document_id, chunk_index, content, created_at)
+		 VALUES (1, 1, 1, 0, 'Historical content', CURRENT_TIMESTAMP)`,
+	} {
+		if err := db.Exec(statement).Error; err != nil {
+			t.Fatalf("seed 0.1.0 data: %v", err)
+		}
 	}
-	message := model.Message{SessionID: 10, PersonID: 2, Content: "possibly skipped"}
-	if err := db.Create(&message).Error; err != nil {
-		t.Fatal(err)
-	}
-	event := model.Event{EventType: model.EventTypeMessage, RefID: message.ID}
-	if err := db.Create(&event).Error; err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Create(&model.ParticipantSession{SessionID: 10, ParticipantID: 1, LastReadMessageID: message.ID}).Error; err != nil {
-		t.Fatal(err)
+	if db.Migrator().HasColumn("documents", "active_revision_id") {
+		t.Fatal("baseline fixture already contains the 0.1.14 document column")
 	}
 
 	Run()
 	Run()
 	if got := getDBVersion(); got != config.AppVersion {
-		t.Fatalf("release upgrade version = %q", got)
+		t.Fatalf("database version = %s, want %s", got, config.AppVersion)
 	}
-	var versionCount int64
-	if err := db.Model(&model.DBVersion{}).Where("version = ? AND description NOT IN ?", config.AppVersion, []string{retiredJinshuTypeMigration, durableEventTypeMigration}).Count(&versionCount).Error; err != nil || versionCount != 1 {
-		t.Fatalf("version recorded %d times: %v", versionCount, err)
+	var currentVersionRows int64
+	if err := db.Raw(`SELECT COUNT(*) FROM db_versions WHERE version = ?`, config.AppVersion).Scan(&currentVersionRows).Error; err != nil || currentVersionRows != 1 {
+		t.Fatalf("current version rows = %d, error = %v", currentVersionRows, err)
 	}
-	var observationCount int64
-	if err := db.Model(&model.AgentObservation{}).Count(&observationCount).Error; err != nil || observationCount != 0 {
-		t.Fatalf("unproven observations created: count=%d err=%v", observationCount, err)
+	var energy int
+	if err := db.Raw(`SELECT energy FROM agent_states WHERE person_id = 1`).Scan(&energy).Error; err != nil || energy != 100 {
+		t.Fatalf("seeded agent energy = %d, error = %v", energy, err)
+	}
+	var revisionID, mappedNodes int64
+	if err := db.Raw(`SELECT active_revision_id FROM documents WHERE id = 1`).Scan(&revisionID).Error; err != nil || revisionID == 0 {
+		t.Fatalf("active document revision = %d, error = %v", revisionID, err)
+	}
+	if err := db.Raw(`SELECT COUNT(*) FROM document_chunk_nodes WHERE chunk_id = 1`).Scan(&mappedNodes).Error; err != nil || mappedNodes != 1 {
+		t.Fatalf("historical chunk mappings = %d, error = %v", mappedNodes, err)
 	}
 }

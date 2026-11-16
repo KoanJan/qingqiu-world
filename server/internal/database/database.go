@@ -1,9 +1,8 @@
-// Package database provides SQLite database initialization and migration.
+// Package database provides the SQLite connection and current-release initialization.
 //
 // This package handles:
 //   - Database connection setup with WAL mode for concurrent access
-//   - Auto-migration of all model tables
-//   - Default data seeding (search config, DB version)
+//   - Schema and default data creation for an empty database
 //
 // SQLite configuration:
 //   - WAL journal mode for better concurrent read performance
@@ -16,6 +15,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"qingqiu-world-server/internal/config"
@@ -37,7 +37,7 @@ import (
 // CreateEntity, UpdateEntity) so that *gorm.DB never leaks outside this package.
 var DB *gorm.DB
 
-// Init initializes the SQLite database connection, creates tables, and seeds defaults.
+// Init initializes only the SQLite database connection.
 // Creates the database directory if it doesn't exist.
 // Configures WAL mode, busy timeout, and immediate transaction locking.
 func Init() {
@@ -49,7 +49,7 @@ func Init() {
 	}
 
 	dbPath := settings.DatabaseURL()
-	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_txlock=immediate"
+	dsn := dbPath + "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_txlock=immediate"
 
 	db, err := gorm.Open(sqlite.Open(dsn), &gorm.Config{
 		DefaultContextTimeout: 30 * time.Second,
@@ -70,31 +70,78 @@ func Init() {
 
 	DB = db
 	applogger.Info("Database initialized", "path", dbPath)
+}
 
-	// Create all tables using GORM AutoMigrate.
+// InitializeFresh creates the current release directly in a confirmed empty DB.
+// Schema, indexes, defaults, and the version marker commit as one SQLite unit.
+func InitializeFresh(version string) error {
+	return InitializeFreshAt(DB, version)
+}
+
+// InitializeFreshAt initializes a separate, already-opened database. Developer
+// baseline creation uses this so it cannot mutate the active database.
+func InitializeFreshAt(db *gorm.DB, version string) error {
+	return db.Transaction(func(tx *gorm.DB) error { return initializeCurrent(tx, version) })
+}
+
+// ResetPre010 applies the established reset policy only after a valid version
+// below 0.1.0 has been read. It replaces that schema with the current release.
+func ResetPre010(version string) error {
+	return DB.Transaction(func(tx *gorm.DB) error {
+		var tables []string
+		if err := tx.Raw("SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%'").Scan(&tables).Error; err != nil {
+			return fmt.Errorf("list pre-0.1.0 tables: %w", err)
+		}
+		for _, table := range tables {
+			quoted := strings.ReplaceAll(table, `"`, `""`)
+			if err := tx.Exec(`DROP TABLE "` + quoted + `"`).Error; err != nil {
+				return fmt.Errorf("drop pre-0.1.0 table %s: %w", table, err)
+			}
+		}
+		return initializeCurrent(tx, version)
+	})
+}
+
+func initializeCurrent(tx *gorm.DB, version string) error {
 	models := allModels()
-	for _, m := range models {
-		if err := DB.AutoMigrate(m); err != nil {
-			panic(fmt.Sprintf("Failed to auto-migrate %T: %v", m, err))
+	if version == "0.1.21" {
+		for i, entry := range models {
+			if _, ok := entry.(*model.LLMConfig); ok {
+				models[i] = &releasedLLMConfig{}
+				break
+			}
 		}
 	}
-	// Heartbeats use event_id=0 repeatedly; external events have one accepted
-	// decision per person and durable event, including zero-action decisions.
-	if err := DB.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_external_event ON decisions(person_id, event_id) WHERE event_id > 0").Error; err != nil {
-		panic(fmt.Sprintf("Failed to create decision event index: %v", err))
+	if err := tx.Migrator().CreateTable(models...); err != nil {
+		return fmt.Errorf("create current-release tables: %w", err)
 	}
-	if err := EnsureRecallIndexes(); err != nil {
-		panic(fmt.Sprintf("Failed to create recall indexes: %v", err))
+	if err := EnsureDecisionEventIndex(tx); err != nil {
+		return err
 	}
+	if err := ensureRecallIndexes(tx); err != nil {
+		return err
+	}
+	if err := tx.Create(&model.SearchConfig{Provider: "tavily", APIKey: "", Description: "", IsActive: false}).Error; err != nil {
+		return fmt.Errorf("seed search config: %w", err)
+	}
+	if err := tx.Create(&model.DBVersion{Version: version, Description: "Fresh installation"}).Error; err != nil {
+		return fmt.Errorf("record fresh database version %s: %w", version, err)
+	}
+	return nil
+}
 
-	ensureSearchConfig()
-
-	applogger.Info("Database schema migration completed")
+// EnsureDecisionEventIndex creates the partial uniqueness rule introduced in 0.1.18.
+func EnsureDecisionEventIndex(db *gorm.DB) error {
+	return db.Exec("CREATE UNIQUE INDEX IF NOT EXISTS idx_decisions_external_event ON decisions(person_id, event_id) WHERE event_id > 0").Error
 }
 
 // EnsureRecallIndexes creates the source-specific access paths used by bounded
 // memory recall. It is idempotent and also used by isolated database tests.
 func EnsureRecallIndexes() error {
+	return ensureRecallIndexes(DB)
+}
+
+func ensureRecallIndexes(db *gorm.DB) error {
 	for _, indexSQL := range []string{
 		"CREATE INDEX IF NOT EXISTS idx_recall_events_type_ref ON events(event_type, ref_id)",
 		"CREATE INDEX IF NOT EXISTS idx_recall_events_self_held_time ON events(ref_id, created_at DESC, id DESC)",
@@ -108,31 +155,14 @@ func EnsureRecallIndexes() error {
 		"CREATE INDEX IF NOT EXISTS idx_recall_handoffs_work_person_time ON focus_handoffs(work_id, person_id, created_at DESC, id DESC)",
 		fmt.Sprintf("CREATE INDEX IF NOT EXISTS idx_recall_action_work_target ON actions(CASE WHEN json_valid(plan_json) THEN CAST(json_extract(plan_json, '$.target_work_id') AS INTEGER) ELSE 0 END, created_at DESC, id DESC) WHERE type IN (%d, %d)", model.ActionTypeRouteFocusedWork, model.ActionTypeCancelFocusedWork),
 	} {
-		if err := DB.Exec(indexSQL).Error; err != nil {
+		if err := db.Exec(indexSQL).Error; err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-// clearAndInit truncates all data and re-seeds defaults.
-// Exported for use by the migration package when DB version is below threshold.
-func ClearAndInit() {
-	models := allModels()
-	for _, m := range models {
-		if err := DB.Where("1 = 1").Delete(m).Error; err != nil {
-			tableName := ""
-			if tabler, ok := m.(interface{ TableName() string }); ok {
-				tableName = tabler.TableName()
-			}
-			applogger.Error("clearAndInit: failed to clear table", "table", tableName, "error", err)
-		}
-	}
-	ensureSearchConfig()
-}
-
 // allModels returns the full list of model structs for table operations.
-// Exported so that the migration package can access the model list for clearAndInit.
 func allModels() []any {
 	return []any{
 		&model.Person{},
@@ -193,20 +223,5 @@ func allModels() []any {
 		&model.AgentEventBuffer{},
 		&model.AgentBiography{},
 		&model.PSDigest{},
-	}
-}
-
-// ensureSearchConfig creates the default search config record if it doesn't exist.
-// Exported so that the migration package can call it during clearAndInit.
-func ensureSearchConfig() {
-	var count int64
-	DB.Model(&model.SearchConfig{}).Where("id = ?", 1).Count(&count)
-	if count == 0 {
-		DB.Create(&model.SearchConfig{
-			Provider:    "tavily",
-			APIKey:      "",
-			Description: "",
-			IsActive:    false,
-		})
 	}
 }

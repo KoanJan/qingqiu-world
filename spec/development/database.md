@@ -17,6 +17,7 @@ Schema design should serve persistent data and its query paths. Do not add a tab
 ## Version Upgrades
 
 - Organize data migrations by release version. Multiple Issues for the same upcoming release continually refine one version migration function. Preserve already merged steps and review their order and data semantics. Do not rewrite a release's migration after that release is published.
+- During development, keep committed schema, persistent-data, and data-directory steps in a separate ordered `dev.x.<commit>` chain. Its state belongs to the developer's active data metadata, never `db_versions`. Before publication, fold the final effects into the next release migration and remove the old development chain from the released code. Release upgrades start from the previous immutable release baseline and do not replay development steps.
 - Treat schema changes and one-time data migrations separately. A data migration must define its source version, idempotency, retry behavior after failure, and mapping from old values to new ones. Do not leave a one-time backfill in the routine startup path.
 - Verify a real upgrade path and inspect historical data for dangling references. Passing tests against only an empty database does not establish upgrade safety.
 - Do not silently discard historical data that still has business meaning. If an obsolete field or type must be removed, explain the scope and visible impact in the release design.

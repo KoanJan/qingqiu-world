@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
@@ -21,7 +22,11 @@ func TestListActivityInteractions(t *testing.T) {
 			t.Errorf("close logger: %v", err)
 		}
 	})
+	config.Init()
 	database.Init()
+	if err := database.InitializeFresh(config.AppVersion); err != nil {
+		t.Fatal(err)
+	}
 	sqlDB, err := database.DB.DB()
 	if err != nil {
 		t.Fatalf("get database connection: %v", err)

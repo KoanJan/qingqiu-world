@@ -15,6 +15,8 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/migration"
+	"qingqiu-world-server/internal/migration/dev"
+	"qingqiu-world-server/internal/migration/dev/unreleased"
 	notificationrouter "qingqiu-world-server/internal/notification/router"
 	"qingqiu-world-server/internal/realtime"
 	"qingqiu-world-server/internal/service/energy"
@@ -32,6 +34,10 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// buildCommit is set by the pure-Go development build helper. Developer data
+// automation accepts only a binary built for the checked-out Git commit.
+var buildCommit string
+
 func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
@@ -44,9 +50,25 @@ func main() {
 	}
 
 	config.Init()
+	if os.Getenv("RELEASE_MIGRATION_ONLY") == "1" {
+		applogger.Init()
+		database.Init()
+		migration.Run()
+		return
+	}
+	if err := migration.ValidateReleaseChain(); err != nil {
+		panic(fmt.Sprintf("invalid release migration chain: %v", err))
+	}
+	if os.Getenv("DEV_DATA_MODE") != "1" && len(unreleased.Registered()) > 0 {
+		panic("unreleased server build requires explicit developer data mode")
+	}
+	unlockData, err := dev.Start(buildCommit)
+	if err != nil {
+		panic(fmt.Sprintf("prepare developer data: %v", err))
+	}
+	defer unlockData()
 	applogger.Init()
 	applogger.Info("Qingqiu World Server config initialized", "config", config.Get())
-
 	applogger.Info("Starting Qingqiu World Server")
 
 	database.Init()

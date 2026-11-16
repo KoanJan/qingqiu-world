@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"testing"
 
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 )
@@ -15,7 +16,11 @@ func TestListSessionActivityWorksFollowsRecordedCauses(t *testing.T) {
 	t.Setenv("DATA_ROOT", t.TempDir())
 	t.Setenv("LOG_DIR", filepath.Join(t.TempDir(), "logs"))
 	previousDB := database.DB
+	config.Init()
 	database.Init()
+	if err := database.InitializeFresh(config.AppVersion); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { database.DB = previousDB })
 
 	create := func(row any) {

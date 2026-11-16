@@ -5,23 +5,29 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"time"
 
-	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
-	"qingqiu-world-server/internal/model"
+
+	"gorm.io/gorm"
 )
+
+// 0.1.19 uses only historical columns, independent of later runtime models.
+type legacyWork_0_1_19 struct {
+	ID        int64
+	SessionID int64
+}
 
 // migrate_0_1_19 registers real legacy directories without moving files or
 // inventing an Action that created them. A Work is linked only when its former
 // session directory exists; missing directories are reported as data loss.
-// It also removes the Interaction Session copy after Work ownership is stable.
-func migrate_0_1_19() {
-	var persons []model.Person
-	if err := database.DB.Find(&persons).Error; err != nil {
+func migrate_0_1_19(tx *gorm.DB) {
+	var personIDs []int64
+	if err := tx.Raw(`SELECT id FROM persons`).Scan(&personIDs).Error; err != nil {
 		panic(fmt.Sprintf("0.1.19: list persons: %v", err))
 	}
-	for _, person := range persons {
-		root := legacySessionWorkspaceRoot(person.ID)
+	for _, personID := range personIDs {
+		root := legacySessionWorkspaceRoot(personID)
 		entries, err := os.ReadDir(root)
 		if os.IsNotExist(err) {
 			entries = nil
@@ -36,44 +42,42 @@ func migrate_0_1_19() {
 			}
 			sessionID, err := strconv.ParseInt(entry.Name(), 10, 64)
 			if err != nil || sessionID <= 0 {
-				applogger.Warn("0.1.19: unrecognized legacy work directory", "person_id", person.ID, "name", entry.Name())
+				applogger.Warn("0.1.19: unrecognized legacy work directory", "person_id", personID, "name", entry.Name())
 				continue
 			}
 			rel := filepath.Join("work", entry.Name())
-			var record model.Workspace
-			if err := database.DB.Where("person_id = ? AND relative_path = ?", person.ID, rel).FirstOrCreate(&record,
-				model.Workspace{PersonID: person.ID, RelativePath: rel, Name: "Historical session " + entry.Name(), Purpose: ""}).Error; err != nil {
+			if err := tx.Exec(`INSERT INTO workspaces
+				(person_id, relative_path, name, purpose, created_at) VALUES (?, ?, ?, '', ?)
+				ON CONFLICT(person_id, relative_path) DO NOTHING`,
+				personID, rel, "Historical session "+entry.Name(), time.Now()).Error; err != nil {
 				panic(fmt.Sprintf("0.1.19: register legacy workspace %s: %v", rel, err))
 			}
-			var works []model.Work
-			if err := database.DB.Where("person_id = ? AND session_id = ?", person.ID, sessionID).Find(&works).Error; err != nil {
+			var workspaceID int64
+			if err := tx.Raw(`SELECT id FROM workspaces WHERE person_id = ? AND relative_path = ?`, personID, rel).Scan(&workspaceID).Error; err != nil {
+				panic(fmt.Sprintf("0.1.19: read legacy workspace %s: %v", rel, err))
+			}
+			var works []legacyWork_0_1_19
+			if err := tx.Raw(`SELECT id, session_id FROM works WHERE person_id = ? AND session_id = ?`, personID, sessionID).Scan(&works).Error; err != nil {
 				panic(fmt.Sprintf("0.1.19: find legacy works for %s: %v", rel, err))
 			}
 			for _, work := range works {
-				use := model.WorkspaceUse{WorkspaceID: record.ID, SourceType: model.WorkspaceUseWork, SourceID: work.ID, Role: model.WorkspaceUseDefault}
-				if err := database.DB.Where("workspace_id = ? AND source_type = ? AND source_id = ? AND role = ?", use.WorkspaceID, use.SourceType, use.SourceID, use.Role).FirstOrCreate(&use).Error; err != nil {
+				if err := tx.Exec(`INSERT INTO workspace_uses
+					(workspace_id, source_type, source_id, role, created_at) VALUES (?, 1, ?, 1, ?)
+					ON CONFLICT(workspace_id, source_type, source_id, role) DO NOTHING`,
+					workspaceID, work.ID, time.Now()).Error; err != nil {
 					panic(fmt.Sprintf("0.1.19: link historical work %d: %v", work.ID, err))
 				}
 			}
 		}
-		var unlinked []model.Work
-		if err := database.DB.Where(`person_id = ? AND NOT EXISTS (
-			SELECT 1 FROM workspace_uses u WHERE u.source_type = ? AND u.source_id = works.id AND u.role = ?)`,
-			person.ID, model.WorkspaceUseWork, model.WorkspaceUseDefault).Find(&unlinked).Error; err != nil {
-			panic(fmt.Sprintf("0.1.19: verify historical works for person %d: %v", person.ID, err))
+		var unlinked []legacyWork_0_1_19
+		if err := tx.Raw(`SELECT id, session_id FROM works WHERE person_id = ? AND NOT EXISTS (
+			SELECT 1 FROM workspace_uses u WHERE u.source_type = 1 AND u.source_id = works.id AND u.role = 1)`,
+			personID).Scan(&unlinked).Error; err != nil {
+			panic(fmt.Sprintf("0.1.19: verify historical works for person %d: %v", personID, err))
 		}
 		for _, work := range unlinked {
 			applogger.Error("0.1.19: historical Work directory missing; no Workspace association inferred",
-				"person_id", person.ID, "work_id", work.ID, "session_id", work.SessionID)
+				"person_id", personID, "work_id", work.ID, "session_id", work.SessionID)
 		}
-	}
-	if err := removeLegacyInteractionSessionColumn(); err != nil {
-		panic(fmt.Sprintf("0.1.19: remove obsolete Interaction Session column: %v", err))
-	}
-	if err := migrateRetiredJinshuTypes(); err != nil {
-		panic(fmt.Sprintf("0.1.19: compact retired Jinshu types: %v", err))
-	}
-	if err := migrateDurableEventTypes(); err != nil {
-		panic(fmt.Sprintf("0.1.19: compact durable Event types: %v", err))
 	}
 }

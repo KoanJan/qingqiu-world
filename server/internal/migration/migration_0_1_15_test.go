@@ -32,6 +32,9 @@ func TestMigrate_0_1_15RemovesContractedRelationColumns(t *testing.T) {
 	if err := db.AutoMigrate(&model.KBEntity{}, &model.KBRelation{}); err != nil {
 		t.Fatalf("auto-migrate relation schema: %v", err)
 	}
+	if err := db.Exec("ALTER TABLE kb_relations DROP COLUMN applicability_note").Error; err != nil {
+		t.Fatalf("remove later applicability column from fixture: %v", err)
+	}
 	if err := db.Exec("ALTER TABLE kb_entities ADD COLUMN aliases_json text NOT NULL DEFAULT '[]'").Error; err != nil {
 		t.Fatalf("add legacy aliases column: %v", err)
 	}
@@ -39,7 +42,9 @@ func TestMigrate_0_1_15RemovesContractedRelationColumns(t *testing.T) {
 		t.Fatalf("add legacy utility column: %v", err)
 	}
 
-	migrate_0_1_15()
+	if err := db.Transaction(func(tx *gorm.DB) error { return applyReleaseSQL(tx, "0.1.15") }); err != nil {
+		t.Fatal(err)
+	}
 
 	if db.Migrator().HasColumn("kb_entities", "aliases_json") {
 		t.Fatal("aliases_json should be removed from kb_entities")
