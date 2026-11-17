@@ -7,6 +7,31 @@ import (
 	"testing"
 )
 
+// TestKnownPersistentSourceScopesTheRegistryGuard proves that lifecycle
+// orchestration and the migration engine do not demand a data migration, while
+// the model, release scripts, and the unreleased registry still do.
+func TestKnownPersistentSourceScopesTheRegistryGuard(t *testing.T) {
+	for path, want := range map[string]bool{
+		"server/internal/model/person.go":                        true,
+		"server/internal/migration/sql/0.1.22.sql":               true,
+		"server/internal/migration/migration_0_1_19.go":          true,
+		"server/internal/migration/legacy_workspace_path.go":     true,
+		"server/internal/migration/dev/unreleased/registry.go":   true,
+		"server/internal/migration/dev/unreleased/scripts/2.sql": true,
+		"server/internal/config/config.go":                       true,
+		"server/internal/migration/dev/lifecycle.go":             false,
+		"server/internal/migration/dev/release_build.go":         false,
+		"server/internal/migration/dev/git.go":                   false,
+		"server/internal/migration/dev/README.md":                false,
+		"server/internal/migration/migration.go":                 false,
+		"server/internal/migration/migration_startup_test.go":    false,
+	} {
+		if got := knownPersistentSource(path); got != want {
+			t.Errorf("knownPersistentSource(%q) = %v, want %v", path, got, want)
+		}
+	}
+}
+
 func TestLinkedWorktreeWithoutGitAtRuntime(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("Git is used only to construct the linked worktree fixture")

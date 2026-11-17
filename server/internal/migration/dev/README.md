@@ -100,25 +100,26 @@ active data, a checkpoint, or the baseline instead.
 
 ## Startup order
 
-The order is deliberate: crash recovery, then source verification, then data
-management. Verification is read-only, so a rejected checkout never mutates the
-managed store.
+The order is deliberate: verify the source, then take ownership of the data set,
+then recover and reconcile. Verification is read-only and runs before the store
+exists, so a rejected checkout never creates `.developer-data`, its lock, a
+baseline, or active data.
 
-1. `recoverSwitch()` — finish or roll back an interrupted active switch.
-2. Open `DEV_REPO_ROOT` with a pure Go Git reader; resolve the trusted tag for
+1. Open `DEV_REPO_ROOT` with a pure Go Git reader; resolve the trusted tag for
    `config.AppVersion` (`v0.1.21`).
-3. Verify the running source: clean worktree, `buildCommit == HEAD`, the release
+2. Verify the running source: clean worktree, `buildCommit == HEAD`, the release
    commit is a first-parent ancestor of `HEAD`, and every step in the registry
-   chain is valid. Any failure stops here, before data is touched.
-4. Find the newest baseline. Each candidate is revalidated: manifest kind,
+   chain is valid. Any failure stops here, before the store is created.
+3. Create the store and take its `.lock` for the process lifetime.
+4. `recoverSwitch()` — finish or roll back an interrupted active switch.
+5. Find the newest baseline. Each candidate is revalidated: manifest kind,
    release/entry name, `data_roots`, tree digest, and the tag commit.
-5. No baseline → bootstrap (below). Baseline older than the app → promote.
+6. No baseline → bootstrap (below). Baseline older than the app → promote.
    Baseline newer than the app → stop.
-6. `prepareActive()` — ensure active data exists and belongs to this baseline.
-7. Build the target chain from the registry: for each step, the introducing
-   first-parent commit of its `SourceFiles()`.
-8. `reconcile()` — compare with the active state and apply what is missing.
-9. Keep the store lock for the process lifetime.
+7. `prepareActive()` — ensure active data exists and belongs to this baseline.
+8. `reconcile()` — compare the target chain with the active state and apply what
+   is missing.
+9. Keep the store lock held until the process exits.
 
 ### Bootstrapping the first baseline
 
@@ -182,8 +183,8 @@ renumbering changes it.
 
 The lifecycle only manages data produced by committed code. A dirty worktree —
 including untracked files — or a binary that `cmd/devbuild` did not stamp stops
-startup before any baseline, checkpoint, or active switch is touched, so a
-rejected start leaves the managed store unchanged. There is no supported bypass:
+startup before the managed store is created, so a rejected start leaves
+`.developer-data` absent or untouched. There is no supported bypass:
 `DEV_DATA_MODE=0` panics while the registry is non-empty, because a build that
 registers development steps is not a release build.
 
@@ -203,7 +204,8 @@ The cost depends on what changed:
 | Change since the last start | Effect |
 | --- | --- |
 | Ordinary code outside the persistent-data paths | Chain unchanged; active data is reused as is. |
-| Persistent-data code (`model/`, `migration/`, `config.go`, `aos/`, `jinshu/`, `speech/storage.go`) without a later registered step | Startup stops: such a change must be introduced together with a development step. |
+| Persistent-data code (`model/`, `migration/sql/`, historical `migration_0_*.go`, `dev/unreleased/`, `config.go`, `aos/`, `jinshu/`, `speech/storage.go`) without a later registered step | Startup stops: such a change must be introduced together with a development step. |
+| Lifecycle orchestration (`dev/` outside `unreleased/`) or `migration.go` | Not treated as persistent data: these change how steps run, and a step cannot correct data they would have produced. |
 | `scripts/<revision>.sql`, `scripts/<revision>.go`, or the registry | The introducing commit changes, so the chain diverges and the affected steps replay from a checkpoint or the baseline. Amending the commit that introduced an existing step does the same. |
 | `git rebase` or `git pull` rewriting step commits | Same as above; old checkpoints stay on disk but are never reused. |
 

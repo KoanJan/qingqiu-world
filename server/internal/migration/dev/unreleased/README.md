@@ -134,6 +134,10 @@ When the next release is published:
 4. Keep `scripts/.gitkeep` and this README: the directory must stay embeddable
    even when no script is left.
 
+Step 2 is mandatory before tagging: a build that still registers steps refuses
+`RELEASE_MIGRATION_ONLY`, so baseline promotion fails loudly instead of running
+release migrations through a development build.
+
 ## Troubleshooting
 
 | Symptom | Cause |

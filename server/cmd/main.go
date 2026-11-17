@@ -38,6 +38,21 @@ import (
 // automation accepts only a binary built for the checked-out Git commit.
 var buildCommit string
 
+// releaseOnlyMode reports whether this process was launched by the release
+// promoter to run release migrations on a staged copy. The switch is not a user
+// feature: a build that still registers development steps is a development
+// build, so it refuses to run release migrations directly on developer data
+// even when RELEASE_MIGRATION_ONLY is present in the environment or .env.
+func releaseOnlyMode() bool {
+	if os.Getenv("RELEASE_MIGRATION_ONLY") != "1" {
+		return false
+	}
+	if len(unreleased.Registered()) > 0 {
+		panic("RELEASE_MIGRATION_ONLY is reserved for released builds; this build registers development steps")
+	}
+	return true
+}
+
 func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
@@ -50,14 +65,14 @@ func main() {
 	}
 
 	config.Init()
-	if os.Getenv("RELEASE_MIGRATION_ONLY") == "1" {
+	if err := migration.ValidateReleaseChain(); err != nil {
+		panic(fmt.Sprintf("invalid release migration chain: %v", err))
+	}
+	if releaseOnlyMode() {
 		applogger.Init()
 		database.Init()
 		migration.Run()
 		return
-	}
-	if err := migration.ValidateReleaseChain(); err != nil {
-		panic(fmt.Sprintf("invalid release migration chain: %v", err))
 	}
 	if os.Getenv("DEV_DATA_MODE") != "1" && len(unreleased.Registered()) > 0 {
 		panic("unreleased server build requires explicit developer data mode")

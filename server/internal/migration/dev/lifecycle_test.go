@@ -220,8 +220,8 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 }
 
 // TestRejectedCheckoutLeavesStoreUntouched proves that source verification runs
-// before any data mutation: a dirty worktree must not create a baseline, seed
-// active data, or leave staging artifacts behind.
+// before the managed store exists: a dirty worktree must not create the store,
+// its lock, seed active data, or leave staging artifacts behind.
 func TestRejectedCheckoutLeavesStoreUntouched(t *testing.T) {
 	root := t.TempDir()
 	repoPath := filepath.Join(root, "source")
@@ -283,18 +283,11 @@ func TestRejectedCheckoutLeavesStoreUntouched(t *testing.T) {
 		t.Fatal("dirty worktree was accepted")
 	}
 	store := active + ".developer-data"
-	if _, err := os.Stat(filepath.Join(store, "baseline")); !os.IsNotExist(err) {
-		t.Fatalf("rejected start created a baseline: %v", err)
+	if _, err := os.Stat(store); !os.IsNotExist(err) {
+		t.Fatalf("rejected start created the managed store: %v", err)
 	}
 	if _, err := os.Stat(active); !os.IsNotExist(err) {
 		t.Fatalf("rejected start created active data: %v", err)
-	}
-	staged, err := os.ReadDir(filepath.Join(store, "staging"))
-	if err != nil && !os.IsNotExist(err) {
-		t.Fatal(err)
-	}
-	if len(staged) != 0 {
-		t.Fatalf("rejected start left %d staging entries", len(staged))
 	}
 }
 

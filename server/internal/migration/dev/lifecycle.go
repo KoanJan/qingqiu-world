@@ -44,6 +44,12 @@ func Start(buildCommit string) (func(), error) {
 	if err != nil {
 		return nil, err
 	}
+	// Verify the checkout before creating the managed store: a rejected start
+	// must not leave .developer-data, its lock, or any managed directory behind.
+	releaseCommit, target, err := m.verifySource(buildCommit)
+	if err != nil {
+		return nil, err
+	}
 	if err := os.MkdirAll(m.store, 0700); err != nil {
 		return nil, fmt.Errorf("create developer data store: %w", err)
 	}
@@ -53,7 +59,7 @@ func Start(buildCommit string) (func(), error) {
 		return nil, fmt.Errorf("developer data is already in use: %v", err)
 	}
 	unlock := func() { _ = m.lock.Unlock() }
-	if err := m.run(buildCommit); err != nil {
+	if err := m.run(releaseCommit, target); err != nil {
 		unlock()
 		return nil, err
 	}
@@ -69,6 +75,11 @@ func newManager() (*manager, error) {
 	m := &manager{active: active, store: active + ".developer-data"}
 	if inside(active, m.store) {
 		return nil, fmt.Errorf("developer data store must be outside DATA_ROOT")
+	}
+	if info, err := os.Lstat(m.store); err == nil && info.Mode()&os.ModeSymlink != 0 {
+		return nil, fmt.Errorf("developer data store must not be a symlink")
+	} else if err != nil && !os.IsNotExist(err) {
+		return nil, err
 	}
 	if info, err := os.Lstat(active); err == nil && info.Mode()&os.ModeSymlink != 0 {
 		return nil, fmt.Errorf("DATA_ROOT must not be a symlink in automatic developer mode")
@@ -101,51 +112,54 @@ func newManager() (*manager, error) {
 	return m, nil
 }
 
-func (m *manager) run(buildCommit string) error {
-	if err := m.recoverSwitch(); err != nil {
-		return err
-	}
+// verifySource proves the running binary corresponds to a committed checkout
+// that may advance. Every check is read-only, so it runs before the managed
+// store exists: a rejected checkout cannot create or modify one.
+func (m *manager) verifySource(buildCommit string) (*object.Commit, []AppliedStep, error) {
 	repoRoot := os.Getenv("DEV_REPO_ROOT")
 	if repoRoot == "" {
-		return fmt.Errorf("DEV_REPO_ROOT must identify the developer checkout")
+		return nil, nil, fmt.Errorf("DEV_REPO_ROOT must identify the developer checkout")
 	}
 	repo, err := Open(repoRoot)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	m.repo = repo
 	releaseCommit, err := repo.ReleaseCommit(config.AppVersion)
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
-	// Verify the running source before touching the managed data set. All checks
-	// below are read-only, so a dirty tree, a stale binary, a broken release
-	// ancestry, or an incomplete migration registry fails without seeding,
-	// promoting, or switching any data.
 	if err := repo.Clean(); err != nil {
-		return err
+		return nil, nil, err
 	}
 	head, err := repo.Head()
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	if buildCommit == "" || buildCommit != head.Hash.String() {
-		return fmt.Errorf("running server binary does not match checked-out commit %s", head.Hash)
+		return nil, nil, fmt.Errorf("running server binary does not match checked-out commit %s", head.Hash)
 	}
 	if _, err := repo.FirstParentPath(releaseCommit, head); err != nil {
-		return err
+		return nil, nil, err
 	}
 	target, err := targetChain(unreleased.Registered(), func(path string) (string, error) {
 		return repo.IntroducingCommit(path, releaseCommit, head)
 	})
 	if err != nil {
-		return err
+		return nil, nil, err
 	}
 	stepCommits := make(map[string]bool, len(target))
 	for _, step := range target {
 		stepCommits[step.Commit] = true
 	}
 	if err := repo.ValidateRegisteredChanges(releaseCommit, head, stepCommits); err != nil {
+		return nil, nil, err
+	}
+	return releaseCommit, target, nil
+}
+
+func (m *manager) run(releaseCommit *object.Commit, target []AppliedStep) error {
+	if err := m.recoverSwitch(); err != nil {
 		return err
 	}
 	base, found, err := m.latestBaseline()

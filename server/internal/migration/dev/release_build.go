@@ -49,6 +49,7 @@ func (m *manager) runTaggedRelease(data string, release *object.Commit) error {
 	defer cancel()
 	build := exec.CommandContext(ctx, "go", "build", "-buildvcs=false", "-o", binary, "./cmd")
 	build.Dir = serverDir
+	build.Env = buildEnvironment()
 	output, err := build.CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("build released server %s: %w: %s", release.Hash, err, limitedOutput(output))
@@ -126,6 +127,27 @@ func writeCommitTree(commit *object.Commit, root string) error {
 // maxReleaseOutputBytes bounds the build output quoted in an error so a failed
 // release build stays diagnosable without flooding the log.
 const maxReleaseOutputBytes = 4000
+
+// buildEnvironment isolates the tagged build from local Go settings. A GOWORK
+// file or GOFLAGS from the developer environment could resolve packages from
+// the live checkout instead of the extracted tag, which would promote a
+// baseline with code that is not actually part of the release.
+func buildEnvironment() []string {
+	env := make(map[string]string)
+	for _, entry := range os.Environ() {
+		key, value, ok := strings.Cut(entry, "=")
+		if ok {
+			env[key] = value
+		}
+	}
+	env["GOWORK"] = "off"
+	env["GOFLAGS"] = ""
+	result := make([]string, 0, len(env))
+	for key, value := range env {
+		result = append(result, key+"="+value)
+	}
+	return result
+}
 
 func limitedOutput(output []byte) string {
 	if len(output) > maxReleaseOutputBytes {

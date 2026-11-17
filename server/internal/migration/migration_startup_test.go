@@ -104,6 +104,49 @@ func TestNonemptyDatabaseRequiresValidVersion(t *testing.T) {
 	}
 }
 
+func TestOutOfOrderVersionHistoryRejected(t *testing.T) {
+	db := startupTestDB(t)
+	if err := db.Exec("CREATE TABLE sentinel (id INTEGER PRIMARY KEY, payload TEXT NOT NULL)").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Exec("INSERT INTO sentinel (id, payload) VALUES (1, 'preserve me')").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := db.Migrator().CreateTable(&model.DBVersion{}); err != nil {
+		t.Fatal(err)
+	}
+	for _, version := range []string{"0.1.21", "0.1.6"} {
+		if err := db.Create(&model.DBVersion{Version: version}).Error; err != nil {
+			t.Fatal(err)
+		}
+	}
+	func() {
+		defer func() {
+			if cause := recover(); cause == nil || !strings.Contains(fmt.Sprint(cause), "out of order") {
+				t.Fatalf("expected out-of-order history rejection, got %v", cause)
+			}
+		}()
+		Run()
+	}()
+	var payload string
+	if err := db.Raw("SELECT payload FROM sentinel WHERE id = 1").Scan(&payload).Error; err != nil || payload != "preserve me" {
+		t.Fatalf("existing data changed: payload=%q error=%v", payload, err)
+	}
+}
+
+func TestVersionHistoryAllowsRepeatedReleaseMarkers(t *testing.T) {
+	records := []versionRecord{
+		{ID: 1, Version: "0.1.19"},
+		{ID: 2, Version: "0.1.19"},
+		{ID: 3, Version: "0.1.19"},
+		{ID: 4, Version: "0.1.20"},
+	}
+	version, err := validateVersionHistory(records)
+	if err != nil || version != "0.1.20" {
+		t.Fatalf("version = %q, error = %v", version, err)
+	}
+}
+
 func TestExistingDataFilesDoNotBecomeFreshInstall(t *testing.T) {
 	db := startupTestDB(t)
 	asset := filepath.Join(config.Get().DataRoot, "avatars", "existing.png")

@@ -261,12 +261,14 @@ func inspectDatabase() (version string, empty bool, err error) {
 	if versionTableCount == 0 {
 		return "", false, fmt.Errorf("nonempty database has no db_versions table")
 	}
-	result := database.DB.Raw(`SELECT version FROM db_versions ORDER BY id DESC LIMIT 1`).Scan(&version)
+	var records []versionRecord
+	result := database.DB.Raw(`SELECT id, version FROM db_versions ORDER BY id`).Scan(&records)
 	if result.Error != nil {
-		return "", false, fmt.Errorf("read database version: %w", result.Error)
+		return "", false, fmt.Errorf("read database version history: %w", result.Error)
 	}
-	if result.RowsAffected == 0 {
-		return "", false, fmt.Errorf("nonempty database has no version record")
+	version, err = validateVersionHistory(records)
+	if err != nil {
+		return "", false, err
 	}
 	return version, false, nil
 }
@@ -339,6 +341,35 @@ func recordVersion(tx *gorm.DB, version, description string) error {
 		return fmt.Errorf("record database version %s: %w", version, err)
 	}
 	return nil
+}
+
+// versionRecord is one db_versions row in insertion order.
+type versionRecord struct {
+	ID      int64
+	Version string
+}
+
+// validateVersionHistory returns the current release only when the recorded
+// history can come from sequential upgrades. The newest row is authoritative
+// only if no older release was recorded after it; otherwise the database is
+// ambiguous and must stop before any migration runs. Repeated adjacent versions
+// are valid because 0.1.19 writes additional markers for its enum compactions.
+func validateVersionHistory(records []versionRecord) (string, error) {
+	if len(records) == 0 {
+		return "", fmt.Errorf("nonempty database has no version record")
+	}
+	var previous [3]int
+	for i, record := range records {
+		version, err := parseVersion(record.Version)
+		if err != nil {
+			return "", fmt.Errorf("invalid database version record %d (%q): %w", record.ID, record.Version, err)
+		}
+		if i > 0 && versionLess(version, previous) {
+			return "", fmt.Errorf("database version history is out of order: %s follows %s", record.Version, records[i-1].Version)
+		}
+		previous = version
+	}
+	return records[len(records)-1].Version, nil
 }
 
 // parseVersion accepts only the release version stored in db_versions.

@@ -184,9 +184,18 @@ func (r *Repository) ValidateRegisteredChanges(base, head *object.Commit, stepCo
 
 // knownPersistentSource reports whether a path carries persistent data
 // behaviour. Documentation and placeholder files under these directories are
-// excluded: editing a guide must not demand a development migration.
+// excluded: editing a guide must not demand a development migration. Lifecycle
+// orchestration and the migration engine are also excluded: they change how
+// steps run, but a step cannot correct data that an engine change would have
+// produced, so requiring one would only add a meaningless revision.
 func knownPersistentSource(path string) bool {
 	if strings.HasSuffix(path, "_test.go") || strings.HasSuffix(path, ".md") || strings.HasPrefix(filepath.Base(path), ".") {
+		return false
+	}
+	if strings.HasPrefix(path, "server/internal/migration/dev/") {
+		return strings.HasPrefix(path, "server/internal/migration/dev/unreleased/")
+	}
+	if path == "server/internal/migration/migration.go" {
 		return false
 	}
 	return strings.HasPrefix(path, "server/internal/model/") ||
