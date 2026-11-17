@@ -3,6 +3,7 @@ package migration
 import (
 	"errors"
 	"fmt"
+	"gorm.io/gorm"
 	"io"
 	"os"
 	"path/filepath"
@@ -18,7 +19,22 @@ import (
 // migrate_0_1_13 copies legacy filesystem data into the Agent Owned Space
 // layout. A failed copy aborts this versioned migration, so its DB version is
 // not recorded and the complete copy can safely be retried on the next start.
-func migrate_0_1_13() {
+//
+// Trade-off: this step runs inside the release transaction but only the database
+// participates in it; file copies are not rolled back together with the
+// transaction. The copy is therefore designed to be retry-safe instead:
+//   - copies never overwrite existing AOS entries (copyTreeMissing);
+//   - each file is written to a temp file and renamed, so no partial file is left;
+//   - the completion marker is written only after a full copy, so an interrupted
+//     run repeats the copy instead of being skipped.
+//
+// Consequence: if the transaction rolls back after files were copied, those
+// files remain as harmless duplicates and the next start copies only what is
+// still missing. Holding the write transaction during a large copy is acceptable
+// because migration runs before any business service or concurrent writer starts.
+//
+// tx is intentionally unused: this release has no SQL data conversion.
+func migrate_0_1_13(tx *gorm.DB) {
 	if err := migrateLegacyOwnedSpace(); err != nil {
 		applogger.Error("migration 0.1.13: legacy Agent Owned Space import failed", "error", err)
 		panic(fmt.Sprintf("migration 0.1.13: %v", err))
@@ -208,10 +224,10 @@ func migrationAlreadyRecorded(path string) (bool, error) {
 
 // recordMigration writes the marker only after a complete legacy copy.
 func recordMigration(path string) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+	return installMigrationFile(path, 0644, func(out *os.File) error {
+		_, err := out.WriteString("imported\n")
 		return err
-	}
-	return os.WriteFile(path, []byte("imported\n"), 0644)
+	})
 }
 
 // copyTreeMissing recursively copies a source tree without overwriting an AOS
@@ -272,28 +288,38 @@ func copyEntryMissing(src, dst string, info os.FileInfo) error {
 		}
 		return os.Symlink(target, dst)
 	}
-	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
-		return err
-	}
 	in, err := os.Open(src)
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_WRONLY|os.O_CREATE|os.O_EXCL, info.Mode().Perm())
-	if err != nil {
-		if closeErr := in.Close(); closeErr != nil {
-			applogger.Error("migration 0.1.13: close source after destination open failure", "source", src, "error", closeErr)
-		}
+	defer in.Close()
+	return installMigrationFile(dst, info.Mode().Perm(), func(out *os.File) error {
+		_, err := io.Copy(out, in)
+		return err
+	})
+}
+
+// installMigrationFile makes a failed copy leave no partial destination.
+func installMigrationFile(dst string, mode os.FileMode, write func(*os.File) error) error {
+	if err := os.MkdirAll(filepath.Dir(dst), 0755); err != nil {
 		return err
 	}
-	_, copyErr := io.Copy(out, in)
-	inCloseErr := in.Close()
+	out, err := os.CreateTemp(filepath.Dir(dst), ".migration-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(out.Name())
+	if err := out.Chmod(mode); err != nil {
+		_ = out.Close()
+		return err
+	}
+	writeErr := write(out)
 	closeErr := out.Close()
-	if copyErr != nil {
-		return copyErr
+	if writeErr != nil {
+		return writeErr
 	}
-	if inCloseErr != nil {
-		return inCloseErr
+	if closeErr != nil {
+		return closeErr
 	}
-	return closeErr
+	return os.Rename(out.Name(), dst)
 }

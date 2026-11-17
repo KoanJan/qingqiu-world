@@ -4,38 +4,40 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"strings"
+	"time"
 
-	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
-	"qingqiu-world-server/internal/model"
 
 	"gorm.io/gorm"
 )
 
 const legacyCanonicalVersion = "legacy-canonical-v1"
 
+// These fields are fixed to the schema at 0.1.14. Runtime models may gain
+// columns in later releases and must not be used while upgrading through it.
+type legacyDocument_0_1_14 struct {
+	ID               int64
+	Title            string
+	FilePath         string
+	ActiveRevisionID int64
+}
+
+type legacyChunk_0_1_14 struct {
+	ID         int64
+	ChunkIndex int
+	Content    string
+}
+
 // migrate_0_1_14 maps existing ready documents to immutable legacy revisions.
 // It does not call an embedding provider or reparse source files, so upgrades
 // remain offline-safe. Existing chunks become paragraph ContentNodes and
 // continue serving retrieval until users explicitly rebuild representations.
-func migrate_0_1_14() {
-	var documents []model.Document
-	if err := database.DB.Where("status = ?", model.DocumentStatusReady).Find(&documents).Error; err != nil {
+func migrate_0_1_14(tx *gorm.DB) {
+	var documents []legacyDocument_0_1_14
+	if err := tx.Raw(`SELECT id, title, file_path, active_revision_id FROM documents WHERE status = 2`).Scan(&documents).Error; err != nil {
 		applogger.Error("migration 0.1.14: failed to load ready documents", "error", err)
 		panic(err)
 	}
-
-	tx := database.DB.Begin()
-	if tx.Error != nil {
-		applogger.Error("migration 0.1.14: failed to begin transaction", "error", tx.Error)
-		panic(tx.Error)
-	}
-	defer func() {
-		if r := recover(); r != nil {
-			tx.Rollback()
-			panic(r)
-		}
-	}()
 
 	migrated := 0
 	skipped := 0
@@ -44,9 +46,10 @@ func migrate_0_1_14() {
 			continue
 		}
 
-		var chunks []model.DocumentChunk
-		if err := tx.Where("document_id = ? AND deleted = 0", doc.ID).Order("chunk_index ASC, id ASC").Find(&chunks).Error; err != nil {
-			rollbackMigration_0_1_14(tx, "load document chunks", doc.ID, err)
+		var chunks []legacyChunk_0_1_14
+		if err := tx.Raw(`SELECT id, chunk_index, content FROM document_chunks
+			WHERE document_id = ? AND deleted = 0 ORDER BY chunk_index ASC, id ASC`, doc.ID).Scan(&chunks).Error; err != nil {
+			abortMigration_0_1_14("load document chunks", doc.ID, err)
 		}
 		if len(chunks) == 0 {
 			applogger.Warn("migration 0.1.14: ready document has no active chunks; reimport required", "doc_id", doc.ID)
@@ -55,112 +58,84 @@ func migrate_0_1_14() {
 		}
 
 		fingerprint := legacyRevisionFingerprint(doc, chunks)
-		revision := model.DocumentRevision{}
-		err := tx.Where("document_id = ? AND canonical_fingerprint = ?", doc.ID, fingerprint).First(&revision).Error
-		if err != nil && err != gorm.ErrRecordNotFound {
-			rollbackMigration_0_1_14(tx, "lookup legacy revision", doc.ID, err)
+		var revisionID int64
+		lookup := tx.Raw(`SELECT id FROM document_revisions WHERE document_id = ? AND canonical_fingerprint = ?`, doc.ID, fingerprint).Scan(&revisionID)
+		if lookup.Error != nil {
+			abortMigration_0_1_14("lookup legacy revision", doc.ID, lookup.Error)
 		}
-		if err == gorm.ErrRecordNotFound {
-			revision = model.DocumentRevision{
-				DocumentID:           doc.ID,
-				ContentHash:          legacyContentHash(chunks),
-				ParserID:             "legacy-chunk",
-				ParserVersion:        legacyCanonicalVersion,
-				NormalizerVersion:    legacyCanonicalVersion,
-				CanonicalFingerprint: fingerprint,
-				BlobPath:             doc.FilePath,
-				Status:               model.DocumentRevisionStatusReady,
-			}
-			if err := tx.Create(&revision).Error; err != nil {
-				rollbackMigration_0_1_14(tx, "create legacy revision", doc.ID, err)
+		if lookup.RowsAffected == 0 {
+			now := time.Now()
+			if err := tx.Raw(`INSERT INTO document_revisions
+				(document_id, content_hash, parser_id, parser_version, normalizer_version,
+				canonical_fingerprint, blob_path, status, created_at, updated_at)
+				VALUES (?, ?, 'legacy-chunk', ?, ?, ?, ?, 2, ?, ?) RETURNING id`,
+				doc.ID, legacyContentHash(chunks), legacyCanonicalVersion, legacyCanonicalVersion,
+				fingerprint, doc.FilePath, now, now).Scan(&revisionID).Error; err != nil {
+				abortMigration_0_1_14("create legacy revision", doc.ID, err)
 			}
 		}
 
-		if err := tx.Where("revision_id = ?", revision.ID).Delete(&model.ContentNode{}).Error; err != nil {
-			rollbackMigration_0_1_14(tx, "clear legacy content nodes", doc.ID, err)
+		if err := tx.Exec(`DELETE FROM content_nodes WHERE revision_id = ?`, revisionID).Error; err != nil {
+			abortMigration_0_1_14("clear legacy content nodes", doc.ID, err)
 		}
-		if err := tx.Where("chunk_id IN ?", chunkIDs(chunks)).Delete(&model.DocumentChunkNode{}).Error; err != nil {
-			rollbackMigration_0_1_14(tx, "clear legacy chunk-node mappings", doc.ID, err)
+		if err := tx.Exec(`DELETE FROM document_chunk_nodes WHERE chunk_id IN ?`, chunkIDs(chunks)).Error; err != nil {
+			abortMigration_0_1_14("clear legacy chunk-node mappings", doc.ID, err)
 		}
 
-		root := model.ContentNode{
-			DocumentID:   doc.ID,
-			RevisionID:   revision.ID,
-			ParentID:     0,
-			Ordinal:      0,
-			NodeType:     model.ContentNodeTypeDocument,
-			Text:         doc.Title,
-			ContentHash:  hashText(doc.Title),
-			LocatorJSON:  "{}",
-			MetadataJSON: `{"capability":"legacy-chunk"}`,
-		}
-		if err := tx.Create(&root).Error; err != nil {
-			rollbackMigration_0_1_14(tx, "create legacy root node", doc.ID, err)
+		var rootID int64
+		if err := tx.Raw(`INSERT INTO content_nodes
+			(document_id, revision_id, parent_id, ordinal, node_type, text, content_hash,
+			locator_json, metadata_json, created_at)
+			VALUES (?, ?, 0, 0, 0, ?, ?, '{}', '{"capability":"legacy-chunk"}', ?) RETURNING id`,
+			doc.ID, revisionID, doc.Title, hashText(doc.Title), time.Now()).Scan(&rootID).Error; err != nil {
+			abortMigration_0_1_14("create legacy root node", doc.ID, err)
 		}
 
 		for ordinal, chunk := range chunks {
 			searchText := chunk.Content
 			displayText := chunk.Content
-			inputFingerprint := legacyUnitFingerprint(revision.ID, chunk.ChunkIndex, searchText)
-			if err := tx.Model(&model.DocumentChunk{}).Where("id = ?", chunk.ID).Updates(map[string]interface{}{
-				"revision_id":       revision.ID,
-				"search_text":       searchText,
-				"display_text":      displayText,
-				"token_count":       legacyTokenCount(searchText),
-				"input_fingerprint": inputFingerprint,
-			}).Error; err != nil {
-				rollbackMigration_0_1_14(tx, "backfill retrieval unit", doc.ID, err)
+			inputFingerprint := legacyUnitFingerprint(revisionID, chunk.ChunkIndex, searchText)
+			if err := tx.Exec(`UPDATE document_chunks SET revision_id = ?, search_text = ?,
+				display_text = ?, token_count = ?, input_fingerprint = ? WHERE id = ?`,
+				revisionID, searchText, displayText, legacyTokenCount(searchText), inputFingerprint, chunk.ID).Error; err != nil {
+				abortMigration_0_1_14("backfill retrieval unit", doc.ID, err)
 			}
 
-			node := model.ContentNode{
-				DocumentID:   doc.ID,
-				RevisionID:   revision.ID,
-				ParentID:     root.ID,
-				Ordinal:      ordinal + 1,
-				NodeType:     model.ContentNodeTypeParagraph,
-				Text:         displayText,
-				ContentHash:  hashText(displayText),
-				LocatorJSON:  "{}",
-				MetadataJSON: `{"capability":"legacy-chunk"}`,
+			var nodeID int64
+			if err := tx.Raw(`INSERT INTO content_nodes
+				(document_id, revision_id, parent_id, ordinal, node_type, text, content_hash,
+				locator_json, metadata_json, created_at)
+				VALUES (?, ?, ?, ?, 1, ?, ?, '{}', '{"capability":"legacy-chunk"}', ?) RETURNING id`,
+				doc.ID, revisionID, rootID, ordinal+1, displayText, hashText(displayText), time.Now()).Scan(&nodeID).Error; err != nil {
+				abortMigration_0_1_14("create legacy content node", doc.ID, err)
 			}
-			if err := tx.Create(&node).Error; err != nil {
-				rollbackMigration_0_1_14(tx, "create legacy content node", doc.ID, err)
-			}
-			if err := tx.Create(&model.DocumentChunkNode{ChunkID: chunk.ID, NodeID: node.ID, Ordinal: 0}).Error; err != nil {
-				rollbackMigration_0_1_14(tx, "create legacy chunk-node mapping", doc.ID, err)
+			if err := tx.Exec(`INSERT INTO document_chunk_nodes (chunk_id, node_id, ordinal)
+				VALUES (?, ?, 0)`, chunk.ID, nodeID).Error; err != nil {
+				abortMigration_0_1_14("create legacy chunk-node mapping", doc.ID, err)
 			}
 		}
 
-		if err := tx.Model(&model.Document{}).Where("id = ?", doc.ID).Updates(map[string]interface{}{
-			"source_kind":        model.DocumentSourceKindLocalUpload,
-			"source_uri":         fmt.Sprintf("upload://%d", doc.ID),
-			"active_revision_id": revision.ID,
-		}).Error; err != nil {
-			rollbackMigration_0_1_14(tx, "activate legacy revision", doc.ID, err)
+		if err := tx.Exec(`UPDATE documents SET source_kind = 0, source_uri = ?, active_revision_id = ? WHERE id = ?`,
+			fmt.Sprintf("upload://%d", doc.ID), revisionID, doc.ID).Error; err != nil {
+			abortMigration_0_1_14("activate legacy revision", doc.ID, err)
 		}
 		migrated++
 	}
 
-	if err := tx.Commit().Error; err != nil {
-		applogger.Error("migration 0.1.14: failed to commit", "error", err)
-		panic(err)
-	}
 	applogger.Info("migration 0.1.14: created legacy canonical revisions", "migrated", migrated, "skipped", skipped)
 }
 
-// rollbackMigration_0_1_14 aborts the transaction because partial canonical
-// migrations must not advance the database version.
-func rollbackMigration_0_1_14(tx *gorm.DB, operation string, docID int64, err error) {
+// abortMigration_0_1_14 leaves rollback to the enclosing release transaction.
+func abortMigration_0_1_14(operation string, docID int64, err error) {
 	applogger.Error("migration 0.1.14: failed", "operation", operation, "doc_id", docID, "error", err)
-	tx.Rollback()
 	panic(err)
 }
 
-func legacyRevisionFingerprint(doc model.Document, chunks []model.DocumentChunk) string {
+func legacyRevisionFingerprint(doc legacyDocument_0_1_14, chunks []legacyChunk_0_1_14) string {
 	return hashText(fmt.Sprintf("%s|%d|%s", legacyCanonicalVersion, doc.ID, legacyContentHash(chunks)))
 }
 
-func legacyContentHash(chunks []model.DocumentChunk) string {
+func legacyContentHash(chunks []legacyChunk_0_1_14) string {
 	parts := make([]string, 0, len(chunks))
 	for _, chunk := range chunks {
 		parts = append(parts, chunk.Content)
@@ -185,7 +160,7 @@ func legacyTokenCount(value string) int {
 	return count
 }
 
-func chunkIDs(chunks []model.DocumentChunk) []int64 {
+func chunkIDs(chunks []legacyChunk_0_1_14) []int64 {
 	ids := make([]int64, 0, len(chunks))
 	for _, chunk := range chunks {
 		ids = append(ids, chunk.ID)

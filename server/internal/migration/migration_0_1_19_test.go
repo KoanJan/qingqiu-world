@@ -27,7 +27,7 @@ func TestWorkspaceMigrationOnlyRegistersExistingPaths(t *testing.T) {
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = previous })
-	if err := db.AutoMigrate(&model.Person{}, &model.Work{}, &model.Workspace{}, &model.WorkspaceUse{}, &model.Action{}, &model.AgentEventBuffer{}, &model.Event{}, &model.DBVersion{}); err != nil {
+	if err := db.AutoMigrate(&model.Person{}, &model.Session{}, &model.Work{}, &model.Workspace{}, &model.WorkspaceUse{}, &model.Action{}, &model.AgentEventBuffer{}, &model.Event{}, &model.DBVersion{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.Person{ID: 51, Name: "agent", Type: model.PersonTypeAI}).Error; err != nil {
@@ -53,8 +53,8 @@ func TestWorkspaceMigrationOnlyRegistersExistingPaths(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(legacyMeta, "notes.jsonl"), []byte("existing notes\n"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	migrate_0_1_19()
-	migrate_0_1_19()
+	migrate_0_1_19(db)
+	migrate_0_1_19(db)
 	var registered []model.Workspace
 	if err := db.Find(&registered).Error; err != nil {
 		t.Fatal(err)

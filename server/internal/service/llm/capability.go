@@ -22,7 +22,7 @@ import (
 var capabilityCache sync.Map
 
 // LoadCapabilityCache reads the entire model_capabilities table into in-memory cache.
-// Must be called after database.Init() and database.AutoMigrate() during startup.
+// Must be called after database initialization and release migration during startup.
 // Subsequent calls to lookupCapability will hit the in-memory cache instead of the DB.
 func LoadCapabilityCache() {
 	var caps []model.ModelCapability

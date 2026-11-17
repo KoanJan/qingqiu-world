@@ -1,6 +1,7 @@
 package migration
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -9,6 +10,29 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/service/aos"
 )
+
+func TestMigrationFileInstallLeavesNoPartialTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "copied.txt")
+	stop := errors.New("copy interrupted")
+	if err := installMigrationFile(target, 0644, func(out *os.File) error {
+		if _, err := out.WriteString("partial"); err != nil {
+			return err
+		}
+		return stop
+	}); !errors.Is(err, stop) {
+		t.Fatalf("install error = %v, want %v", err, stop)
+	}
+	if _, err := os.Stat(target); !os.IsNotExist(err) {
+		t.Fatalf("partial target exists: %v", err)
+	}
+	if err := installMigrationFile(target, 0644, func(out *os.File) error {
+		_, err := out.WriteString("complete")
+		return err
+	}); err != nil {
+		t.Fatal(err)
+	}
+	assertMigrationFile(t, target, "complete")
+}
 
 // TestLegacyOwnedSpaceMigrationIsRegistered verifies the filesystem migration
 // remains in the ordered upgrade history, independent of the current release.

@@ -28,7 +28,9 @@ fi
 
 echo "Building server..."
 export GOPROXY=https://goproxy.cn,direct
-go build -o qingqiu-world-server ./cmd/
+export DEV_DATA_MODE=1
+export DEV_REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+go run ./cmd/devbuild -repo "$DEV_REPO_ROOT" -output "$SCRIPT_DIR/qingqiu-world-server"
 
 echo "Starting server..."
 nohup "./qingqiu-world-server" > "$LOG_DIR/server.log" 2>&1 &

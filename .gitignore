@@ -51,6 +51,8 @@ Thumbs.db
 
 # Project specific
 server/data/
+# Developer data store: DATA_ROOT + ".developer-data" (baselines/checkpoints/staging/quarantine)
+*.developer-data/
 draft
 /tests/cases/*/*/reports/
 /tests/cases/.venv/

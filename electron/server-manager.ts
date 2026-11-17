@@ -4,16 +4,18 @@
  * Handles spawning the Go backend, waiting for it to become
  * ready (health check polling), and graceful shutdown on app quit.
  *
- * In dev mode: spawns the pre-built Go binary from server/
+ * In dev mode: builds and verifies the Go binary before spawning it
  * In production: spawns the bundled Go binary from resources
  */
 
-import { ChildProcess, spawn } from 'child_process';
-import { getServerExecutable, getServerCwd, isDev, SERVER_HOST, getServerPort, setServerPort, findFreePort, getDataRoot, getLogRoot, getLogLevel } from './config';
+import { ChildProcess, execFile, spawn } from 'child_process';
+import { promisify } from 'util';
+import { getServerExecutable, getServerCwd, getProjectRoot, isDev, SERVER_HOST, getServerPort, setServerPort, findFreePort, getDataRoot, getLogRoot, getLogLevel } from './config';
 import http from 'http';
 import { existsSync, appendFileSync, mkdirSync } from 'fs';
 
 let serverProcess: ChildProcess | null = null;
+const execFileAsync = promisify(execFile);
 
 function healthCheck(host: string, port: number, maxRetries: number = 15, intervalMs: number = 1000): Promise<void> {
   return new Promise((resolve, reject) => {
@@ -60,6 +62,13 @@ function healthCheck(host: string, port: number, maxRetries: number = 15, interv
 const MAX_PORT_RETRIES = 3;
 
 export async function startServer(): Promise<void> {
+  if (isDev()) {
+    await execFileAsync('go', [
+      'run', './cmd/devbuild',
+      '-repo', getProjectRoot(),
+      '-output', getServerExecutable(),
+    ], { cwd: getServerCwd() });
+  }
   for (let attempt = 0; attempt < MAX_PORT_RETRIES; attempt++) {
     const port = await findFreePort();
     setServerPort(port);
@@ -86,6 +95,8 @@ export async function startServer(): Promise<void> {
       DATA_ROOT: getDataRoot(),
       LOG_DIR: getLogRoot(),
       LOG_LEVEL: getLogLevel(),
+      DEV_DATA_MODE: isDev() ? '1' : '0',
+      DEV_REPO_ROOT: isDev() ? getProjectRoot() : '',
     };
 
     let spawnError: Error | null = null;

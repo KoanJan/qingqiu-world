@@ -9,17 +9,22 @@
 //   - Standalone server: .env file is required; DATA_ROOT defaults to ../data (project root).
 //
 // Environment variables:
-//   - DATA_ROOT: Root directory for all data storage (default: ../data, relative to executable)
+//   - DATA_ROOT: Root directory for all data storage (default: ../data, relative to the working directory)
+//   - LOG_DIR: Directory for log files (default: logs)
 //   - PORT: Server listen port (default: 8000)
-//   - SUMMARY_WINDOW_SIZE: Number of messages before triggering summary generation (default: 5)
-//   - SUMMARY_TOKEN_THRESHOLD: Token budget threshold for fallback summary trigger (default: 32000)
+//   - SUMMARY_WINDOW_SIZE: Number of messages before triggering summary generation (default: 50)
+//   - SUMMARY_TOKEN_THRESHOLD: Token budget threshold for fallback summary trigger (default: 16000)
 //   - LOG_LEVEL: Logging level (default: INFO)
 //   - FOCUSED_WORK_MAX_ITERATIONS: Maximum iterations for FocusedLoop (default: 300)
 //   - AOS_ROOT: Root directory for agent-owned resources (default: DATA_ROOT/aos)
 //   - AOS_META_ROOT: Root directory for runtime-owned agent metadata (default: DATA_ROOT/aosmeta)
 //   - JINSHU_ROOT: Root directory for person-level jinshu (锦书) files (default: DATA_ROOT/jinshu)
-//   - CONTEXT_WINDOW_ITERATIONS: Number of recent iterations visible to agent (default: 10)
-//   - NOTES_MAX_CHARS: Maximum character limit for agent notes (default: 5000)
+//   - DEV_DATA_MODE: Set to 1 only for managed developer data startup
+//   - DEV_REPO_ROOT: Explicit Git checkout root for developer data identity
+//   - DEV_BASELINE_SOURCE: Optional verified released-data directory for first-time developer baseline import
+//   - MIN_ITERATION_WINDOW: Recent iterations visible to the agent (default: 10)
+//   - MAX_ITERATION_WINDOW: Iterations before the context window is bulk-shrunk (default: 100)
+//   - NOTES_MAX_CHARS: Maximum character limit for agent notes (default: 10000)
 //   - KB_FLAT_THRESHOLD: Minimum vector count before HNSW building (default: 1000)
 //   - KB_RETRIEVAL_MIN_TOKENS: Target lower bound for KB retrieval units (default: 64)
 //   - KB_RETRIEVAL_MAX_TOKENS: Hard upper bound for KB retrieval units (default: 512)
@@ -29,6 +34,8 @@
 //   - COGNITIVE_MAX_REQUESTS: Model-request limit for one background cognitive process (default: 12, minimum effective value: 3)
 //   - COGNITIVE_RECENT_REVIEW_HOURS: Age below which revisiting needs explicit confirmation (default: 24)
 //   - COGNITIVE_ROUTE_MIN_SIMILARITY_PERCENT: Minimum description-to-daily similarity for a routed review, 1–100 (default: 35)
+//   - WORKSPACE_ROOT, PRIVATE_SPACE_ROOT: Legacy data-root overrides validated by developer data automation
+//   - RELEASE_MIGRATION_ONLY: Internal signal for running release migrations on a staged baseline only
 package config
 
 import (
@@ -37,7 +44,8 @@ import (
 	"strconv"
 )
 
-// AppVersion is the current application version.
+// AppVersion is the latest released data version. Unreleased data changes use
+// the separate development migration chain.
 const AppVersion = "0.1.21"
 
 // globalSettings is the singleton configuration instance.

@@ -15,6 +15,8 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/migration"
+	"qingqiu-world-server/internal/migration/dev"
+	"qingqiu-world-server/internal/migration/dev/unreleased"
 	notificationrouter "qingqiu-world-server/internal/notification/router"
 	"qingqiu-world-server/internal/realtime"
 	"qingqiu-world-server/internal/service/energy"
@@ -32,6 +34,25 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// buildCommit is set by the pure-Go development build helper. Developer data
+// automation accepts only a binary built for the checked-out Git commit.
+var buildCommit string
+
+// releaseOnlyMode reports whether this process was launched by the release
+// promoter to run release migrations on a staged copy. The switch is not a user
+// feature: a build that still registers development steps is a development
+// build, so it refuses to run release migrations directly on developer data
+// even when RELEASE_MIGRATION_ONLY is present in the environment or .env.
+func releaseOnlyMode() bool {
+	if os.Getenv("RELEASE_MIGRATION_ONLY") != "1" {
+		return false
+	}
+	if len(unreleased.Registered()) > 0 {
+		panic("RELEASE_MIGRATION_ONLY is reserved for released builds; this build registers development steps")
+	}
+	return true
+}
+
 func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
@@ -44,9 +65,25 @@ func main() {
 	}
 
 	config.Init()
+	if err := migration.ValidateReleaseChain(); err != nil {
+		panic(fmt.Sprintf("invalid release migration chain: %v", err))
+	}
+	if releaseOnlyMode() {
+		applogger.Init()
+		database.Init()
+		migration.Run()
+		return
+	}
+	if os.Getenv("DEV_DATA_MODE") != "1" && len(unreleased.Registered()) > 0 {
+		panic("unreleased server build requires explicit developer data mode")
+	}
+	unlockData, err := dev.Start(buildCommit)
+	if err != nil {
+		panic(fmt.Sprintf("prepare developer data: %v", err))
+	}
+	defer unlockData()
 	applogger.Init()
 	applogger.Info("Qingqiu World Server config initialized", "config", config.Get())
-
 	applogger.Info("Starting Qingqiu World Server")
 
 	database.Init()

@@ -1,10 +1,13 @@
 package main
 
 import (
+	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"qingqiu-world-server/internal/database"
+	"qingqiu-world-server/internal/migration/dev/unreleased"
 	"qingqiu-world-server/internal/model"
 
 	"github.com/glebarez/sqlite"
@@ -34,5 +37,25 @@ func TestEmbeddingServiceIsOptionalAtStartup(t *testing.T) {
 	}
 	if service := getEmbeddingService(); service == nil {
 		t.Fatal("configured installation did not initialize an embedding service")
+	}
+}
+
+// TestReleaseOnlyModeRejectedForDevelopmentBuild proves that the promoter's
+// environment switch cannot skip the developer lifecycle in a build that still
+// carries development steps: release migrations must never run directly on
+// developer data.
+func TestReleaseOnlyModeRejectedForDevelopmentBuild(t *testing.T) {
+	t.Setenv("RELEASE_MIGRATION_ONLY", "1")
+	if len(unreleased.Registered()) == 0 {
+		t.Skip("no development steps are registered in this build")
+	}
+	defer func() {
+		cause := recover()
+		if cause == nil || !strings.Contains(fmt.Sprint(cause), "reserved for released builds") {
+			t.Fatalf("expected release-only mode to be refused, got %v", cause)
+		}
+	}()
+	if releaseOnlyMode() {
+		t.Fatal("release-only mode accepted a development build")
 	}
 }

@@ -10,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"qingqiu-world-server/internal/api/response"
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 )
@@ -21,7 +22,11 @@ func TestListActivityWorksAcceptsNoCursor(t *testing.T) {
 	t.Setenv("DATA_ROOT", root)
 	t.Setenv("LOG_DIR", filepath.Join(root, "logs"))
 	previous := database.DB
+	config.Init()
 	database.Init()
+	if err := database.InitializeFresh(config.AppVersion); err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { database.DB = previous })
 	create := func(value any) {
 		t.Helper()
