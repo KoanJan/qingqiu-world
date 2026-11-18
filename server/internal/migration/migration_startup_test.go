@@ -60,6 +60,25 @@ func TestFreshDatabaseInitializesCurrentReleaseOnce(t *testing.T) {
 	}
 }
 
+func TestTimezoneFileWrittenBeforeMigrationDoesNotBlockFreshInstall(t *testing.T) {
+	db := startupTestDB(t)
+	timezonePath := filepath.Join(config.Get().DataRoot, "tz.txt")
+	if err := os.WriteFile(timezonePath, []byte("UTC"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	Run()
+	if got := getDBVersion(); got != config.AppVersion {
+		t.Fatalf("fresh install version = %q, want %q", got, config.AppVersion)
+	}
+	if !db.Migrator().HasTable("persons") {
+		t.Fatal("fresh installation did not create the world schema")
+	}
+	if data, err := os.ReadFile(timezonePath); err != nil || string(data) != "UTC" {
+		t.Fatalf("timezone file changed during migration: %q, %v", data, err)
+	}
+}
+
 func TestNonemptyDatabaseRequiresValidVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name, version, message string

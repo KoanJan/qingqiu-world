@@ -174,7 +174,7 @@ type WorkGuidance struct {
 // its speech expression instruction for the direct send_message path. The
 // runtime persists these values until the alarm fires.
 type AlarmPlan struct {
-	TriggerAt             string `json:"trigger_at" jsonschema:"description=Absolute time to wake yourself, in the exact format 'YYYY-MM-DD HH:MM:SS' (server local time). Must be a future time. Example: '2026-06-09 23:10:00'. Compute the exact future time based on the current time shown in the context.,required"`
+	TriggerAt             string `json:"trigger_at" jsonschema:"description=Absolute future time in RFC3339 format with an explicit timezone offset. Example: '2026-06-09T23:10:00+08:00'. Compute it from the current world time shown in the context.,required"`
 	Message               string `json:"message" jsonschema:"description=Instruction for your future self when the alarm fires — what you should DO. Write in first person as your own note to yourself (e.g. 'I should check the new messages and reply'); never write it as a notification addressed to you. This text is injected as your own context when the alarm fires. Always required as a fallback even when using send_message action.,required"`
 	Action                string `json:"action,omitempty" jsonschema:"description=How to handle the alarm when it fires. 'send_message': instantly send action_content without any LLM processing (fast path, best for simple reminders). 'full_pipeline': go through the full LLM pipeline (needed for complex actions). Default is 'full_pipeline' if omitted.,enum=send_message,enum=full_pipeline"`
 	ActionContent         string `json:"action_content,omitempty" jsonschema:"description=The exact message to send when the alarm fires. Only used when action is 'send_message'. This message is delivered instantly without any LLM processing, so write it as the final message that will be seen."`
@@ -214,7 +214,7 @@ type BioUpdate struct {
 //   - CancelAlarm: uses CancelAlarmPlan (pending alarm ID)
 type Action struct {
 	ID   int64      `json:"-"` // Persisted top-level Action ID, assigned after Decide succeeds.
-	Type ActionType `json:"type" jsonschema:"description=Integer enum: 0=chat, 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot, 12=manage_memo, 13=cancel_alarm,required"`
+	Type ActionType `json:"type" jsonschema:"description=Required integer enum: 1=start_focused_work, 2=route_focused_work, 3=cancel_focused_work, 4=create_alarm, 5=update_bio, 6=enter_private_space, 7=list_received_jinshu, 8=send_jinshu, 9=list_sent_jinshu, 10=inspect_owned_space, 11=wait_for_execution_slot, 12=manage_memo, 13=cancel_alarm, 14=chat. Zero is invalid.,required"`
 
 	// Background: situational awareness — what triggered this decision.
 	Background string `json:"background" jsonschema:"description=What situation triggered this decision. Provide enough context so your future self understands why you acted. Write in natural language.,required"`
@@ -222,7 +222,7 @@ type Action struct {
 	// Reason: deliberative choice — why this specific action over alternatives.
 	Reason string `json:"reason" jsonschema:"description=Why you chose this specific action rather than alternatives. What led to this choice.,required"`
 
-	ChatPlan                 *ChatPlan                 `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(0): the chat delivery plan"`
+	ChatPlan                 *ChatPlan                 `json:"chat_plan,omitempty" jsonschema:"description=When type is chat(14): the chat delivery plan"`
 	WorkPlan                 *WorkPlan                 `json:"work_plan,omitempty" jsonschema:"description=When type is start_focused_work(1): the focused work plan"`
 	WorkGuidance             *WorkGuidance             `json:"work_guidance,omitempty" jsonschema:"description=When type is route_focused_work(2) or cancel_focused_work(3): the directive to send to the target work"`
 	AlarmPlan                *AlarmPlan                `json:"alarm_plan,omitempty" jsonschema:"description=When type is create_alarm(4): the alarm plan"`

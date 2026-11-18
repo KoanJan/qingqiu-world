@@ -7,6 +7,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // ScanJinshuTool lists the jinshu (锦书) this agent has received, newest first.
@@ -105,7 +106,7 @@ func (s *ScanJinshuTool) Execute(args map[string]interface{}) (string, error) {
 			To:        personName(names, r.ToPersonID),
 			Topic:     r.Topic,
 			IsRead:    r.IsRead,
-			CreatedAt: r.CreatedAt.Format("2006-01-02 15:04:05"),
+			CreatedAt: world.FormatTime(r.CreatedAt),
 		})
 	}
 

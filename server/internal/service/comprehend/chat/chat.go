@@ -21,6 +21,7 @@ import (
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/kb"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const comprehensionLocalContextLimit = 5
@@ -212,7 +213,7 @@ func formatMessageRange(messages []model.Message, selfPersonID int64) string {
 	lines = append(lines, fmt.Sprintf("[Chat messages from session (session_id=%d)]", messages[0].SessionID))
 	for _, message := range messages {
 		name := messageSpeakerName(names, message.PersonID, selfPersonID)
-		lines = append(lines, fmt.Sprintf("- At %s — %s", message.CreatedAt.Format("2006-01-02 15:04:05"), memory.FormatChatSpeech(name, message.Content)))
+		lines = append(lines, fmt.Sprintf("- At %s — %s", world.FormatTime(message.CreatedAt), memory.FormatChatSpeech(name, message.Content)))
 	}
 	return strings.Join(lines, "\n")
 }

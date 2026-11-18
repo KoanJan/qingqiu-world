@@ -159,6 +159,9 @@ func searchCognitiveCandidates(ctx context.Context, personID int64, intent cogni
 	if items == nil {
 		items = []memory.CognitiveCandidate{}
 	}
+	for i := range items {
+		items[i] = presentCognitiveCandidate(items[i])
+	}
 	encoded, err := json.Marshal(cognitiveCandidateSet{Description: intent.Description, Candidates: items, HasMore: more, Coverage: coverage})
 	return string(encoded), err
 }

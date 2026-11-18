@@ -7,8 +7,7 @@ import "time"
 type ActionType int
 
 const (
-	ActionTypeChat ActionType = iota
-	ActionTypeStartFocusedWork
+	ActionTypeStartFocusedWork ActionType = iota + 1
 	ActionTypeRouteFocusedWork
 	ActionTypeCancelFocusedWork
 	ActionTypeCreateAlarm
@@ -22,6 +21,15 @@ const (
 	ActionTypeManageMemo
 	ActionTypeCancelAlarm
 )
+
+// Chat is assigned after the original 1–13 range so an omitted type (zero)
+// can never be interpreted as a real decision.
+const ActionTypeChat ActionType = 14
+
+// Valid reports whether a model or stored row names a supported Action.
+func (t ActionType) Valid() bool {
+	return (t >= ActionTypeStartFocusedWork && t <= ActionTypeCancelAlarm) || t == ActionTypeChat
+}
 
 // Label names an Action for historical presentation without changing its
 // persisted integer identity or claiming that execution succeeded.

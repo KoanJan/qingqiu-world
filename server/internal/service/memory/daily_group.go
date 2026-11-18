@@ -812,10 +812,10 @@ func formatDailyDecision(ctx context.Context, personID int64, text *strings.Buil
 	return nil
 }
 
-// dailyClock renders a moment from the remembered day without seconds. The
-// account is a recollection, not a timestamped log.
+// dailyClock renders a moment from the remembered day with the world offset.
+// The account is a recollection, not a timestamped log.
 func dailyClock(at time.Time) string {
-	return at.In(energy.Timezone()).Format("15:04")
+	return at.In(world.Timezone()).Format("15:04-07:00")
 }
 
 // dailyPlanIntention returns only the agent's own prose from a stored plan.
@@ -891,13 +891,13 @@ func describeDailyActionEffect(ctx context.Context, personID int64, effect model
 		if err := database.DB.WithContext(ctx).Where("id = ? AND person_id = ?", effect.EffectID, personID).Take(&scheduled).Error; err != nil {
 			return "", fmt.Errorf("daily action %d scheduled effect %d: %w", effect.ActionID, effect.ID, err)
 		}
-		return fmt.Sprintf("At %s, you set a reminder for %s.", at, scheduled.TriggerAt.In(energy.Timezone()).Format("2006-01-02 15:04")), nil
+		return fmt.Sprintf("At %s, you set a reminder for %s.", at, scheduled.TriggerAt.In(world.Timezone()).Format(time.RFC3339)), nil
 	case model.ActionEffectScheduledEventCancellation:
 		var scheduled model.ScheduledEvent
 		if err := database.DB.WithContext(ctx).Where("id = ? AND person_id = ?", effect.EffectID, personID).Take(&scheduled).Error; err != nil {
 			return "", fmt.Errorf("daily action %d cancelled alarm effect %d: %w", effect.ActionID, effect.ID, err)
 		}
-		return fmt.Sprintf("At %s, you cancelled the reminder set for %s.", at, scheduled.TriggerAt.In(energy.Timezone()).Format("2006-01-02 15:04")), nil
+		return fmt.Sprintf("At %s, you cancelled the reminder set for %s.", at, scheduled.TriggerAt.In(world.Timezone()).Format(time.RFC3339)), nil
 	case model.ActionEffectWork:
 		var work model.Work
 		if err := database.DB.WithContext(ctx).Where("id = ? AND person_id = ?", effect.EffectID, personID).Take(&work).Error; err != nil {

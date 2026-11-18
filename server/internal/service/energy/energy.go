@@ -1,8 +1,7 @@
 // Package energy implements the agent energy budget system.
 //
 // It provides:
-//   - Global fixed timezone management (persisted to <DATA_ROOT>/tz.txt,
-//     locked on first startup, unaffected by later OS timezone changes)
+//   - World-calendar calculations through the world time source
 //   - Daily energy recovery (lazy, multi-day catch-up, capped at MaxEnergy)
 //   - Energy deduction (called by the Decide phase after actions are produced)
 //
@@ -13,15 +12,11 @@ package energy
 import (
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
-	"strings"
-	"sync"
 	"time"
 
-	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 
@@ -56,108 +51,14 @@ const (
 // ErrInsufficientEnergy is returned when energy < cost.
 var ErrInsufficientEnergy = errors.New("insufficient energy")
 
-// ---------------------------------------------------------------------------
-// Global fixed timezone
-// ---------------------------------------------------------------------------
+// Timezone returns the world's persisted timezone.
+func Timezone() *time.Location { return world.Timezone() }
 
-var (
-	globalTz *time.Location
-	tzOnce   sync.Once
-)
+// Now returns the current world time.
+func Now() time.Time { return world.Now() }
 
-// Init loads the global fixed timezone from <dataRoot>/tz.txt.
-//
-// If the file does not exist, detects the local IANA timezone name and writes
-// it to the file (lock-on-first-start). Subsequent calls reuse the file
-// content regardless of OS timezone changes.
-//
-// Must be called once at application startup, before any energy operation.
-// Failures are logged and fall back to UTC; they do not block startup.
-func Init() error {
-	var initErr error
-	tzOnce.Do(func() {
-		tzFile := filepath.Join(config.Get().DataRoot, "tz.txt")
-
-		// Try reading the existing file first.
-		if data, err := os.ReadFile(tzFile); err == nil {
-			tzName := strings.TrimSpace(string(data))
-			loc, lerr := time.LoadLocation(tzName)
-			if lerr != nil {
-				applogger.Error("energy.Init: failed to load timezone from file, fallback to UTC",
-					"tz", tzName, "error", lerr)
-				globalTz = time.UTC
-			} else {
-				globalTz = loc
-			}
-			applogger.Info("energy.Init: loaded timezone from file", "tz", globalTz.String())
-			return
-		} else if !os.IsNotExist(err) {
-			// Unexpected read error (permission, IO). Fall back to UTC but
-			// surface the error so the caller can log it.
-			initErr = fmt.Errorf("read tz.txt: %w", err)
-			globalTz = time.UTC
-			return
-		}
-
-		// File does not exist: detect local timezone and persist it.
-		tzName := detectLocalTimezone()
-		loc, lerr := time.LoadLocation(tzName)
-		if lerr != nil {
-			applogger.Error("energy.Init: failed to load detected timezone, fallback to UTC",
-				"tz", tzName, "error", lerr)
-			globalTz = time.UTC
-		} else {
-			globalTz = loc
-		}
-
-		// Best-effort write. A write failure is logged but non-fatal: the
-		// in-memory timezone is still set, and the next startup will retry.
-		if werr := os.WriteFile(tzFile, []byte(tzName), 0644); werr != nil {
-			applogger.Error("energy.Init: failed to write tz.txt",
-				"path", tzFile, "error", werr)
-		}
-		applogger.Info("energy.Init: detected and saved timezone", "tz", tzName)
-	})
-	return initErr
-}
-
-// Timezone returns the global fixed timezone.
-// Falls back to UTC if Init has not been called or failed.
-func Timezone() *time.Location {
-	if globalTz == nil {
-		return time.UTC
-	}
-	return globalTz
-}
-
-// Now returns the current physical time in the global fixed timezone.
-func Now() time.Time {
-	return time.Now().In(Timezone())
-}
-
-// Today returns today's date string "YYYY-MM-DD" in the global fixed timezone.
-func Today() string {
-	return Now().Format("2006-01-02")
-}
-
-// detectLocalTimezone attempts to determine the local IANA timezone name.
-//
-// Strategy (in order):
-//  1. TZ environment variable
-//  2. Parse the /etc/localtime symlink target (macOS/Linux)
-//  3. Fallback to "UTC"
-func detectLocalTimezone() string {
-	if tz := os.Getenv("TZ"); tz != "" {
-		return tz
-	}
-	if link, err := os.Readlink("/etc/localtime"); err == nil {
-		const marker = "zoneinfo/"
-		if idx := strings.Index(link, marker); idx >= 0 {
-			return link[idx+len(marker):]
-		}
-	}
-	return "UTC"
-}
+// Today returns the current world date.
+func Today() string { return world.Today() }
 
 // ---------------------------------------------------------------------------
 // Energy recovery

@@ -13,7 +13,7 @@ import (
 // from creating a message that omits the LLM-authored speech instruction.
 func TestSendMessageAlarmRequiresExpressionInstruction(t *testing.T) {
 	decision := action.Action{AlarmPlan: &action.AlarmPlan{
-		TriggerAt:     "2030-01-01 12:00:00",
+		TriggerAt:     "2030-01-01T12:00:00+08:00",
 		Message:       "I should send the prepared reminder.",
 		Action:        "send_message",
 		ActionContent: "The prepared reminder.",
@@ -24,6 +24,19 @@ func TestSendMessageAlarmRequiresExpressionInstruction(t *testing.T) {
 	decision.AlarmPlan.ExpressionInstruction = "Speak warmly and clearly."
 	if !isValidCreateAlarmAction(decision) {
 		t.Fatal("send_message alarm with expression_instruction was rejected")
+	}
+}
+
+func TestCreateAlarmRequiresExplicitTimezone(t *testing.T) {
+	decision := action.Action{AlarmPlan: &action.AlarmPlan{
+		TriggerAt: "2030-01-01T12:00:00", Message: "Remember the meeting.",
+	}}
+	if isValidCreateAlarmAction(decision) {
+		t.Fatal("alarm without timezone was accepted")
+	}
+	decision.AlarmPlan.TriggerAt = "2030-01-01T12:00:00Z"
+	if !isValidCreateAlarmAction(decision) {
+		t.Fatal("alarm with explicit UTC timezone was rejected")
 	}
 }
 

@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/world"
 
 	"gorm.io/gorm"
 )
@@ -288,7 +289,7 @@ func RecallEntityProfile(personID int64, entityType model.EntityType, entityID i
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("Your current impression of %s, last updated %s: %s", subject, profile.LastUpdatedAt.Format(time.RFC3339), profile.Narrative), nil
+	return fmt.Sprintf("Your current impression of %s, last updated %s: %s", subject, world.FormatTime(profile.LastUpdatedAt), profile.Narrative), nil
 }
 
 // canReadSession checks current session membership before returning a

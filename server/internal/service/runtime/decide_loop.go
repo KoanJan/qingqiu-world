@@ -17,6 +17,7 @@ import (
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const recallPromptInstruction = `Use tools to gather missing facts, then call "decide" to submit your decision. An empty actions list is valid.
@@ -105,11 +106,15 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 		call := response.ToolCalls[0]
 		if call.Function.Name == "decide" {
 			var result DecisionResult
-			if err := json.Unmarshal([]byte(call.Function.Arguments), &result); err != nil {
-				applogger.Error("DecideLoop invalid decide arguments", "person_id", personID, "event_id", eventID, "error", err)
-				return DecisionResult{}, false
+			parseErr := json.Unmarshal([]byte(call.Function.Arguments), &result)
+			problem := ""
+			if parseErr != nil {
+				problem = "decide arguments must be valid JSON with integer action types: " + parseErr.Error()
 			}
-			problem, err := validateDecision(personID, result)
+			var err error
+			if problem == "" {
+				problem, err = validateDecision(personID, result)
+			}
 			if err != nil {
 				applogger.Error("DecideLoop could not validate decision", "person_id", personID, "event_id", eventID, "error", err)
 				return DecisionResult{}, false
@@ -179,13 +184,17 @@ func runDecideLoop(ctx context.Context, client *llm.ChatModel, personID, eventID
 }
 
 // validateDecision checks model-correctable problems while the proposed
-// decision still has its recall context. It currently covers Chat delivery;
+// decision still has its recall context. It covers Action type and Chat delivery;
 // execution-specific Action checks remain in filterValidActions. Database
 // failures abort Decide rather than asking the model to correct an unknown
 // condition.
 func validateDecision(personID int64, decision DecisionResult) (string, error) {
 	var problems []string
 	for i, act := range decision.Actions {
+		if !act.Type.Valid() {
+			problems = append(problems, fmt.Sprintf("action %d: type must be an explicit supported integer (1–14); got %d", i+1, act.Type))
+			continue
+		}
 		if act.Type == action.Chat {
 			if problem := chatPlanProblem(act.ChatPlan); problem != "" {
 				problems = append(problems, fmt.Sprintf("action %d: %s", i+1, problem))
@@ -386,7 +395,7 @@ type decideRecallPage struct {
 func presentRecallPage(page memory.RecallPage) (decideRecallPage, error) {
 	result := decideRecallPage{Items: make([]decideRecallItem, 0, len(page.Items)), HasMore: page.HasMore, NextCursor: page.NextCursor, Coverage: page.Coverage}
 	for _, source := range page.Items {
-		item := decideRecallItem{OccurredAt: source.OccurredAt, Text: source.Text}
+		item := decideRecallItem{OccurredAt: source.OccurredAt.In(world.Timezone()), Text: source.Text}
 		switch source.SourceKind {
 		case model.MemorySourceEvent:
 			item.EventID = source.SourceID
@@ -488,7 +497,7 @@ type decideWorkspaceView struct {
 
 // presentWorkspace omits the owner ID already implicit in an agent's recall.
 func presentWorkspace(record model.Workspace) decideWorkspaceView {
-	return decideWorkspaceView{WorkspaceID: record.ID, Name: record.Name, Purpose: record.Purpose, Path: record.RelativePath, CreatedAt: record.CreatedAt}
+	return decideWorkspaceView{WorkspaceID: record.ID, Name: record.Name, Purpose: record.Purpose, Path: record.RelativePath, CreatedAt: record.CreatedAt.In(world.Timezone())}
 }
 
 func executeWorkspaceRecall(personID int64, args recallArguments) (string, error) {
@@ -563,7 +572,7 @@ func executeWorkspaceRecall(personID int64, args recallArguments) (string, error
 	}
 	activities := make([]activity, 0, len(uses))
 	for _, use := range uses {
-		item := activity{At: use.CreatedAt}
+		item := activity{At: use.CreatedAt.In(world.Timezone())}
 		role := "as an additional workspace"
 		switch use.Role {
 		case model.WorkspaceUseDefault:

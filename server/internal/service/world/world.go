@@ -8,9 +8,9 @@
 //
 // The runtime rules themselves (Energy recovery/deduction, sleep on
 // exhaustion, event buffering and replay) are implemented elsewhere — by
-// the energy, runtime, and eventqueue packages. What this package owns is
-// only the descriptive text: stable strings that Decide and Chat use so the
-// LLM understands the world it acts in.
+// the energy, runtime, and eventqueue packages. This package owns the world
+// clock and the stable descriptions that Decide and Chat use so the LLM
+// understands the world it acts in.
 //
 // The description intentionally does NOT contain any dynamic state — no
 // current Energy, no current time, no list of sessions. Those are appended

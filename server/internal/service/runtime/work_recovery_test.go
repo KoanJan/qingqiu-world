@@ -17,7 +17,6 @@ import (
 func TestWorkRecoveryDistinguishesInterruptionAndRepairsDelivery(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
 	config.Init()
 	previous := database.DB
 	db, err := gorm.Open(sqlite.Open(filepath.Join(root, "recovery.db")), &gorm.Config{})

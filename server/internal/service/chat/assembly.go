@@ -232,7 +232,7 @@ func assembleContext(
 		if msg.PersonID == selfPersonID {
 			role = "You"
 		}
-		dialogLines = append(dialogLines, fmt.Sprintf("%s [%s]: %s", role, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))
+		dialogLines = append(dialogLines, fmt.Sprintf("%s [%s]: %s", role, world.FormatTime(msg.CreatedAt), msg.Content))
 	}
 	dialogSection := strings.Join(dialogLines, "\n")
 

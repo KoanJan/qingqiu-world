@@ -43,6 +43,19 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	writeSecondSource := func() {
+		t.Helper()
+		for name, content := range map[string]string{"2.sql": "development step 2", "2.go": "package scripts"} {
+			source := "server/internal/migration/dev/unreleased/scripts/" + name
+			path := filepath.Join(repoPath, source)
+			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := worktree.Add(source); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 	commit := func(message string) plumbing.Hash {
 		t.Helper()
 		hash, err := worktree.Commit(message, &git.CommitOptions{Author: &object.Signature{
@@ -64,7 +77,9 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSource("development step A")
-	firstHash := commit("dev.1 A")
+	commit("dev.1 A")
+	writeSecondSource()
+	firstHash := commit("dev.2 A")
 
 	active := filepath.Join(root, "data")
 	t.Setenv("DATA_ROOT", active)
@@ -98,7 +113,7 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 		t.Fatalf("reading active data changed baseline: %v", err)
 	}
 	state, err := loadState(active)
-	if err != nil || state.DevRevision != 1 || state.DevCommit != firstHash.String() {
+	if err != nil || state.DevRevision != 2 || state.DevCommit != firstHash.String() {
 		t.Fatalf("active development state = %+v, error = %v", state, err)
 	}
 	managed := &manager{active: active, store: active + ".developer-data"}
@@ -197,7 +212,9 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 		t.Fatal(err)
 	}
 	writeSource("development step B, same revision")
-	secondHash := commit("dev.1 B")
+	commit("dev.1 B")
+	writeSecondSource()
+	secondHash := commit("dev.2 B")
 	unlock, err = Start(secondHash.String())
 	if err != nil {
 		t.Fatalf("rebuild after rebase: %v", err)

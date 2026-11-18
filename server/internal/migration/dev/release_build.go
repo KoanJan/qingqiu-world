@@ -171,7 +171,7 @@ func (m *manager) releaseEnvironment(data string) []string {
 		}
 		abs, err := absoluteRoot(path)
 		if err != nil || !inside(m.active, abs) {
-			continue // newManager has already rejected unsafe external roots.
+			continue
 		}
 		rel, _ := filepath.Rel(m.active, abs)
 		env[key] = filepath.Join(data, rel)

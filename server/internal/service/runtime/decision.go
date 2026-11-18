@@ -71,7 +71,7 @@ Every action MUST include "background" and "reason" at the action level:
 IMPORTANT: Everything you state in background, reason, and guidance must be grounded in facts from what you have observed. Saying something without factual basis is lying. If you don't know why something happened, say you don't know. Do not fabricate reasons to fill narrative gaps, unless you are doing so deliberately with a clear purpose.
 
 Action types (use the integer value for the "type" field):
-Type 0 (chat) — Send a chat message to a Person.
+Type 14 (chat) — Send a chat message to a Person.
    - MUST include a "chat_plan" object with "guidance" and "session_id".
    - guidance: Your internal intention — why you want to speak and what you want to accomplish, written in first-person. Keep it brief; the actual message will be generated separately.
    - session_id: The target session ID. Always provide a real session ID:
@@ -95,7 +95,7 @@ Type 3 (cancel_focused_work) — Stop an existing active work. Use when the even
 
 Type 4 (create_alarm) — Set an alarm that will wake you at a future time. Setting an alarm is a world action, not a workspace operation.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
-   - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
+   - trigger_at: Absolute future time in RFC3339 format with an explicit timezone offset (for example, 2026-06-09T23:10:00+08:00). Compute it from the current time shown below.
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content without LLM processing) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
@@ -157,10 +157,10 @@ If no action is needed, return an empty actions list.
 
 Decision rules (apply in order):
 1. First check Active works. If the event changes the goal, method, scope, or constraints of an active work, route it (type=2). If it explicitly asks to stop an active work, request cancellation (type=3). Do not create a competing FocusedWork for the same continuing work.
-2. If the current event and supplied context already support a complete, honest response or a simple social action, use chat (type=0), or remain silent when no response is needed. Do not start a FocusedWork just to make the outer loop look busy.
+2. If the current event and supplied context already support a complete, honest response or a simple social action, use chat (type=14), or remain silent when no response is needed. Do not start a FocusedWork just to make the outer loop look busy.
 3. If a bounded, single-level AOS listing can establish whether a resource exists or where it is, use inspect_owned_space (type=10). Its result is an observation. If the exact path or contents still need deeper inspection, start Focus in the relevant Workspace.
-4. Start a FocusedWork (type=1) when the work needs an iterative, causally connected sequence of observations/actions and deliberate completion or recovery, or when KB content must be retrieved. Other tool use, file access, and real-time data are signals to assess, not automatic reasons by themselves. If a direct acknowledgement is also expected, create chat (type=0) and a FocusedWork in parallel.
-5. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=0) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
+4. Start a FocusedWork (type=1) when the work needs an iterative, causally connected sequence of observations/actions and deliberate completion or recovery, or when KB content must be retrieved. Other tool use, file access, and real-time data are signals to assess, not automatic reasons by themselves. If a direct acknowledgement is also expected, create chat (type=14) and a FocusedWork in parallel.
+5. If the event asks you to communicate with, ask, or inform another Person (e.g., "go ask B", "tell B what I said"), create a chat (type=14) with session_id set to the target session or -1 with recipient_person_id. You may also create a second chat with the current session's ID to acknowledge the request.
 6. Watch for "ping-pong" loops in the recent history. A ping-pong happens when messages echo the same sentiment back and forth with different wording, cycling without advancing. If your reply would become the next link in such a chain, stop. Silence breaks the loop.
 7. When in doubt, consider silence before action — not every message requires a reply.
 
@@ -201,7 +201,7 @@ Write background, guidance, reason, and plan in the same language as the event c
 // sessions, persons and resources; recall guidance; current time and energy.
 //
 // The Action surface is intentionally narrower than the event-triggered path:
-//   - action.Chat (type=0): compose and send a chat message.
+//   - action.Chat (type=14): compose and send a chat message.
 //   - action.CreateAlarm (type=4): set a future alarm.
 //   - action.CancelAlarm (type=13): cancel one pending alarm.
 //   - action.UpdateBio (type=5): update your self-introduction bio.
@@ -244,7 +244,7 @@ IMPORTANT: Everything you state in background, reason, and guidance must be grou
 
 If you decide to act, you have these kinds of action available:
 
-Type 0 (chat) — Chat: compose and send a message to another Person.
+Type 14 (chat) — Chat: compose and send a message to another Person.
    - MUST include a "chat_plan" object with "guidance".
    - guidance: Your internal intention, written in first-person as your own thought.
    - session_id controls where the message goes:
@@ -254,7 +254,7 @@ Type 0 (chat) — Chat: compose and send a message to another Person.
 
 Type 4 (create_alarm) — Set an alarm that will wake you at a future time.
    - MUST include an "alarm_plan" object with "trigger_at" and "message".
-   - trigger_at: Absolute time in 'YYYY-MM-DD HH:MM:SS' format (server local time). Must be in the future. Compute it from the current time shown below.
+   - trigger_at: Absolute future time in RFC3339 format with an explicit timezone offset (for example, 2026-06-09T23:10:00+08:00). Compute it from the current time shown below.
    - message: instruction for your future self — what you should DO when the alarm fires. Write in first person as your own note to yourself (e.g., "I should check the new messages and reply"); never write it as a notification addressed to you. When the alarm fires this text is injected as your own context.
    - action: "send_message" (fast path — instantly send action_content) or "full_pipeline" (default — full LLM processing).
    - action_content: Required when action is "send_message" — the exact message to send.
@@ -478,7 +478,7 @@ func buildEnergyDynamicSuffix(source SituationSource, currentEnergy int) string 
 	}
 
 	return fmt.Sprintf("Current time: %s\nRemaining energy: %d.%s %s",
-		energy.Now().Format("2006-01-02 15:04:05 MST"),
+		world.Now().Format(time.RFC3339),
 		currentEnergy,
 		urgency,
 		costHint,
@@ -913,6 +913,10 @@ func isValidCreateAlarmAction(dec action.Action) bool {
 		applogger.Error("Decision create_alarm: missing trigger_at, skipping")
 		return false
 	}
+	if _, err := time.Parse(time.RFC3339, dec.AlarmPlan.TriggerAt); err != nil {
+		applogger.Error("Decision create_alarm: trigger_at must be RFC3339 with an offset", "error", err)
+		return false
+	}
 	if dec.AlarmPlan.Message == "" {
 		applogger.Error("Decision create_alarm: missing message, skipping")
 		return false
@@ -1306,7 +1310,7 @@ func buildChatComprehensionContext(chatComprehension *comprehendTypes.ChatCompre
 		if message.PersonID == selfPersonID {
 			speaker = "You"
 		}
-		recentLines = append(recentLines, fmt.Sprintf("- At %s — %s", message.CreatedAt.Format("2006-01-02 15:04:05"), memory.FormatChatSpeech(speaker, message.Content)))
+		recentLines = append(recentLines, fmt.Sprintf("- At %s — %s", world.FormatTime(message.CreatedAt), memory.FormatChatSpeech(speaker, message.Content)))
 		if message.OwnAction != nil {
 			// The source action explains this past utterance; its plan does not
 			// become a new instruction for the current decision.

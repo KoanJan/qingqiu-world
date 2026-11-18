@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -84,7 +85,7 @@ func formatHistoryForPreprocessing(history []types.ConversationMessage, maxMessa
 
 	var formatted []string
 	for _, msg := range recent {
-		formatted = append(formatted, fmt.Sprintf("%s [%s]: %s", msg.PersonName, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))
+		formatted = append(formatted, fmt.Sprintf("%s [%s]: %s", msg.PersonName, world.FormatTime(msg.CreatedAt), msg.Content))
 	}
 	return strings.Join(formatted, "\n")
 }

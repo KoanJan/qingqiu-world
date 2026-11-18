@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	privspacetools "qingqiu-world-server/internal/service/privatespace/tools"
 
@@ -327,7 +328,7 @@ func (l *Loop) buildInitialMessages() {
 	systemPrompt := privateSpaceSystemPrompt + "\n\n" +
 		fmt.Sprintf("Your private-space root: %s\n", l.rootDir) +
 		fmt.Sprintf("Your working directory (where you should operate): %s\n", l.workDir) +
-		"Current time: " + time.Now().Format("2006-01-02 15:04:05") + "\n"
+		"Current time: " + world.Now().Format(time.RFC3339) + "\n"
 	if l.focusContext != "" {
 		systemPrompt += "\n[Related Focus Context]\n" + l.focusContext + "\n"
 	}

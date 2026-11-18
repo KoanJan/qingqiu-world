@@ -11,6 +11,7 @@ import (
 	"time"
 
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // NoteType represents the category of a note entry.
@@ -80,8 +81,8 @@ type NoteEntry struct {
 	ConflictsWith string   `json:"conflicts_with,omitempty"`
 }
 
-// DisplayTimestamp parses the RFC3339 timestamp and formats it as
-// "2006-01-02 15:04:05" for human-readable display. If parsing fails,
+// DisplayTimestamp parses the RFC3339 timestamp and displays it in the world
+// timezone with its UTC offset. If parsing fails,
 // the raw Timestamp string is returned and the error is logged —
 // per the no-silent-handling rule, malformed timestamps are anomalies
 // that must be visible, not silently swallowed.
@@ -94,14 +95,14 @@ func (e NoteEntry) DisplayTimestamp() string {
 		)
 		return e.Timestamp
 	}
-	return t.Format("2006-01-02 15:04:05")
+	return world.FormatTime(t)
 }
 
 // AppendNote writes one entry to the selected Workspace's notes.jsonl.
 // The file is created if it does not exist.
 func AppendNote(metaDir string, entry NoteEntry) error {
 	if entry.Timestamp == "" {
-		entry.Timestamp = time.Now().Format(time.RFC3339)
+		entry.Timestamp = world.Now().Format(time.RFC3339)
 	}
 	data, err := json.Marshal(entry)
 	if err != nil {

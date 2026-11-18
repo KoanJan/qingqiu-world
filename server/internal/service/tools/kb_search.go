@@ -13,6 +13,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/kb"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const (
@@ -750,7 +751,7 @@ func (t *ListKBDocumentsTool) Execute(args map[string]interface{}) (string, erro
 			FileSize:         d.FileSize,
 			ChunkCount:       d.ChunkCount,
 			Status:           documentStatusName(d.Status),
-			CreatedAt:        d.CreatedAt,
+			CreatedAt:        d.CreatedAt.In(world.Timezone()),
 		})
 	}
 

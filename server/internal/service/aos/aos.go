@@ -15,10 +15,10 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
-	"time"
 
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -335,7 +335,7 @@ func InspectOwnedSpace(personID int64, scope, query string, limit int) ([]Inspec
 		if err != nil {
 			return nil, fmt.Errorf("resolve inspection entry %s: %w", entry.Name(), err)
 		}
-		result = append(result, InspectionEntry{Path: filepath.ToSlash(rel), Type: kind, Size: info.Size(), Modified: info.ModTime().Format(time.RFC3339)})
+		result = append(result, InspectionEntry{Path: filepath.ToSlash(rel), Type: kind, Size: info.Size(), Modified: world.FormatTime(info.ModTime())})
 		if len(result) == limit {
 			break
 		}

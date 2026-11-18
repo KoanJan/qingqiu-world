@@ -25,9 +25,9 @@ import (
 func TestWorkChoosesWorkspaceWithoutSessionAndReusesItAcrossSessions(t *testing.T) {
 	root := t.TempDir()
 	settings := config.Get()
-	oldAOS, oldMeta := settings.AOSRoot, settings.AOSMetaRoot
-	settings.AOSRoot, settings.AOSMetaRoot = filepath.Join(root, "aos"), filepath.Join(root, "meta")
-	t.Cleanup(func() { settings.AOSRoot, settings.AOSMetaRoot = oldAOS, oldMeta })
+	oldDataRoot := settings.DataRoot
+	settings.DataRoot = root
+	t.Cleanup(func() { settings.DataRoot = oldDataRoot })
 	previous := database.DB
 	db, err := gorm.Open(sqlite.Open(filepath.Join(root, "runtime.db")), &gorm.Config{})
 	if err != nil {

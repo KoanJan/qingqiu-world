@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/glebarez/sqlite"
 	"gorm.io/gorm"
@@ -13,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/action"
 	"qingqiu-world-server/internal/service/memo"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // TestMemoActionCausality checks the real persistence boundary: each changed
@@ -51,8 +53,8 @@ func TestMemoActionCausality(t *testing.T) {
 	}
 	ownerList, err := executeMemoRecall(person.ID, `{}`)
 	if err != nil || !strings.Contains(ownerList, fmt.Sprintf(`"memo_id":%d`, record.ID)) ||
-		!strings.Contains(ownerList, `"created_at":"`+record.CreatedAt.Format("2006-01-02T15:04:05")) ||
-		!strings.Contains(ownerList, `"updated_at":"`+record.UpdatedAt.Format("2006-01-02T15:04:05")) {
+		!strings.Contains(ownerList, `"created_at":"`+record.CreatedAt.In(world.Timezone()).Format(time.RFC3339Nano)) ||
+		!strings.Contains(ownerList, `"updated_at":"`+record.UpdatedAt.In(world.Timezone()).Format(time.RFC3339Nano)) {
 		t.Fatalf("owner cannot browse memo: %s %v", ownerList, err)
 	}
 	foreignList, err := executeMemoRecall(other.ID, `{}`)

@@ -34,8 +34,8 @@ func TestDailyChatMessagesPreserveSpeaker(t *testing.T) {
 		content  string
 		want     string
 	}{
-		{12, "我写好了", `Chat message from session (session_id=24) — 当当 (self) [2026-10-20 12:00:00] said: "我写好了"`},
-		{1, "我看到了", `Chat message from session (session_id=24) — Patrick [2026-10-20 12:00:00] said: "我看到了"`},
+		{12, "我写好了", fmt.Sprintf(`Chat message from session (session_id=24) — 当当 (self) [%s] said: "我写好了"`, at.Format(time.RFC3339))},
+		{1, "我看到了", fmt.Sprintf(`Chat message from session (session_id=24) — Patrick [%s] said: "我看到了"`, at.Format(time.RFC3339))},
 	} {
 		message := model.Message{SessionID: 24, PersonID: tc.personID, Content: tc.content, CreatedAt: at}
 		if err := db.Create(&message).Error; err != nil {

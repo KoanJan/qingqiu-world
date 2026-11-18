@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"os"
 	"strings"
-	"time"
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
@@ -16,6 +15,7 @@ import (
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memo"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // Situation is a runtime-only DTO that serves as the unified input to
@@ -201,7 +201,7 @@ func populateGeneralSituation(personID int64, situation *Situation) {
 		for _, record := range pinned {
 			lines = append(lines, fmt.Sprintf("- %q (memo_id=%d, revision=%d, created_at=%s, updated_at=%s)",
 				shortContextText(record.Content, 180), record.ID, record.Revision,
-				record.CreatedAt.Format(time.RFC3339), record.UpdatedAt.Format(time.RFC3339)))
+				world.FormatTime(record.CreatedAt), world.FormatTime(record.UpdatedAt)))
 		}
 		situation.Subject.PinnedMemosSummary = strings.Join(lines, "\n")
 	}
@@ -340,7 +340,7 @@ func buildSessionsRoster(personID int64) string {
 		if len(peers) == 0 {
 			peers = append(peers, "no other participants")
 		}
-		lines = append(lines, fmt.Sprintf("- Conversation (session_id=%d) with %s; last recorded activity: %s", row.SessionID, strings.Join(peers, ", "), row.LastActiveAt.Format("2006-01-02 15:04")))
+		lines = append(lines, fmt.Sprintf("- Conversation (session_id=%d) with %s; last recorded activity: %s", row.SessionID, strings.Join(peers, ", "), world.FormatTime(row.LastActiveAt)))
 	}
 	if count > int64(len(rows)) {
 		lines = append(lines, fmt.Sprintf("- %d further sessions not shown", count-int64(len(rows))))

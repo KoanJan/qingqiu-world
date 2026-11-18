@@ -209,7 +209,7 @@ Persisted in the `agent_states` table, keyed by `person_id`:
 
 ### Global fixed timezone
 
-Energy recovery is date-based. The timezone is a global singleton locked on first application startup via `energy.Init()` which reads `<DATA_ROOT>/tz.txt`.
+Energy recovery is date-based. `world.InitTime()` reads the persisted timezone from `<DATA_ROOT>/tz.txt` before runtime startup; `world.Now()`, `world.Today()`, and `world.Timezone()` provide the shared world clock.
 
 ### Recovery (`RecoverEnergy`)
 
@@ -464,7 +464,7 @@ flowchart TD
 
 ## Startup & Recovery
 
-1. **`energy.Init()`**: load/lock the global timezone from `<DATA_ROOT>/tz.txt`.
+1. **`world.InitTime()`**: load the world timezone from `<DATA_ROOT>/tz.txt`.
 2. **Reset participant sessions**: all AI `participant_sessions` with `status=working` reset to `idle`.
 3. **Recover active works**: `recoverActiveWorks` marks running works as `Abandoned`, resets participant status.
 4. **Start agent runtimes**: one `agentRuntime` per `agent_config`. Each runtime calls `energy.RecoverEnergy(personID)` at construction.
