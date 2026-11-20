@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
@@ -330,7 +331,7 @@ func loadOwnMessageActions(messages []model.Message, selfPersonID int64) map[int
 func buildSessionInfo(sessionID int64, ac *model.AgentConfig) *types.SessionInfo {
 	info := &types.SessionInfo{
 		SessionID:  sessionID,
-		WindowSize: 50, // Default window size
+		WindowSize: config.Get().SummaryWindowSize,
 	}
 
 	// Resolve the conversation partner — the other participant in this
