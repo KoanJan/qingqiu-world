@@ -211,7 +211,7 @@ func TestDecideLoopCorrectsChatPlanInRecallContext(t *testing.T) {
 			if len(input.Messages) != 3 || !strings.Contains(input.Messages[2].Content, "Contact context from recall") {
 				t.Errorf("workspace recall missing before the first decision: %+v", input.Messages)
 			}
-			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":0,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":8}}]}`
+			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":14,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":8}}]}`
 		case 3:
 			if len(input.Messages) != 5 || !strings.Contains(input.Messages[2].Content, "Contact context from recall") || input.Messages[4].Role != "tool" || !strings.Contains(input.Messages[4].Content, "chat_plan.session_id=8 is not a conversation you participate in") {
 				t.Errorf("correction lost recall context or validation feedback: %+v", input.Messages)
@@ -219,7 +219,7 @@ func TestDecideLoopCorrectsChatPlanInRecallContext(t *testing.T) {
 			if len(input.Tools) != 1 || input.Tools[0].Function.Name != "decide" {
 				t.Errorf("correction request must expose only decide: %+v", input.Tools)
 			}
-			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":0,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":7}}]}`
+			name, arguments = "decide", `{"thoughts":"I should reply","actions":[{"type":14,"background":"contact","reason":"reply","chat_plan":{"guidance":"reply","session_id":7}}]}`
 		default:
 			if requests > 3 {
 				t.Errorf("unexpected request %d", requests)
@@ -265,8 +265,12 @@ func TestDecideLoopRejectsInvalidToolResponses(t *testing.T) {
 			if result, accepted := runDecideLoop(context.Background(), client, 1, 1, "Current situation"); accepted || len(result.Actions) != 0 {
 				t.Fatalf("invalid response was accepted: %+v", result)
 			}
-			if requests != 1 {
-				t.Fatalf("invalid response caused %d requests", requests)
+			wantRequests := 1
+			if spec.name == "invalid decide" {
+				wantRequests = 2 // One correction attempt is allowed for malformed arguments.
+			}
+			if requests != wantRequests {
+				t.Fatalf("invalid response caused %d requests, want %d", requests, wantRequests)
 			}
 		})
 	}

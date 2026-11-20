@@ -7,6 +7,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -220,7 +221,7 @@ func (s *SearchChatHistoriesTool) filterMessages(messages []model.Message, nameM
 			SessionID:  m.SessionID,
 			SenderName: senderName,
 			Content:    m.Content,
-			CreatedAt:  m.CreatedAt.Format("2006-01-02 15:04:05"),
+			CreatedAt:  world.FormatTime(m.CreatedAt),
 		})
 	}
 

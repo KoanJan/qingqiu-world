@@ -86,29 +86,6 @@ func newManager() (*manager, error) {
 	} else if err != nil && !os.IsNotExist(err) {
 		return nil, err
 	}
-	for _, candidate := range []struct{ name, path string }{
-		{"AOS_ROOT", settings.GetAOSRoot()},
-		{"AOS_META_ROOT", settings.GetAOSMetaRoot()},
-		{"JINSHU_ROOT", settings.GetJinshuRoot()},
-		{"WORKSPACE_ROOT", os.Getenv("WORKSPACE_ROOT")},
-		{"PRIVATE_SPACE_ROOT", os.Getenv("PRIVATE_SPACE_ROOT")},
-	} {
-		if candidate.path == "" {
-			continue
-		}
-		path, err := absoluteRoot(candidate.path)
-		if err != nil {
-			return nil, fmt.Errorf("resolve %s: %w", candidate.name, err)
-		}
-		if !inside(active, path) {
-			return nil, fmt.Errorf("%s is outside DATA_ROOT; automatic backup requires the complete data set", candidate.name)
-		}
-		if resolved, err := filepath.EvalSymlinks(path); err == nil && !inside(active, resolved) {
-			return nil, fmt.Errorf("%s resolves outside DATA_ROOT", candidate.name)
-		} else if err != nil && !os.IsNotExist(err) {
-			return nil, err
-		}
-	}
 	return m, nil
 }
 

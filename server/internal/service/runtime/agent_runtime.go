@@ -23,6 +23,7 @@ import (
 	"qingqiu-world-server/internal/service/focusedwork"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/privatespace"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -717,7 +718,7 @@ func (r *agentRuntime) handleListReceivedJinshu(act action.Action) {
 			FromName:  fromName,
 			Topic:     rec.Topic,
 			IsRead:    rec.IsRead,
-			CreatedAt: rec.CreatedAt.Format("2006-01-02 15:04"),
+			CreatedAt: world.FormatTime(rec.CreatedAt),
 		})
 	}
 
@@ -786,7 +787,7 @@ func (r *agentRuntime) handleListSentJinshu(act action.Action) {
 			JinshuID:  rec.ID,
 			ToName:    toName,
 			Topic:     rec.Topic,
-			CreatedAt: rec.CreatedAt.Format("2006-01-02 15:04"),
+			CreatedAt: world.FormatTime(rec.CreatedAt),
 		})
 	}
 
@@ -1267,9 +1268,6 @@ func buildMetadata(event *eventqueue.AgentEvent) *focusedwork.Metadata {
 	return nil
 }
 
-// alarmTriggerAtFormat is the only accepted time format for AlarmPlan.TriggerAt.
-const alarmTriggerAtFormat = "2006-01-02 15:04:05"
-
 // handleCreateAlarmAction executes a action.CreateAlarm action.
 func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Situation) {
 	plan := act.AlarmPlan
@@ -1278,7 +1276,7 @@ func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Sit
 	if situation.Matter.Event != nil {
 		sessionID = situation.Matter.Event.SessionID
 	}
-	triggerAt, err := time.ParseInLocation(alarmTriggerAtFormat, plan.TriggerAt, time.Local)
+	triggerAt, err := time.Parse(time.RFC3339, plan.TriggerAt)
 	if err != nil {
 		applogger.Error("action.CreateAlarm: invalid trigger_at format, skipping",
 			"agent_config_id", r.agentConfigID,
@@ -1287,7 +1285,7 @@ func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Sit
 		)
 		return
 	}
-	if triggerAt.Before(time.Now()) {
+	if triggerAt.Before(world.Now()) {
 		applogger.Error("action.CreateAlarm: trigger_at is in the past, skipping",
 			"agent_config_id", r.agentConfigID,
 			"trigger_at", plan.TriggerAt,
@@ -1327,7 +1325,7 @@ func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Sit
 	record := model.ScheduledEvent{
 		PersonID:              r.agentPersonID,
 		SessionID:             sessionID,
-		TriggerAt:             triggerAt,
+		TriggerAt:             triggerAt.UTC(),
 		Message:               plan.Message,
 		Action:                action,
 		ActionContent:         plan.ActionContent,
@@ -1375,7 +1373,7 @@ func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Sit
 		"agent_config_id", r.agentConfigID,
 		"person_id", r.agentPersonID,
 		"scheduled_event_id", record.ID,
-		"trigger_at", triggerAt.Format("2006-01-02 15:04 MST"),
+		"trigger_at", triggerAt.In(world.Timezone()).Format(time.RFC3339),
 		"in", until,
 		"action", action,
 	)

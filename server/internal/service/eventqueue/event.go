@@ -341,7 +341,7 @@ type JinshuListItem struct {
 	FromName  string // Display name of the sender
 	Topic     string // Short subject of the jinshu
 	IsRead    bool   // Receiver-only read flag
-	CreatedAt string // Creation time formatted as "2006-01-02 15:04"
+	CreatedAt string // Creation time in the world timezone, formatted as RFC3339.
 }
 
 // JinshuListedPayload is the payload type for EventTypeJinshuListed events.
@@ -369,7 +369,7 @@ type JinshuSentListItem struct {
 	JinshuID  int64  // ID of the Jinshu record
 	ToName    string // Display name of the recipient
 	Topic     string // Short subject of the jinshu
-	CreatedAt string // Creation time formatted as "2006-01-02 15:04"
+	CreatedAt string // Creation time in the world timezone, formatted as RFC3339.
 }
 
 // JinshuSentListedPayload is the payload type for EventTypeJinshuSentListed.

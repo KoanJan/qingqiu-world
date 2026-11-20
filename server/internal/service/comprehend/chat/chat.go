@@ -13,6 +13,7 @@ import (
 	"strings"
 	"sync"
 
+	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
@@ -21,6 +22,7 @@ import (
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/kb"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const comprehensionLocalContextLimit = 5
@@ -212,7 +214,7 @@ func formatMessageRange(messages []model.Message, selfPersonID int64) string {
 	lines = append(lines, fmt.Sprintf("[Chat messages from session (session_id=%d)]", messages[0].SessionID))
 	for _, message := range messages {
 		name := messageSpeakerName(names, message.PersonID, selfPersonID)
-		lines = append(lines, fmt.Sprintf("- At %s — %s", message.CreatedAt.Format("2006-01-02 15:04:05"), memory.FormatChatSpeech(name, message.Content)))
+		lines = append(lines, fmt.Sprintf("- At %s — %s", world.FormatTime(message.CreatedAt), memory.FormatChatSpeech(name, message.Content)))
 	}
 	return strings.Join(lines, "\n")
 }
@@ -329,7 +331,7 @@ func loadOwnMessageActions(messages []model.Message, selfPersonID int64) map[int
 func buildSessionInfo(sessionID int64, ac *model.AgentConfig) *types.SessionInfo {
 	info := &types.SessionInfo{
 		SessionID:  sessionID,
-		WindowSize: 50, // Default window size
+		WindowSize: config.Get().SummaryWindowSize,
 	}
 
 	// Resolve the conversation partner — the other participant in this

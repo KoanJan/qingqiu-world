@@ -6,13 +6,13 @@ import (
 	"fmt"
 	"io"
 	"strings"
-	"time"
 	"unicode/utf8"
 
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	"gorm.io/gorm"
 )
@@ -199,7 +199,7 @@ func newDecideJinshuItem(record model.Jinshu, names map[int64]string, selfPerson
 		From:      decideJinshuPersonName(names, record.FromPersonID, selfPersonID),
 		To:        decideJinshuPersonName(names, record.ToPersonID, selfPersonID),
 		Topic:     record.Topic,
-		CreatedAt: record.CreatedAt.Format(time.RFC3339),
+		CreatedAt: world.FormatTime(record.CreatedAt),
 	}
 	if showIsRead {
 		item.IsRead = &record.IsRead

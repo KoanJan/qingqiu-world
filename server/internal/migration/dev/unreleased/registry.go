@@ -1,5 +1,7 @@
 package unreleased
 
+import "qingqiu-world-server/internal/migration/dev/unreleased/scripts"
+
 // registered is the single authority over development revisions: it fixes the
 // order, the revision number, and what each step executes. A committed
 // persistent change appends one entry and its scripts/<revision>.sql and/or
@@ -14,5 +16,13 @@ var registered = []Step{
 		Revision:     1,
 		Description:  "Add LLM compatibility probe state",
 		SQLPath:      "scripts/1.sql",
+	},
+	{
+		BaseRelease:  "0.1.21",
+		FromRevision: 1,
+		Revision:     2,
+		Description:  "Unify Action types, file roots, and world time",
+		SQLPath:      "scripts/2.sql",
+		Convert:      scripts.Convert2,
 	},
 }

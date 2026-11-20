@@ -20,7 +20,7 @@ export const EventType = {
 } as const;
 
 export const ActionType = {
-  CHAT: 0,
+  CHAT: 14,
   CREATE_ALARM: 4,
 } as const;
 

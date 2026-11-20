@@ -25,8 +25,6 @@ func initAOSTestLogger(t *testing.T) {
 func TestAOSPathsAndLocators(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 
@@ -91,8 +89,6 @@ func TestAOSPathsAndLocators(t *testing.T) {
 func TestAvailableWorkDirectoryIDSkipsMetadataOnlyPath(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 
@@ -111,8 +107,6 @@ func TestAvailableWorkDirectoryIDSkipsMetadataOnlyPath(t *testing.T) {
 func TestNewWorkspaceMetadataCollisionPreservesExistingFiles(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 
@@ -153,8 +147,6 @@ func TestWorkSandboxPolicyDirKeepsOriginalLayout(t *testing.T) {
 func TestInitAgentOwnedSpaceCreatesStableSkeleton(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 
@@ -195,8 +187,6 @@ func TestInitAgentOwnedSpaceCreatesStableSkeleton(t *testing.T) {
 func TestInitAgentOwnedSpacePreservesHistoricalFiles(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 
@@ -222,8 +212,6 @@ func TestInitAgentOwnedSpacePreservesHistoricalFiles(t *testing.T) {
 func TestInitPrivateSpaceDoesNotCreateSessionWorkspace(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
-	t.Setenv("AOS_ROOT", filepath.Join(root, "aos"))
-	t.Setenv("AOS_META_ROOT", filepath.Join(root, "aosmeta"))
 	config.Init()
 	initAOSTestLogger(t)
 

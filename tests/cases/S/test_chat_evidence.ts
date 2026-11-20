@@ -19,17 +19,17 @@ test("reminder provenance links the original request to a timely pending alarm",
     messages: [], activities: [], completed: true };
   const evidence = {
     messages: [{ id: 4, session_id: 3, person_id: 1, content: definition.request,
-      created_at: "2026-11-05 10:00:00" }],
+      created_at: "2026-11-05 10:00:00+08:00" }],
     events: [{ id: 5, event_type: EventType.MESSAGE, ref_id: 4 }],
     scheduled_events: [{ id: 6, person_id: 2, session_id: 3,
-      status: ScheduledEventStatus.PENDING, trigger_at: "2026-11-05 10:05:00", message: "喝水" }],
+      status: ScheduledEventStatus.PENDING, trigger_at: "2026-11-05 02:05:00+00:00", message: "喝水" }],
     action_effects: [{ id: 7, effect_type: ActionEffectType.SCHEDULED_EVENT, effect_id: 6, action_id: 8 }],
     actions: [{ id: 8, type: ActionType.CREATE_ALARM, decision_id: 9,
-      plan_json: JSON.stringify({ trigger_at: "2026-11-05 10:05:00", message: "喝水" }) }],
+      plan_json: JSON.stringify({ trigger_at: "2026-11-05T10:05:00+08:00", message: "喝水" }) }],
     decisions: [{ id: 9, person_id: 2 }],
   };
   assert.deepEqual(checkReminder(evidence, session, definition), []);
-  evidence.scheduled_events[0]!.trigger_at = "2026-11-05 10:20:00";
+  evidence.scheduled_events[0]!.trigger_at = "2026-11-05 02:20:00+00:00";
   assert.match(checkReminder(evidence, session, definition).join("; "), /time: trigger_at/);
 });
 

@@ -13,6 +13,7 @@ import (
 	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/llm"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const (
@@ -126,12 +127,15 @@ func executeCognitiveRecall(ctx context.Context, personID int64, name, arguments
 		}
 		items := make([]item, 0, len(page.Items))
 		for _, row := range page.Items {
-			items = append(items, item{row.ID, row.LocalDate, row.StartAt, row.EndAt, row.Summary})
+			items = append(items, item{row.ID, row.LocalDate, row.StartAt.In(world.Timezone()), row.EndAt.In(world.Timezone()), row.Summary})
 		}
 		if args.MemoryID > 0 {
 			sources, more, sourceCoverage, err := memory.ReadDailyMemorySources(ctx, personID, args.MemoryID, pageSize, offset)
 			if err != nil {
 				return "", err
+			}
+			for i := range sources {
+				sources[i].ContactAt = sources[i].ContactAt.In(world.Timezone())
 			}
 			var next string
 			if more {
@@ -152,6 +156,10 @@ func executeCognitiveRecall(ctx context.Context, personID int64, name, arguments
 		if err != nil {
 			return "", err
 		}
+		record = presentCognitiveCandidate(record)
+		for i := range versions {
+			versions[i].CreatedAt = versions[i].CreatedAt.In(world.Timezone())
+		}
 		var next string
 		if more {
 			next = encodeCognitiveRecallCursor(personID, name, args, offset+len(versions))
@@ -163,12 +171,24 @@ func executeCognitiveRecall(ctx context.Context, personID int64, name, arguments
 	if err != nil {
 		return "", err
 	}
+	for i := range items {
+		items[i] = presentCognitiveCandidate(items[i])
+	}
 	var next string
 	if more {
 		next = encodeCognitiveRecallCursor(personID, name, args, offset+len(items))
 	}
 	encoded, err := json.Marshal(map[string]interface{}{"items": items, "next_cursor": next, "coverage": coverage})
 	return string(encoded), err
+}
+
+// presentCognitiveCandidate converts the timestamps exposed in agent tool results.
+func presentCognitiveCandidate(item memory.CognitiveCandidate) memory.CognitiveCandidate {
+	location := world.Timezone()
+	item.ConcernCreatedAt = item.ConcernCreatedAt.In(location)
+	item.CurrentUnderstandingFormedAt = item.CurrentUnderstandingFormedAt.In(location)
+	item.LastReviewedAt = item.LastReviewedAt.In(location)
+	return item
 }
 
 // cognitivePageCursor binds pagination to an owner and normalized filters.

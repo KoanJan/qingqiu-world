@@ -273,8 +273,9 @@ func inspectDatabase() (version string, empty bool, err error) {
 	return version, false, nil
 }
 
-// hasDataOutsideEmptyDatabase excludes SQLite's own files, the configured log
-// directory, and known operating-system metadata files.
+// hasDataOutsideEmptyDatabase excludes SQLite's own files, the timezone file
+// written before migration starts, the configured log directory, and known
+// operating-system metadata files.
 func hasDataOutsideEmptyDatabase() (bool, error) {
 	settings := config.Get()
 	entries, err := os.ReadDir(settings.DataRoot)
@@ -290,6 +291,9 @@ func hasDataOutsideEmptyDatabase() (bool, error) {
 	}
 	for _, entry := range entries {
 		if entry.Name() == logDir || isSystemMetadata(entry) {
+			continue
+		}
+		if entry.Name() == "tz.txt" && entry.Type().IsRegular() {
 			continue
 		}
 		if entry.Name() != "db" || !entry.IsDir() {

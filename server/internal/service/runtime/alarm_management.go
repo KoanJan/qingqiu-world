@@ -12,7 +12,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/energy"
+	"qingqiu-world-server/internal/service/world"
 
 	"gorm.io/gorm"
 )
@@ -84,10 +84,10 @@ func executePendingAlarmList(personID int64, arguments string) (string, error) {
 		if row.Action == model.ScheduledEventActionSendMessage {
 			handling = "When this alarm fires, the prepared message will be sent directly."
 		}
-		items = append(items, pendingAlarmView{AlarmID: row.ID, TriggerAt: row.TriggerAt.In(energy.Timezone()),
+		items = append(items, pendingAlarmView{AlarmID: row.ID, TriggerAt: row.TriggerAt.In(world.Timezone()),
 			Message: row.Message, Handling: handling, ActionContent: row.ActionContent,
 			ExpressionInstruction: row.ExpressionInstruction, SessionID: row.SessionID,
-			CreatedAt: row.CreatedAt.In(energy.Timezone())})
+			CreatedAt: row.CreatedAt.In(world.Timezone())})
 	}
 	returnJSON := struct {
 		Items   []pendingAlarmView `json:"items"`

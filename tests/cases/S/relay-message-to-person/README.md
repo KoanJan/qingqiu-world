@@ -81,7 +81,7 @@ After a completed run:
   that session was sent by the subject Agent; the backing `chat` action's
   `plan_json` targets either that session or the target person.
 - `decision_chain`: that message is linked by an `action_effects` row
-  (`effect_type=2`) to a `chat` action (`type=0`) whose decision belongs to the
+  (`effect_type=2`) to a `chat` action (`type=14`) whose decision belongs to the
   subject Agent.
 - `content_preserved`: the delivered message conveys the appointment at 10 a.m.
   the next day (or its equivalent resolved date and time), at the library
@@ -122,7 +122,7 @@ The chain to inspect is:
 as the origin record; separately the target session (`participant_sessions`
 containing both Agent and target) -> `messages` (Agent-authored) <-
 `action_effects` (`effect_type=2`, `effect_id=message.id`) -> `actions`
-(`type=0`, `id=action_id`) -> `decisions` (`id=decision_id`, Agent person).
+(`type=14`, `id=action_id`) -> `decisions` (`id=decision_id`, Agent person).
 Also inspect the chat action's `plan_json` for `session_id` /
 `recipient_person_id` and its `background` and `reason` for the decision itself.
 

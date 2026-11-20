@@ -15,6 +15,7 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/action"
 	comprehendTypes "qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/eventqueue"
 )
@@ -62,7 +63,7 @@ func TestAllInvalidActionsDoNotPersistDecision(t *testing.T) {
 			}
 		}
 		w.Header().Set("Content-Type", "application/json")
-		_, _ = fmt.Fprint(w, `{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"decide","arguments":"{\"thoughts\":\"reply\",\"actions\":[{\"type\":0,\"background\":\"message\",\"reason\":\"reply\",\"chat_plan\":{\"guidance\":\"answer\",\"session_id\":0}}]}"}}]}}]}`)
+		_, _ = fmt.Fprint(w, `{"choices":[{"finish_reason":"tool_calls","message":{"role":"assistant","tool_calls":[{"id":"call_1","type":"function","function":{"name":"decide","arguments":"{\"thoughts\":\"reply\",\"actions\":[{\"type\":14,\"background\":\"message\",\"reason\":\"reply\",\"chat_plan\":{\"guidance\":\"answer\",\"session_id\":0}}]}"}}]}}]}`)
 	})}}
 	server.Start()
 	defer server.Close()
@@ -107,5 +108,29 @@ func TestAllInvalidActionsDoNotPersistDecision(t *testing.T) {
 	var count int64
 	if err := db.Model(&model.Decision{}).Count(&count).Error; err != nil || count != 0 {
 		t.Fatalf("unexpected Decision rows: count=%d err=%v", count, err)
+	}
+}
+
+func TestDecideRejectsMissingNullZeroAndUnknownActionTypes(t *testing.T) {
+	for _, raw := range []string{
+		`{"actions":[{"background":"x","reason":"x"}]}`,
+		`{"actions":[{"type":null,"background":"x","reason":"x"}]}`,
+		`{"actions":[{"type":0,"background":"x","reason":"x"}]}`,
+		`{"actions":[{"type":15,"background":"x","reason":"x"}]}`,
+	} {
+		var decision DecisionResult
+		if err := json.Unmarshal([]byte(raw), &decision); err != nil {
+			t.Fatalf("decode %s: %v", raw, err)
+		}
+		// A valid sibling cannot make the invalid Action acceptable.
+		decision.Actions = append(decision.Actions, action.Action{Type: action.StartFocusedWork})
+		problem, err := validateDecision(1, decision)
+		if err != nil || !strings.Contains(problem, "type must be an explicit supported integer") {
+			t.Fatalf("decision %s: problem=%q error=%v", raw, problem, err)
+		}
+	}
+	var decision DecisionResult
+	if err := json.Unmarshal([]byte(`{"actions":[{"type":1.5}]}`), &decision); err == nil {
+		t.Fatal("fractional Action type decoded as an integer")
 	}
 }

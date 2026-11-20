@@ -9,6 +9,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/comprehend/types"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 )
@@ -42,7 +43,7 @@ func formatRecentMessages(recentMessages []model.Message, personName, agentName 
 		if msg.PersonID == selfPersonID {
 			role = agentName
 		}
-		lines = append(lines, fmt.Sprintf("%s [%s]: %s", role, msg.CreatedAt.Format("2006-01-02 15:04:05"), msg.Content))
+		lines = append(lines, fmt.Sprintf("%s [%s]: %s", role, world.FormatTime(msg.CreatedAt), msg.Content))
 	}
 	return strings.Join(lines, "\n")
 }

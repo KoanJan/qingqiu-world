@@ -7,6 +7,7 @@ import (
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/jinshu"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // ReadJinshuTool reads a single received jinshu (锦书): its metadata and the
@@ -88,7 +89,7 @@ func (r *ReadJinshuTool) Execute(args map[string]interface{}) (string, error) {
 		Topic:       record.Topic,
 		Description: record.Description,
 		IsRead:      record.IsRead,
-		CreatedAt:   record.CreatedAt.Format("2006-01-02 15:04:05"),
+		CreatedAt:   world.FormatTime(record.CreatedAt),
 		Files:       files,
 	}
 

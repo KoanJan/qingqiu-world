@@ -14,6 +14,7 @@ import (
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // TestGeneralSituationReportsOmittedCounts checks every bounded general
@@ -31,10 +32,10 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	t.Cleanup(func() { database.DB = old })
 	const self int64 = 991001
 	settings := config.Get()
-	oldAOSRoot := settings.AOSRoot
-	settings.AOSRoot = filepath.Join(t.TempDir(), "aos")
-	t.Cleanup(func() { settings.AOSRoot = oldAOSRoot })
-	if err := os.MkdirAll(filepath.Join(settings.AOSRoot, fmt.Sprint(self), "private"), 0700); err != nil {
+	oldDataRoot := settings.DataRoot
+	settings.DataRoot = t.TempDir()
+	t.Cleanup(func() { settings.DataRoot = oldDataRoot })
+	if err := os.MkdirAll(filepath.Join(settings.GetAOSRoot(), fmt.Sprint(self), "private"), 0700); err != nil {
 		t.Fatal(err)
 	}
 	if err := db.Create(&model.Person{ID: self, Name: "Self", Type: model.PersonTypeAI}).Error; err != nil {
@@ -77,8 +78,8 @@ func TestGeneralSituationReportsOmittedCounts(t *testing.T) {
 	populateGeneralSituation(self, situation)
 	if !strings.Contains(situation.Subject.PinnedMemosSummary, "Check the promised report tomorrow") ||
 		!strings.Contains(situation.Subject.PinnedMemosSummary, "revision=2") ||
-		!strings.Contains(situation.Subject.PinnedMemosSummary, "created_at="+createdAt.Format(time.RFC3339)) ||
-		!strings.Contains(situation.Subject.PinnedMemosSummary, "updated_at="+updatedAt.Format(time.RFC3339)) ||
+		!strings.Contains(situation.Subject.PinnedMemosSummary, "created_at="+world.FormatTime(createdAt)) ||
+		!strings.Contains(situation.Subject.PinnedMemosSummary, "updated_at="+world.FormatTime(updatedAt)) ||
 		strings.Contains(situation.Subject.PinnedMemosSummary, "Old archived reminder") {
 		t.Fatalf("Subject did not show only current pinned reminders: %q", situation.Subject.PinnedMemosSummary)
 	}

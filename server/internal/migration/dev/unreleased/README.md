@@ -16,6 +16,8 @@ internal/migration/dev/unreleased/
 ├── steps.go         # Step type, validation, execution
 └── scripts/
     ├── 1.sql        # revision 1 data change
+    ├── 2.sql        # revision 2 Action type conversion
+    ├── 2.go         # revision 2 file and alarm conversion
     └── .gitkeep     # keeps the embedded directory present when empty
 ```
 

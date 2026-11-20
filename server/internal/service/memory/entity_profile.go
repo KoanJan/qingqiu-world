@@ -12,6 +12,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 
@@ -642,7 +643,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			if letter.FromPersonID == entityID {
 				sender = personNameMap[entityID]
 			}
-			evidences = append(evidences, fmt.Sprintf("[%s, %s] Jinshu about %q: %s", o.CreatedAt.Format(time.RFC3339), sender, letter.Topic, letter.Description))
+			evidences = append(evidences, fmt.Sprintf("[%s, %s] Jinshu about %q: %s", world.FormatTime(o.CreatedAt), sender, letter.Topic, letter.Description))
 		case model.EventTypeMessage:
 			msg, ok := msgMap[ev.RefID]
 			if !ok {
@@ -665,7 +666,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 			if personName, ok := personNameMap[msg.PersonID]; ok && personName != agentName {
 				roleLabel = personName
 			}
-			evidences = append(evidences, fmt.Sprintf("[%s, %s] %s", o.CreatedAt.Format(time.RFC3339), roleLabel, msg.Content))
+			evidences = append(evidences, fmt.Sprintf("[%s, %s] %s", world.FormatTime(o.CreatedAt), roleLabel, msg.Content))
 
 		case model.EventTypeWorkCompleted:
 			work, ok := workMap[ev.RefID]
@@ -678,7 +679,7 @@ func loadProfileEvidences(personID int64, entityType model.EntityType, entityID 
 				continue
 			}
 			evidences = append(evidences, fmt.Sprintf("[%s, %s] Work completion: %s (status: %s)",
-				o.CreatedAt.Format(time.RFC3339), agentName, work.Description, work.Status.Label()))
+				world.FormatTime(o.CreatedAt), agentName, work.Description, work.Status.Label()))
 		}
 		if len(evidences) >= profileTopK {
 			break

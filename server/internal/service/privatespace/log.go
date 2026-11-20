@@ -9,6 +9,7 @@ import (
 
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/service/aos"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // PrivateLogSource identifies the system component that wrote a private log entry.
@@ -58,7 +59,7 @@ func AppendRuntimeLog(personID int64, recordType PrivateLogType, content string)
 func appendLogRecord(personID int64, source PrivateLogSource, recordType PrivateLogType, content string) error {
 	path := aos.GetPrivateLogPath(personID)
 	entry := LogEntry{
-		Timestamp: time.Now().Format(time.RFC3339),
+		Timestamp: world.Now().Format(time.RFC3339),
 		Source:    source,
 		Type:      recordType,
 		Content:   content,

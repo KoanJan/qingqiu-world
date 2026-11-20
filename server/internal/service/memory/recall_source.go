@@ -11,7 +11,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
-	"qingqiu-world-server/internal/service/energy"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // eventSourceContent resolves the authoritative domain row for lexical
@@ -259,7 +259,7 @@ func DescribeObservedEventAsExperience(ctx context.Context, personID int64, owne
 	if message.PersonID != personID {
 		speaker = presentedPersonName(ctx, personID, message.PersonID, event.ID)
 	}
-	return fmt.Sprintf("Chat message from session (session_id=%d) — %s [%s] said: %q", message.SessionID, speaker, message.CreatedAt.In(energy.Timezone()).Format("2006-01-02 15:04:05"), message.Content), nil
+	return fmt.Sprintf("Chat message from session (session_id=%d) — %s [%s] said: %q", message.SessionID, speaker, world.FormatTime(message.CreatedAt), message.Content), nil
 }
 
 // dailyChatCounterpart names the other participants of a chat session so a

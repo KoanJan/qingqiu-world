@@ -12,6 +12,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 const (
@@ -102,7 +103,7 @@ func buildRecentExperienceSummary(personID, currentEventID int64) string {
 	var lines []string
 	for i := len(entries) - 1; i >= 0; i-- {
 		entry := entries[i]
-		line := "- " + entry.when.Format("01-02 15:04:05") + " "
+		line := "- " + world.FormatTime(entry.when) + " "
 		if entry.eventID > 0 {
 			description, err := memory.DescribeObservedEvent(context.Background(), personID, entry.eventID)
 			if err != nil {

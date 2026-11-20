@@ -19,7 +19,6 @@ import (
 	"qingqiu-world-server/internal/migration/dev/unreleased"
 	notificationrouter "qingqiu-world-server/internal/notification/router"
 	"qingqiu-world-server/internal/realtime"
-	"qingqiu-world-server/internal/service/energy"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/experience"
 	"qingqiu-world-server/internal/service/jinshu"
@@ -28,6 +27,7 @@ import (
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/runtime"
 	"qingqiu-world-server/internal/service/speech"
+	"qingqiu-world-server/internal/service/world"
 
 	applogger "qingqiu-world-server/internal/logger"
 
@@ -71,6 +71,9 @@ func main() {
 	if releaseOnlyMode() {
 		applogger.Init()
 		database.Init()
+		if err := world.InitTime(database.DB, config.Get().DataRoot); err != nil {
+			panic(fmt.Sprintf("initialize world time: %v", err))
+		}
 		migration.Run()
 		return
 	}
@@ -87,20 +90,15 @@ func main() {
 	applogger.Info("Starting Qingqiu World Server")
 
 	database.Init()
+	if err := world.InitTime(database.DB, config.Get().DataRoot); err != nil {
+		panic(fmt.Sprintf("initialize world time: %v", err))
+	}
 	migration.Run()
 	speech.Init()
 	speechCtx, speechCancel := context.WithCancel(context.Background())
 	speech.Start(speechCtx)
 	hub := realtime.NewHub()
 	notificationPublisher := notificationrouter.New(hub)
-
-	// Energy: initialize the global fixed timezone from <DATA_ROOT>/tz.txt.
-	// Must run before any energy operation (RecoverEnergy/DeductEnergy) and
-	// before agent runtimes start (which call RecoverEnergy on startup).
-	if err := energy.Init(); err != nil {
-		applogger.Error("energy timezone init failed, falling back to UTC", "error", err)
-		// Non-fatal: energy package falls back to UTC internally.
-	}
 
 	llm.LoadCapabilityCache()
 

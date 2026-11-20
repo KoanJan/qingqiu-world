@@ -24,6 +24,7 @@ import (
 
 	"qingqiu-world-server/internal/config"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // ContextManager manages the internal message history for one FocusedWork execution.
@@ -72,7 +73,7 @@ func (cm *ContextManager) RefreshNotes(newNotesContent string) {
 // The history persists in the last user message across all iterations — unlike
 // dynamic iteration messages, it is never dropped by the window.
 func (cm *ContextManager) AddGuidance(guidance, reason string) {
-	entry := fmt.Sprintf("[%s] Directive: %s", time.Now().Format("2006-01-02 15:04:05"), guidance)
+	entry := fmt.Sprintf("[%s] Directive: %s", world.Now().Format(time.RFC3339), guidance)
 	if reason != "" {
 		entry += fmt.Sprintf("\n           Reason: %s", reason)
 	}
@@ -107,13 +108,23 @@ func (cm *ContextManager) AddIteration(assistantMsg llm.Message, toolResults []l
 // previous iterations hit the prefix cache.
 func (cm *ContextManager) BuildMessages() []llm.Message {
 	total := len(cm.dynamicMessages)
+	// Direct construction can bypass deployment validation. Clamp the slice
+	// bounds here so malformed windows cannot panic during an agent turn.
+	minWindow := cm.minIterationWindow
+	if minWindow < 0 {
+		minWindow = 0
+	}
+	maxWindow := cm.maxIterationWindow
+	if maxWindow < minWindow {
+		maxWindow = minWindow
+	}
 
 	var visible [][]llm.Message
-	if total > cm.maxIterationWindow {
+	if total > maxWindow {
 		// Bulk shrink: drop the oldest iterations, keeping only the
 		// last minIterationWindow. This forms a new anchor that stays
 		// fixed across the next minIterationWindow expansions.
-		dropCount := total - cm.minIterationWindow
+		dropCount := total - minWindow
 		visible = cm.dynamicMessages[dropCount:]
 	} else {
 		// Expanding phase: keep everything, anchor stays fixed.

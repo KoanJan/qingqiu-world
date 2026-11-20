@@ -11,6 +11,7 @@ import (
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/memo"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // memoRecallArgs is deliberately separate from cross-source recall arguments:
@@ -80,7 +81,7 @@ func executeMemoRecall(personID int64, arguments string) (string, error) {
 	for _, record := range records {
 		items = append(items, memoPreview{MemoID: record.ID, Preview: shortContextText(record.Content, 160),
 			Status: memoStatusName(record.Status), Pinned: record.Pinned, Revision: record.Revision,
-			CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt})
+			CreatedAt: record.CreatedAt.In(world.Timezone()), UpdatedAt: record.UpdatedAt.In(world.Timezone())})
 	}
 	output := struct {
 		Items    []memoPreview `json:"items"`
@@ -146,7 +147,7 @@ func readMemoRecall(personID, memoID int64, historyPage int) (string, error) {
 		HasMoreHistory  bool         `json:"has_more_history"`
 		NextHistoryPage int          `json:"next_history_page,omitempty"`
 	}{MemoID: record.ID, Content: record.Content, Status: memoStatusName(record.Status), Pinned: record.Pinned,
-		Revision: record.Revision, CreatedAt: record.CreatedAt, UpdatedAt: record.UpdatedAt, Changes: presented, HasMoreHistory: more}
+		Revision: record.Revision, CreatedAt: record.CreatedAt.In(world.Timezone()), UpdatedAt: record.UpdatedAt.In(world.Timezone()), Changes: presented, HasMoreHistory: more}
 	if more {
 		output.NextHistoryPage = historyPage + 1
 	}

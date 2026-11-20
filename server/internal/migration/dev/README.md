@@ -71,11 +71,10 @@ data away if it is expendable, then start again.
 └── quarantine/<label>_<reason>_<UTC nanosecond timestamp>/
 ```
 
-A **data set** always means the SQLite file plus every file root the
-installation uses. Roots such as `AOS_ROOT`, `AOS_META_ROOT`, `JINSHU_ROOT`,
-`WORKSPACE_ROOT`, and `PRIVATE_SPACE_ROOT` must resolve inside `DATA_ROOT`;
-anything outside, or resolving outside through a symlink, is rejected instead of
-being silently left out of backups. `DATA_ROOT` itself must not be a symlink.
+A **data set** contains SQLite and the active file roots under `DATA_ROOT`.
+Legacy root variables are read only as sources for a registered file migration;
+when one points outside `DATA_ROOT`, the original path must still be available
+when that migration runs. `DATA_ROOT` itself must not be a symlink.
 
 Every snapshot normalizes WAL first: `wal_checkpoint(TRUNCATE)` must succeed, no
 uncheckpointed frames may remain, and the database passes `PRAGMA quick_check`

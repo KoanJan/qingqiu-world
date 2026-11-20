@@ -8,6 +8,7 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/service/aos"
 	"qingqiu-world-server/internal/service/llm"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // WriteNotesTool implements an append-only, structured notes system for persisting agent's working memory.
@@ -132,7 +133,7 @@ func (w *WriteNotesTool) Execute(args map[string]interface{}) (string, error) {
 	}
 
 	entry := aos.NoteEntry{
-		Timestamp:     time.Now().Format(time.RFC3339),
+		Timestamp:     world.Now().Format(time.RFC3339),
 		Type:          noteType,
 		Content:       content,
 		References:    references,

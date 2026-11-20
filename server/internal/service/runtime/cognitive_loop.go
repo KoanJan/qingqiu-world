@@ -566,7 +566,7 @@ func initialCognitiveRequest(ctx context.Context, personID int64) (cognitiveLLMR
 	for _, item := range prior {
 		fmt.Fprintf(&priorText, "- %s (concern first recorded %s; current revision recorded %s; last review completed %s): impression=%s | understanding=%s\n",
 			truncateCognitivePreview(item.Description, cognitivePriorDescriptionPreviewRunes),
-			item.ConcernCreatedAt.Format(time.RFC3339), item.CurrentUnderstandingFormedAt.Format(time.RFC3339), item.LastReviewedAt.Format(time.RFC3339),
+			world.FormatTime(item.ConcernCreatedAt), world.FormatTime(item.CurrentUnderstandingFormedAt), world.FormatTime(item.LastReviewedAt),
 			truncateCognitivePreview(item.Impression, cognitivePriorConclusionPreviewRunes), truncateCognitivePreview(item.Understanding, cognitivePriorConclusionPreviewRunes))
 	}
 	if len(prior) == 0 {
@@ -611,7 +611,7 @@ func cognitiveUpdateRequest(personID int64, candidate memory.CognitiveReviewCand
 			{Role: "system", Content: fmt.Sprintf(cognitiveUpdatePromptTemplate, a.Person.Name, a.Config.CharacterSettings, a.Person.Bio, cognitiveWriteCognition, cognitiveConfirmUnchanged, cognitiveNoResult)},
 			{Role: "user", Content: fmt.Sprintf("Review this selected understanding. The dated recollections below may or may not bear on it.\nMemory ID: %d\nConcern (may be abbreviated): %s\nLast completed review: %s\nCurrent impression (may be abbreviated): %s\nCurrent understanding (may be abbreviated): %s\n\nPossible dated leads (bounded preview; each is a navigation index, not evidence; expand one with recall_daily_memory using its identity when a detail matters):\n%sCoverage: this is not your complete history, and unrelated days may be missing. Check original records before concluding that an event did not occur.",
 				candidate.MemoryID, truncateCognitivePreview(candidate.Description, cognitiveRoutedDescriptionPreviewRunes),
-				candidate.LastReviewedAt.Format(time.RFC3339), truncateCognitivePreview(impression, cognitiveRoutedConclusionPreviewRunes), truncateCognitivePreview(understanding, cognitiveRoutedConclusionPreviewRunes), evidence.String())},
+				world.FormatTime(candidate.LastReviewedAt), truncateCognitivePreview(impression, cognitiveRoutedConclusionPreviewRunes), truncateCognitivePreview(understanding, cognitiveRoutedConclusionPreviewRunes), evidence.String())},
 		},
 		Tools: cognitiveReadTools(),
 	}, nil
@@ -942,7 +942,7 @@ func (r *agentRuntime) executeCognitiveProcess(ctx context.Context, process mode
 			}
 			// A paused process may resume much later; give every model request
 			// the current world time instead of relying on its first prompt.
-			checkpoint.Request.Messages = append(checkpoint.Request.Messages, llm.Message{Role: "user", Content: "Current time in Qingqiu World: " + time.Now().In(energy.Timezone()).Format(time.RFC3339)})
+			checkpoint.Request.Messages = append(checkpoint.Request.Messages, llm.Message{Role: "user", Content: "Current time in Qingqiu World: " + world.Now().Format(time.RFC3339)})
 			client := llm.NewChatModelWithTemperature(a.LLM.BaseURL, a.LLM.APIKey, checkpoint.Request.Model, checkpoint.Request.Temperature)
 			response, err := client.ChatWithRequiredTools(ctx, checkpoint.Request.Messages, checkpoint.Request.Tools)
 			// A pause may have arrived while the model was running. Discard that

@@ -8,11 +8,12 @@ import (
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
+	"qingqiu-world-server/internal/service/world"
 )
 
 // biographyContentTemplate is the natural-language origin record delivered to
 // an agent when it is created. The single %s is replaced with the person's
-// created_at time, formatted as local time.
+// created_at time, formatted in the world timezone with its UTC offset.
 const biographyContentTemplate = `You came into existence in Qingqiu World at %s.
 
 This marks the beginning of your history in this world.`
@@ -20,7 +21,7 @@ This marks the beginning of your history in this world.`
 // buildBiographyContent renders an agent's origin statement with the given
 // creation time. It is the stable payload carried by a biography event.
 func buildBiographyContent(createdAt time.Time) string {
-	return fmt.Sprintf(biographyContentTemplate, createdAt.Format("2006-01-02 15:04:05"))
+	return fmt.Sprintf(biographyContentTemplate, world.FormatTime(createdAt))
 }
 
 // SendBiographyEvent is the production + distribution entry point for an
