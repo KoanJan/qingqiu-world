@@ -197,6 +197,8 @@ test("isolated build and server environments own all product paths", (t) => {
   const server = isolatedServerEnv(dataDir, 12345, { CASE_LIMIT: "4" });
   assert.equal(build.GOCACHE, path.join(dataDir, "go-cache"));
   assert.equal(server.DATA_ROOT, path.join(dataDir, "product"));
+  assert.equal(server.TEST_DATA_MODE, "1");
+  assert.equal(server.TEST_MIGRATION_STATE_PATH, path.resolve(dataDir, "test-migrations.json"));
   assert.equal(server.PORT, "12345");
   assert.equal(server.LOG_LEVEL, "DEBUG");
   assert.equal(isolatedServerEnv(dataDir, 12345, { LOG_LEVEL: "INFO" }).LOG_LEVEL, "DEBUG");
@@ -207,6 +209,34 @@ test("isolated build and server environments own all product paths", (t) => {
     () => isolatedServerEnv(dataDir, 12345, { DATA_ROOT: "/outside" }),
     /overrides isolation/,
   );
+});
+
+test("test startup overrides inherited developer modes and protects run state", (t) => {
+  const { temp } = caseDirectory(t);
+  const inherited = {
+    DEV_DATA_MODE: "1", DEV_REPO_ROOT: "/developer/repo",
+    DEV_BASELINE_SOURCE: "/developer/baseline", RELEASE_MIGRATION_ONLY: "1",
+    TEST_DATA_MODE: "0", TEST_MIGRATION_STATE_PATH: "/developer/progress.json",
+  };
+  for (const [key, value] of Object.entries(inherited)) {
+    const previous = process.env[key];
+    process.env[key] = value;
+    t.after(() => {
+      if (previous === undefined) delete process.env[key];
+      else process.env[key] = previous;
+    });
+  }
+  const env = isolatedServerEnv(temp, 12345);
+  assert.equal(env.TEST_DATA_MODE, "1");
+  assert.equal(env.DEV_DATA_MODE, "0");
+  assert.equal(env.RELEASE_MIGRATION_ONLY, "0");
+  assert.equal(env.DEV_REPO_ROOT, undefined);
+  assert.equal(env.DEV_BASELINE_SOURCE, undefined);
+  assert.equal(env.TEST_MIGRATION_STATE_PATH, path.join(temp, "test-migrations.json"));
+  assert.equal(existsSync(env.DATA_ROOT + ".developer-data"), false);
+  for (const key of Object.keys(inherited)) {
+    assert.throws(() => isolatedServerEnv(temp, 12345, { [key]: "override" }), /overrides isolation/);
+  }
 });
 
 test("readSqlite sees committed WAL rows without modifying product state", async (t) => {

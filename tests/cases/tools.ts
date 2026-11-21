@@ -260,17 +260,27 @@ export function isolatedServerEnv(
     "TMPDIR",
     "TMP",
     "TEMP",
+    "TEST_DATA_MODE",
+    "TEST_MIGRATION_STATE_PATH",
+    "DEV_DATA_MODE",
+    "DEV_REPO_ROOT",
+    "DEV_BASELINE_SOURCE",
+    "RELEASE_MIGRATION_ONLY",
   ];
   const overlap = Object.keys(extra).filter((key) => protectedKeys.includes(key));
   if (overlap.length)
     throw new Error("extra server environment overrides isolation: " + overlap.join(", "));
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     DATA_ROOT: product,
     LOG_DIR: logs,
     AOS_ROOT: path.join(product, "aos"),
     AOS_META_ROOT: path.join(product, "aosmeta"),
     JINSHU_ROOT: path.join(product, "jinshu"),
+    TEST_DATA_MODE: "1",
+    TEST_MIGRATION_STATE_PATH: path.resolve(dataDir, "test-migrations.json"),
+    DEV_DATA_MODE: "0",
+    RELEASE_MIGRATION_ONLY: "0",
     PORT: String(port),
     TMPDIR: tmp,
     TMP: tmp,
@@ -278,6 +288,9 @@ export function isolatedServerEnv(
     ...extra,
     LOG_LEVEL: "DEBUG",
   };
+  delete env.DEV_REPO_ROOT;
+  delete env.DEV_BASELINE_SOURCE;
+  return env;
 }
 
 function runChild(

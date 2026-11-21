@@ -2,6 +2,8 @@
 
 Developer data has two distinct states: an immutable copy of the latest released version, and a writable active copy for committed development changes. The active copy records its released baseline and an ordered `dev.x.<commit>` migration chain in `.dev-data-version.json`; `db_versions` records only released versions. The development revision `x` determines order, and the full Git commit hash identifies the change that introduced that revision.
 
+These lifecycle and commit requirements apply to persistent developer data. Disposable cross-component tests use the separate [test data path](../../tests/README.md#server-data-during-a-test-run), which can build uncommitted workspace code. Each run owns isolated product data and an external migration progress file; normal restarts reuse them, and new runs prepare new data. Test startup does not manage developer baselines or checkpoints.
+
 ## Before Running Development Code
 
 - Enable developer data management explicitly and identify the source repository. The Go development launcher and Electron development launcher build a binary stamped with the checked-out commit. Direct server startup must use a binary built through the same path. A user installation runs only the release path and does not require Git.

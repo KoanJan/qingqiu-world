@@ -1,9 +1,14 @@
 # Unreleased developer migrations
 
-This package manages committed, persistent data changes that apply only to
-developer installations. They run on top of the released baseline (currently
+This package declares persistent data changes for unreleased code.
+In developer installations they run on top of the released baseline (currently
 `0.1.21`), before `database.Init()` and before any business service starts, and
 they never enter `db_versions`.
+
+Disposable tests reuse the same registry and `Apply` after normal release data
+preparation, without developer commit checks or baseline management. Their
+progress lives outside product data in the test run directory. See the
+[test startup guide](../../../../../tests/README.md#server-data-during-a-test-run).
 
 The lifecycle itself lives one level up in
 [`internal/migration/dev`](../README.md); this directory only declares *what*

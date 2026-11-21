@@ -22,6 +22,7 @@ func TestKnownPersistentSourceScopesTheRegistryGuard(t *testing.T) {
 		"server/internal/migration/dev/lifecycle.go":             false,
 		"server/internal/migration/dev/release_build.go":         false,
 		"server/internal/migration/dev/git.go":                   false,
+		"server/internal/migration/dev/testrun/migration.go":     false,
 		"server/internal/migration/dev/README.md":                false,
 		"server/internal/migration/migration.go":                 false,
 		"server/internal/migration/migration_startup_test.go":    false,

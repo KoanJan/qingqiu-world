@@ -16,6 +16,7 @@ import (
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/migration"
 	"qingqiu-world-server/internal/migration/dev"
+	"qingqiu-world-server/internal/migration/dev/testrun"
 	"qingqiu-world-server/internal/migration/dev/unreleased"
 	notificationrouter "qingqiu-world-server/internal/notification/router"
 	"qingqiu-world-server/internal/realtime"
@@ -53,6 +54,18 @@ func releaseOnlyMode() bool {
 	return true
 }
 
+// prepareTestMigrations selects the isolated test path before either release
+// execution or developer data management can write to the data directory.
+func prepareTestMigrations() (*testrun.Runner, error) {
+	if os.Getenv("TEST_DATA_MODE") != "1" {
+		return nil, nil
+	}
+	if os.Getenv("DEV_DATA_MODE") == "1" || os.Getenv("RELEASE_MIGRATION_ONLY") == "1" {
+		return nil, fmt.Errorf("TEST_DATA_MODE cannot be combined with DEV_DATA_MODE or RELEASE_MIGRATION_ONLY")
+	}
+	return testrun.Open(os.Getenv("TEST_MIGRATION_STATE_PATH"), config.Get().DataRoot)
+}
+
 func main() {
 	exePath, _ := os.Executable()
 	exeDir := filepath.Dir(exePath)
@@ -68,6 +81,10 @@ func main() {
 	if err := migration.ValidateReleaseChain(); err != nil {
 		panic(fmt.Sprintf("invalid release migration chain: %v", err))
 	}
+	testMigrations, err := prepareTestMigrations()
+	if err != nil {
+		panic(fmt.Sprintf("prepare test data: %v", err))
+	}
 	if releaseOnlyMode() {
 		applogger.Init()
 		database.Init()
@@ -77,14 +94,16 @@ func main() {
 		migration.Run()
 		return
 	}
-	if os.Getenv("DEV_DATA_MODE") != "1" && len(unreleased.Registered()) > 0 {
+	if testMigrations == nil && os.Getenv("DEV_DATA_MODE") != "1" && len(unreleased.Registered()) > 0 {
 		panic("unreleased server build requires explicit developer data mode")
 	}
-	unlockData, err := dev.Start(buildCommit)
-	if err != nil {
-		panic(fmt.Sprintf("prepare developer data: %v", err))
+	if testMigrations == nil {
+		unlockData, err := dev.Start(buildCommit)
+		if err != nil {
+			panic(fmt.Sprintf("prepare developer data: %v", err))
+		}
+		defer unlockData()
 	}
-	defer unlockData()
 	applogger.Init()
 	applogger.Info("Qingqiu World Server config initialized", "config", config.Get())
 	applogger.Info("Starting Qingqiu World Server")
@@ -94,6 +113,12 @@ func main() {
 		panic(fmt.Sprintf("initialize world time: %v", err))
 	}
 	migration.Run()
+	if testMigrations != nil {
+		if err := testMigrations.Apply(database.DB, config.Get().DataRoot); err != nil {
+			applogger.Error("Test data preparation failed", "error", err)
+			panic(err)
+		}
+	}
 	speech.Init()
 	speechCtx, speechCancel := context.WithCancel(context.Background())
 	speech.Start(speechCtx)

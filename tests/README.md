@@ -14,3 +14,13 @@ Start with the [case index](cases/README.md). Cross-component cases are grouped 
 Use Node.js 20.19+ (20.x) or 22.12+. Install dependencies with `npm --prefix tests ci`, then check the TypeScript code with `npm --prefix tests run typecheck` and the offline contracts with `npm --prefix tests run test:unit`. To run a case, follow its README from the repository root. To run every D case, use [`npm --prefix tests run test:d`](cases/D/README.md). To add a case, follow [Add a case](cases/README.md#add-a-case) and the [directory standard](../spec/development/testing/case_directory.md), then update this index. The [test engineering standard](../spec/development/testing/README.md) defines verification and evidence requirements.
 
 Ordinary Go package tests remain next to their code, including the [KB creation regression](../server/internal/service/kb/kb_service_create_test.go) and [document route scope regression](../server/internal/api/handler/kb_document_scope_test.go). The [CI exit-status test](../ci/test_ci_exit_status.sh) stays beside the CI script it checks. Web tests should likewise live with the Web code when added. The current `tests/cases/` entries include two deterministic end-to-end cases and four semantic cases; no mechanism experiment is implemented there yet.
+
+## Server data during a test run
+
+The shared `IsolatedServer` builds current workspace code with ordinary `go build` and selects `TEST_DATA_MODE=1`. A test run may use uncommitted code. Startup prepares the released schema through the normal release initializer or migration, then applies the registered unreleased steps before starting business services. It does not enter the developer data lifecycle or require a clean checkout, Git tags, or a stamped development binary.
+
+The runner fixes `DATA_ROOT` at `data/product/` inside the run and passes `TEST_MIGRATION_STATE_PATH` as the absolute path to `data/test-migrations.json`. This progress file belongs to the test infrastructure; no test metadata is added to product files or database tables. `db_versions` continues to record released versions only. Developer and release-only environment switches are overridden so inherited shell settings cannot select another startup path.
+
+A normal restart reuses the same binary, product data, and progress file, skipping completed unreleased steps. New runs and rebuilt code use newly prepared data. Any preparation error ends the run and preserves its artifacts for inspection; rerun with new data rather than resuming a failed preparation. There is no test-specific rollback or recovery mechanism.
+
+This path verifies current code against released data plus current unreleased changes. It does not verify the developer lifecycle or replace acceptance of the final release upgrade.
