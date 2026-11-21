@@ -27,8 +27,10 @@ document describes the machinery around them.
 | `RELEASE_MIGRATION_ONLY=1` | Internal: runs only release migrations in a staged copy. | `release_build.go`, for the isolated release binary it builds. |
 | `main.buildCommit` | Not an environment variable; stamped via `-ldflags -X` and must equal `HEAD`. | `cmd/devbuild`, which both launchers run first. |
 
-Both development launchers run `cmd/devbuild`, then the server. A non-development
-build that still registers development steps refuses to start.
+Both development launchers run `cmd/devbuild`, then the server. Ordinary app
+startup still refuses builds with registered development steps. Isolated
+cross-component tests select `TEST_DATA_MODE=1` instead and apply those steps
+after release data preparation; they do not enter this developer lifecycle.
 
 ### When `DEV_BASELINE_SOURCE` is absent
 
