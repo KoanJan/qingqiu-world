@@ -170,18 +170,14 @@ func (r *agentRuntime) notifyOneWaitingAction(wait model.Action) error {
 			return err
 		}
 		outgoing = &eventqueue.AgentEvent{Type: eventqueue.EventTypeExecutionSlotAvailable, EventID: eventID, Payload: payload}
-		serialized, err := serializeEventPayload(outgoing)
-		if err != nil {
-			return err
-		}
-		return tx.Create(&model.AgentEventBuffer{PersonID: r.agentPersonID, EventType: int(outgoing.Type), EventID: eventID, PayloadJSON: serialized}).Error
+		return eventqueue.AppendTx(tx, outgoing, r.agentPersonID)
 	})
 	if err != nil || outgoing == nil {
 		return err
 	}
 	refreshMemorySource(model.MemorySourceEvent, outgoing.EventID)
 	refreshMemorySource(model.MemorySourceAction, wait.ID)
-	eventqueue.SendEvent(r.agentConfigID, outgoing)
+	eventqueue.Notify(r.agentPersonID)
 	return nil
 }
 

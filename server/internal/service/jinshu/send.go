@@ -10,6 +10,9 @@ import (
 	"strconv"
 	"strings"
 
+	"gorm.io/gorm"
+
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/notification"
@@ -128,43 +131,37 @@ func notify(record *model.Jinshu, files []string) error {
 	if record.Description != "" {
 		content = record.Topic + "\n" + record.Description
 	}
-	eventID, err := memory.RecordJinshuEvent(record.ID, content)
-	if err != nil {
-		return fmt.Errorf("record memory event: %w", err)
-	}
-
-	person, err := dops.GetPerson(record.ToPersonID)
-	if err != nil {
-		return fmt.Errorf("load recipient %d: %w", record.ToPersonID, err)
-	}
-	if person.Type != model.PersonTypeAI {
-		return nil // Human recipient has no runtime to notify.
-	}
-
-	ac, err := dops.GetAgentConfigByPersonID(record.ToPersonID)
-	if err != nil {
-		return fmt.Errorf("load recipient agent config %d: %w", record.ToPersonID, err)
-	}
-
-	fromName := ""
-	if from, err := dops.GetPerson(record.FromPersonID); err != nil {
-		return fmt.Errorf("load sender %d: %w", record.FromPersonID, err)
-	} else {
-		fromName = from.Name
-	}
-
-	eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeNewJinshuReceived,
-		SessionID: 0, // Jinshu is person-level, not session-scoped.
-		EventID:   eventID,
-		Payload: &eventqueue.JinshuReceivedPayload{
-			JinshuID:    record.ID,
-			FromName:    fromName,
-			Topic:       record.Topic,
-			Description: record.Description,
-			Files:       files,
-		},
+	var eventID int64
+	var recipients []int64
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var person, sender model.Person
+		if err := tx.First(&person, record.ToPersonID).Error; err != nil {
+			return err
+		}
+		if err := tx.First(&sender, record.FromPersonID).Error; err != nil {
+			return err
+		}
+		var err error
+		eventID, err = memory.RecordReferencedEventTx(tx, model.EventTypeJinshu, record.ID)
+		if err != nil {
+			return err
+		}
+		if person.Type != model.PersonTypeAI {
+			return nil
+		}
+		// Persist AI deliveries even if their Runtime has stopped since file delivery.
+		recipients = []int64{person.ID}
+		return eventqueue.AppendTx(tx, &eventqueue.AgentEvent{Type: eventqueue.EventTypeNewJinshuReceived, EventID: eventID,
+			Payload: &eventqueue.JinshuReceivedPayload{JinshuID: record.ID, FromName: sender.Name, Topic: record.Topic, Description: record.Description, Files: files}}, recipients...)
 	})
+	if err != nil {
+		return fmt.Errorf("persist Jinshu Event and delivery: %w", err)
+	}
+	if err := memory.RefreshSource(model.MemorySourceEvent, eventID); err != nil {
+		applogger.Error("jinshu: index delivery Event", "event_id", eventID, "error", err)
+	}
+	memory.EnqueueEventEmbedding(eventID, content)
+	eventqueue.Notify(recipients...)
 	return nil
 }
 

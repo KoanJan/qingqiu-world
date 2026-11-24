@@ -7,40 +7,6 @@ import (
 	"qingqiu-world-server/internal/model"
 )
 
-// CreateAgentEventBuffer persists a runtime event until the agent can process it.
-func CreateAgentEventBuffer(buffer *model.AgentEventBuffer) error {
-	return database.DB.Create(buffer).Error
-}
-
-// ListAgentEventBuffers returns a person's buffered events in replay order.
-func ListAgentEventBuffers(personID int64) ([]model.AgentEventBuffer, error) {
-	var buffers []model.AgentEventBuffer
-	err := database.DB.Where("person_id = ?", personID).
-		Order("event_id ASC, id ASC").
-		Find(&buffers).Error
-	return buffers, err
-}
-
-// HasAgentEventBuffer reports whether a durable event is already awaiting replay.
-func HasAgentEventBuffer(personID, eventID int64) (bool, error) {
-	var count int64
-	err := database.DB.Model(&model.AgentEventBuffer{}).
-		Where("person_id = ? AND event_id = ?", personID, eventID).
-		Count(&count).Error
-	return count > 0, err
-}
-
-// DeleteAgentEventBuffer removes a processed or invalid buffered event.
-func DeleteAgentEventBuffer(id int64) error {
-	return database.DB.Delete(&model.AgentEventBuffer{}, id).Error
-}
-
-// DeleteAgentEventBufferForEvent clears a delivered fact after it is processed.
-func DeleteAgentEventBufferForEvent(personID, eventID int64) error {
-	return database.DB.Where("person_id = ? AND event_id = ?", personID, eventID).
-		Delete(&model.AgentEventBuffer{}).Error
-}
-
 // SetAgentSleepSince records when an agent entered its energy-depleted state.
 func SetAgentSleepSince(personID int64, sleepSince string) error {
 	return database.DB.Model(&model.AgentState{}).

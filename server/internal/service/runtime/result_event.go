@@ -30,6 +30,10 @@ func (r *agentRuntime) emitSelfHeldResult(queueType eventqueue.AgentEventType, e
 			return err
 		}
 	}
+	outgoing := &eventqueue.AgentEvent{Type: queueType, SessionID: sessionID, EventID: eventID, Payload: payload, TriggerAction: trigger}
+	if err := eventqueue.AppendTx(tx, outgoing, r.agentPersonID); err != nil {
+		return err
+	}
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("commit self-held result: %w", err)
 	}
@@ -37,10 +41,7 @@ func (r *agentRuntime) emitSelfHeldResult(queueType eventqueue.AgentEventType, e
 	if actionID > 0 {
 		refreshMemorySource(model.MemorySourceAction, actionID)
 	}
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type: queueType, SessionID: sessionID, EventID: eventID,
-		Payload: payload, TriggerAction: trigger,
-	})
+	eventqueue.Notify(r.agentPersonID)
 	return nil
 }
 
@@ -65,6 +66,10 @@ func (r *agentRuntime) emitReferencedResult(queueType eventqueue.AgentEventType,
 			return err
 		}
 	}
+	outgoing := &eventqueue.AgentEvent{Type: queueType, SessionID: sessionID, EventID: eventID, Payload: payload, TriggerAction: trigger}
+	if err := eventqueue.AppendTx(tx, outgoing, r.agentPersonID); err != nil {
+		return err
+	}
 	if err := tx.Commit().Error; err != nil {
 		return fmt.Errorf("commit referenced result: %w", err)
 	}
@@ -72,9 +77,6 @@ func (r *agentRuntime) emitReferencedResult(queueType eventqueue.AgentEventType,
 	if actionID > 0 {
 		refreshMemorySource(model.MemorySourceAction, actionID)
 	}
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type: queueType, SessionID: sessionID, EventID: eventID,
-		Payload: payload, TriggerAction: trigger,
-	})
+	eventqueue.Notify(r.agentPersonID)
 	return nil
 }

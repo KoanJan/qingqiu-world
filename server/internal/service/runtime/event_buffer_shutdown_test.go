@@ -48,7 +48,7 @@ func TestInterruptedEventBufferPreservesUndecidedDelivery(t *testing.T) {
 	if len(buffers) != 1 {
 		t.Fatalf("expected one replayable event, got %d", len(buffers))
 	}
-	replayed, err := deserializeBufferedEvent(buffers[0])
+	replayed, err := eventqueue.Deserialize(buffers[0])
 	if err != nil || replayed.EventID != event.EventID || replayed.SessionID != event.SessionID {
 		t.Fatalf("buffer lost event identity: %+v, %v", replayed, err)
 	}
@@ -78,11 +78,11 @@ func TestBufferedCancellationKeepsItsTerminalMeaning(t *testing.T) {
 			CancelActionID: 815, CancelReason: "Patrick asked me to stop",
 		},
 	}
-	encoded, err := serializeEventPayload(event)
+	encoded, err := eventqueue.Serialize(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := deserializeBufferedEvent(model.AgentEventBuffer{
+	replayed, err := eventqueue.Deserialize(model.AgentEventBuffer{
 		EventType: int(event.Type), SessionID: event.SessionID,
 		EventID: event.EventID, PayloadJSON: encoded,
 	})

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"gorm.io/gorm"
+
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
@@ -125,6 +127,21 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 		return
 	}
 
+	recipients, err := messageRecipientsTx(tx, req.sessionID, r.agentPersonID)
+	if err != nil {
+		applogger.Error("commitMessage: resolve recipients", "session_id", req.sessionID, "error", err)
+		return
+	}
+	var sender model.Person
+	if err := tx.First(&sender, r.agentPersonID).Error; err != nil {
+		applogger.Error("commitMessage: load sender", "person_id", r.agentPersonID, "error", err)
+		return
+	}
+	if err := eventqueue.AppendTx(tx, messageDelivery(req.sessionID, msg.ID, eventID, msg.Content, sender.Name), recipients...); err != nil {
+		applogger.Error("commitMessage: persist recipient deliveries", "event_id", eventID, "error", err)
+		return
+	}
+
 	if err := tx.Commit().Error; err != nil {
 		applogger.Error("commitMessage: failed to commit tx",
 			"session_id", req.sessionID, "error", err)
@@ -149,68 +166,23 @@ func (r *agentRuntime) commitMessage(req *commitRequest) {
 	memory.EnqueueEventEmbedding(eventID, msg.Content)
 
 	// Notify other AI participants in the session.
-	r.notifyOtherAIParticipants(req.sessionID, msg.ID, req.content, eventID)
+	eventqueue.Notify(recipients...)
 
 	// Push message event to SSE clients.
 	notify(notification.MessageCommitted{SessionID: req.sessionID, MessageID: msg.ID, PersonID: msg.PersonID, Content: msg.Content, ExpressionInstruction: msg.ExpressionInstruction})
 }
 
-// notifyOtherAIParticipants sends EventTypeNewPrivateChatMessage events to
-// all other AI participants in the session. This is the agent-to-agent
-// communication path: when an agent commits a message, other agents in the
-// same session receive it as an event in their own eventqueue.
-//
-// The sending agent's name is resolved from its Person record and used as
-// SpeakerName in the event payload. The eventID from the memory system is
-// passed along so each receiving agent can create its own observation.
-func (r *agentRuntime) notifyOtherAIParticipants(sessionID, messageID int64, content string, eventID int64) {
-	aiPersonIDs, err := dops.GetSessionAIParticipantIDs(sessionID)
-	if err != nil {
-		applogger.Error("notifyOtherAIParticipants: failed to get AI participants",
-			"session_id", sessionID, "error", err)
-		return
-	}
+// messageRecipientsTx resolves the intended active AI recipients in the same
+// transaction as the Event, excluding the sender.
+func messageRecipientsTx(tx *gorm.DB, sessionID, senderID int64) ([]int64, error) {
+	var ids []int64
+	err := tx.Model(&model.ParticipantSession{}).
+		Where("session_id = ? AND participant_id != ? AND participant_id IN (SELECT id FROM persons WHERE type = ? AND status = ?)", sessionID, senderID, model.PersonTypeAI, model.PersonStatusActive).
+		Order("participant_id").Pluck("participant_id", &ids).Error
+	return ids, err
+}
 
-	var recipientIDs []int64
-	for _, id := range aiPersonIDs {
-		if id != r.agentPersonID {
-			recipientIDs = append(recipientIDs, id)
-		}
-	}
-	if len(recipientIDs) == 0 {
-		return
-	}
-
-	sender, err := dops.GetPerson(r.agentPersonID)
-	if err != nil {
-		applogger.Error("notifyOtherAIParticipants: failed to get sender name",
-			"person_id", r.agentPersonID, "error", err)
-		return
-	}
-
-	for _, recipientPersonID := range recipientIDs {
-		ac, err := dops.GetAgentConfigByPersonID(recipientPersonID)
-		if err != nil {
-			applogger.Error("notifyOtherAIParticipants: failed to resolve agent config",
-				"person_id", recipientPersonID, "error", err)
-			continue
-		}
-		eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
-			Type:      eventqueue.EventTypeNewPrivateChatMessage,
-			SessionID: sessionID,
-			EventID:   eventID,
-			Payload: &eventqueue.NewMessagePayload{
-				MessageID:      messageID,
-				MessageContent: content,
-				SpeakerName:    sender.Name,
-			},
-		})
-		applogger.Info("Notified AI participant of new message",
-			"session_id", sessionID,
-			"message_id", messageID,
-			"sender_person_id", r.agentPersonID,
-			"recipient_person_id", recipientPersonID,
-			"recipient_agent_config_id", ac.ID,
-		)
-	}
+func messageDelivery(sessionID, messageID, eventID int64, content, speakerName string) *eventqueue.AgentEvent {
+	return &eventqueue.AgentEvent{Type: eventqueue.EventTypeNewPrivateChatMessage, SessionID: sessionID, EventID: eventID,
+		Payload: &eventqueue.NewMessagePayload{MessageID: messageID, MessageContent: content, SpeakerName: speakerName}}
 }

@@ -45,7 +45,7 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 	}
 	writeSecondSource := func() {
 		t.Helper()
-		for name, content := range map[string]string{"2.sql": "development step 2", "2.go": "package scripts"} {
+		for name, content := range map[string]string{"2.sql": "development step 2", "2.go": "package scripts", "3.go": "package scripts"} {
 			source := "server/internal/migration/dev/unreleased/scripts/" + name
 			path := filepath.Join(repoPath, source)
 			if err := os.WriteFile(path, []byte(content), 0600); err != nil {
@@ -113,7 +113,7 @@ func TestDeveloperBaselineMigrationAndRebase(t *testing.T) {
 		t.Fatalf("reading active data changed baseline: %v", err)
 	}
 	state, err := loadState(active)
-	if err != nil || state.DevRevision != 2 || state.DevCommit != firstHash.String() {
+	if err != nil || state.DevRevision != 3 || state.DevCommit != firstHash.String() {
 		t.Fatalf("active development state = %+v, error = %v", state, err)
 	}
 	managed := &manager{active: active, store: active + ".developer-data"}

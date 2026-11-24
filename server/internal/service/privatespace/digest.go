@@ -5,6 +5,9 @@ import (
 	"strings"
 	"time"
 
+	"gorm.io/gorm"
+
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
@@ -95,34 +98,25 @@ func (l *Loop) generateDigest() {
 		}
 	}
 
-	eventID, err := memory.RecordPSDigestEvent(record.ID, digest)
-	if err != nil {
-		applogger.Error("PrivateSpace failed to record digest memory event",
-			"digest_id", record.ID, "error", err,
-		)
-		return
-	}
-
-	// Bridge: resolve agentConfigID from personID for eventqueue routing.
-	// The event queue is keyed by agentConfigID because the runtime event loop
-	// subscribes per-agent-config, while this loop is a long-lived person-domain
-	// object — the config must be resolved at send time, never stored.
-	ac, err := dops.GetAgentConfigByPersonID(l.personID)
-	if err != nil {
-		applogger.Error("PrivateSpace digest: failed to resolve agent config for event routing",
-			"person_id", l.personID, "digest_id", record.ID, "error", err,
-		)
-		return
-	}
-
-	eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
-		Type:    eventqueue.EventTypePSCompleted,
-		EventID: eventID,
-		Payload: &eventqueue.PSCompletedPayload{
-			DigestID: record.ID,
-			Digest:   digest,
-		},
+	var eventID int64
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		eventID, err = memory.RecordReferencedEventTx(tx, model.EventTypePSDigest, record.ID)
+		if err != nil {
+			return err
+		}
+		return eventqueue.AppendTx(tx, &eventqueue.AgentEvent{Type: eventqueue.EventTypePSCompleted, EventID: eventID,
+			Payload: &eventqueue.PSCompletedPayload{DigestID: record.ID, Digest: digest}}, l.personID)
 	})
+	if err != nil {
+		applogger.Error("PrivateSpace: persist digest Event and delivery", "digest_id", record.ID, "error", err)
+		return
+	}
+	if err := memory.RefreshSource(model.MemorySourceEvent, eventID); err != nil {
+		applogger.Error("PrivateSpace: index digest Event", "event_id", eventID, "error", err)
+	}
+	memory.EnqueueEventEmbedding(eventID, digest)
+	eventqueue.Notify(l.personID)
 
 	applogger.Info("PrivateSpace digest dispatched",
 		"person_id", l.personID,

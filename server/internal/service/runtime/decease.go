@@ -5,7 +5,6 @@ import (
 
 	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
-	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
@@ -47,16 +46,7 @@ func DeceaseAgent(agentConfigID, personID int64) (bool, error) {
 			return err
 		}
 		event = &eventqueue.AgentEvent{Type: eventqueue.EventTypeSystemNotification, EventID: eventID, Payload: payload}
-		serialized, err := serializeEventPayload(event)
-		if err != nil {
-			return err
-		}
-		for _, recipientID := range recipients {
-			if err := tx.Create(&model.AgentEventBuffer{PersonID: recipientID, EventType: int(event.Type), EventID: eventID, PayloadJSON: serialized}).Error; err != nil {
-				return err
-			}
-		}
-		return nil
+		return eventqueue.AppendTx(tx, event, recipients...)
 	})
 	if err != nil {
 		return changed, err
@@ -73,13 +63,6 @@ func DeceaseAgent(agentConfigID, personID int64) (bool, error) {
 		return false, nil
 	}
 	refreshMemorySource(model.MemorySourceEvent, event.EventID)
-	for _, recipientID := range recipients {
-		ac, err := dops.GetAgentConfigByPersonID(recipientID)
-		if err != nil {
-			applogger.Error("deceased event: missing recipient config", "recipient_person_id", recipientID, "event_id", event.EventID, "error", err)
-			continue
-		}
-		eventqueue.SendEvent(ac.ID, event)
-	}
+	eventqueue.Notify(recipients...)
 	return true, nil
 }

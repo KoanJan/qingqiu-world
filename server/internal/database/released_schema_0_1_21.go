@@ -16,3 +16,18 @@ type releasedLLMConfig struct {
 }
 
 func (releasedLLMConfig) TableName() string { return "llm_configs" }
+
+// releasedAgentEventBuffer preserves the nonunique 0.1.21 delivery index.
+// Recipient deduplication and uniqueness belong to development revision 3.
+type releasedAgentEventBuffer struct {
+	ID          int64     `gorm:"primaryKey;autoIncrement"`
+	PersonID    int64     `gorm:"not null;index:idx_agent_event_buffer_person_event;column:person_id"`
+	EventType   int       `gorm:"not null;column:event_type"`
+	SessionID   int64     `gorm:"not null;column:session_id"`
+	EventID     int64     `gorm:"not null;index:idx_agent_event_buffer_person_event;column:event_id"`
+	PayloadJSON string    `gorm:"not null;type:text;column:payload_json"`
+	CreatedAt   time.Time `gorm:"not null;autoCreateTime"`
+	UpdatedAt   time.Time `gorm:"not null;autoUpdateTime"`
+}
+
+func (releasedAgentEventBuffer) TableName() string { return "agent_event_buffers" }

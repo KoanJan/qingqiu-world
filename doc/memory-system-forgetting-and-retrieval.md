@@ -267,7 +267,7 @@ This is precisely the point. The agent *should* encounter its own name when read
 
 This design is consistent but not total. The LLM API protocol layer uses `role: "assistant"` because this is an OpenAI-compatible API requirement — the model's training expects this token. But the role label never reaches the agent's prompt content. The protocol layer's "assistant" is a transport encoding; it does not define the agent's identity.
 
-Similarly, the `messages` table uses `role = 2` (integer enum for assistant) for storage efficiency. This is a database encoding, not a semantic label. The agent never sees it.
+The `messages` table records the sender through `person_id`, preserving the actual participant’s identity. The user/assistant roles are LLM protocol values constructed at the gateway boundary; they are not stored message identities.
 
 ---
 
