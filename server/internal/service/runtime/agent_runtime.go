@@ -280,7 +280,12 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 	}
 	state, err := energy.RecoverEnergy(r.agentPersonID)
 	if err != nil {
-		applogger.Error("energy recovery failed", "error", err)
+		applogger.Error("energy recovery failed", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		// Admission is still unresolved after Next removed the delivery. Keep
+		// its original place without treating an unknown energy state as sleep.
+		if err := r.persistBufferedEvent(event); err != nil {
+			applogger.Error("failed to restore event after energy recovery error", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		}
 		return false
 	}
 	if state.Energy < int(energyCost(SituationSourceExternal)) {

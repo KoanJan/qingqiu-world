@@ -38,6 +38,7 @@ type Subscription struct {
 	batch         []model.AgentEventBuffer
 	index         int
 	position      int64
+	lastDelivery  *model.AgentEventBuffer // Latest removed row, solely for explicit consumer retention.
 	paused        bool
 	alarmPosition int64
 	checkAlarms   atomic.Bool
@@ -72,8 +73,9 @@ func (s *Subscription) Next(ctx context.Context) (*AgentEvent, error) {
 	}
 	if s.checkAlarms.Swap(false) {
 		// Scheduled records are the durable source of control-only registration.
-		// Remember registration progress only for this subscription; a restart must
-		// arm pending alarms again. Never manufacture an Event or Observation here.
+		// The cursor belongs to one scan round. Later rounds revisit pending
+		// alarms whose Runtime registration failed; registration is idempotent.
+		// Never manufacture an Event or Observation here.
 		var alarms []model.ScheduledEvent
 		err := database.DB.WithContext(ctx).Where("person_id = ? AND status = ? AND id > ?", s.personID, model.ScheduledEventStatusPending, s.alarmPosition).Order("id ASC").Limit(1).Find(&alarms).Error
 		if err != nil {
@@ -87,6 +89,9 @@ func (s *Subscription) Next(ctx context.Context) (*AgentEvent, error) {
 			s.signal()
 			return &AgentEvent{Type: EventTypeAlarmCreated, SessionID: alarm.SessionID, Payload: &AlarmCreatedPayload{ScheduledEventID: alarm.ID}}, nil
 		}
+		// End this round without self-signalling. A later notification or tick
+		// starts again from the first pending alarm, rather than skipping failures.
+		s.alarmPosition = 0
 	}
 	if s.paused {
 		return nil, nil
@@ -112,8 +117,34 @@ func (s *Subscription) Next(ctx context.Context) (*AgentEvent, error) {
 	s.batch[s.index] = model.AgentEventBuffer{}
 	s.index++
 	s.position = row.ID
+	s.lastDelivery = &row
 	s.signal()
 	return event, nil
+}
+
+// Restore retains the latest normal delivery at its original database ID.
+// Only the serial Next consumer calls it, before retrieving another event.
+// It invalidates the batch after persistence succeeds so the next read keeps
+// delivery order. This is explicit retention, not a processing acknowledgement.
+func (s *Subscription) Restore(event *AgentEvent) error {
+	if event == nil || s.lastDelivery == nil || event.EventID != s.lastDelivery.EventID {
+		return fmt.Errorf("restore requires the latest delivery for person %d", s.personID)
+	}
+	row := *s.lastDelivery
+	// A producer may have enqueued the same Person/Event again since Next
+	// removed it. Restore the original ID and context without a second copy.
+	if err := database.DB.Clauses(clause.OnConflict{
+		Columns: []clause.Column{{Name: "person_id"}, {Name: "event_id"}},
+		DoUpdates: clause.AssignmentColumns([]string{
+			"id", "event_type", "session_id", "payload_json", "created_at", "updated_at",
+		}),
+	}).Create(&row).Error; err != nil {
+		return fmt.Errorf("restore delivery %d for person %d: %w", row.ID, s.personID, err)
+	}
+	s.batch = nil
+	s.index = 0
+	s.position = 0
+	return nil
 }
 
 // AppendTx joins the producer's transaction. It never notifies before commit.

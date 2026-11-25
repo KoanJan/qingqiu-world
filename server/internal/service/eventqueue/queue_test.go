@@ -231,6 +231,102 @@ func TestNextFailurePreservesCurrentDelivery(t *testing.T) {
 	}
 }
 
+// Explicit retention must restore the old ID and reload a populated cache,
+// without replaying earlier consumed rows or moving the current event to the tail.
+func TestRestoreKeepsOriginalDeliveryOrder(t *testing.T) {
+	for _, duplicate := range []bool{false, true} {
+		t.Run(fmt.Sprintf("pending_duplicate=%t", duplicate), func(t *testing.T) {
+			db := queueDB(t)
+			_, s := subscribeTest(t, 1)
+			for _, id := range []int64{10, 20, 30} {
+				if err := AppendTx(db, delivery(id), 1); err != nil {
+					t.Fatal(err)
+				}
+			}
+			var original model.AgentEventBuffer
+			if err := db.Where("person_id = ? AND event_id = ?", 1, 20).First(&original).Error; err != nil {
+				t.Fatal(err)
+			}
+			for _, id := range []int64{10, 20} {
+				event, err := s.Next(context.Background())
+				if err != nil || event == nil || event.EventID != id {
+					t.Fatalf("initial event=%+v err=%v want=%d", event, err, id)
+				}
+				if id != 20 {
+					continue
+				}
+				if duplicate {
+					if err := AppendTx(db, delivery(20), 1); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := AppendTx(db, delivery(40), 1); err != nil {
+					t.Fatal(err)
+				}
+				// Retention can be reached again during shutdown; it is idempotent.
+				for i := 0; i < 2; i++ {
+					if err := s.Restore(event); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			var restored model.AgentEventBuffer
+			if err := db.Where("person_id = ? AND event_id = ?", 1, 20).First(&restored).Error; err != nil {
+				t.Fatal(err)
+			}
+			if restored.ID != original.ID || restored.PayloadJSON != original.PayloadJSON || restored.SessionID != original.SessionID || !restored.CreatedAt.Equal(original.CreatedAt) {
+				t.Fatalf("restored delivery changed identity or context: %+v", restored)
+			}
+			for _, id := range []int64{20, 30, 40} {
+				event, err := s.Next(context.Background())
+				if err != nil || event == nil || event.EventID != id {
+					t.Fatalf("restored order: event=%+v err=%v want=%d", event, err, id)
+				}
+			}
+			if event, err := s.Next(context.Background()); err != nil || event != nil {
+				t.Fatalf("consumed or duplicate row replayed: %+v %v", event, err)
+			}
+		})
+	}
+}
+
+// A failed restore must not discard the cache before its database row exists.
+func TestRestoreFailureKeepsCacheUntilPersistenceSucceeds(t *testing.T) {
+	db := queueDB(t)
+	_, s := subscribeTest(t, 1)
+	for _, id := range []int64{10, 20} {
+		if err := AppendTx(db, delivery(id), 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	event, err := s.Next(context.Background())
+	if err != nil || event == nil {
+		t.Fatalf("retrieve=%+v %v", event, err)
+	}
+	index, position, batchSize := s.index, s.position, len(s.batch)
+	if err := db.Exec(`CREATE TRIGGER reject_restore BEFORE INSERT ON agent_event_buffers BEGIN SELECT RAISE(ABORT, 'restore failure'); END`).Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Restore(event); err == nil {
+		t.Fatal("restore failure reported success")
+	}
+	if s.index != index || s.position != position || len(s.batch) != batchSize {
+		t.Fatal("failed restore invalidated consumption state")
+	}
+	if err := db.Exec("DROP TRIGGER reject_restore").Error; err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Restore(event); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []int64{10, 20} {
+		event, err := s.Next(context.Background())
+		if err != nil || event == nil || event.EventID != id {
+			t.Fatalf("retry order: event=%+v err=%v want=%d", event, err, id)
+		}
+	}
+}
+
 func TestDecodeAndQueryErrorsAreNotEmptyOrDestructive(t *testing.T) {
 	db := queueDB(t)
 	q, s := subscribeTest(t, 1)

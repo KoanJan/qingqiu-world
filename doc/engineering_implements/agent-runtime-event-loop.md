@@ -122,7 +122,7 @@ flowchart TD
 
 ### Event handling flow
 
-1. **Phase 0 — Energy**: Runtime uses `energy.RecoverEnergy(personID)` before `Next` and pauses ordinary retrieval when energy is insufficient. Pending rows remain in storage. `handleEvent` rechecks energy at the business boundary; if it has become insufficient, it retains the event through `eventqueue.AppendTx`, records `sleep_since` if empty, and returns false. No independent replay loop is used.
+1. **Phase 0 — Energy**: Runtime uses `energy.RecoverEnergy(personID)` before `Next` and pauses ordinary retrieval when energy is insufficient or its lookup fails. Pending rows remain in storage. `handleEvent` rechecks energy at the business boundary; insufficient energy or a lookup failure restores the removed delivery through `queue.Restore`. The queue reinstates its original buffer ID and context, then clears its batch and read position so a fresh bounded read preserves delivery order. Only known energy depletion records `sleep_since`; a lookup failure does not imply sleep. No independent replay loop is used.
 
 2. **Observation creation**: After Comprehend, the runtime records the triggering durable Event and the exact Message Events it read. A message already consumed by an earlier batch already has its Observation; a buffered or unread message is not observed. An outgoing Message receives the sender's Observation when its Message and Event are committed.
 
@@ -226,7 +226,7 @@ Each subscription has one current batch of at most 64 records, one consumption i
 
 Batch loading leaves all rows in the database. For each normal event, `Next` decodes the current cached row, deletes only that buffer row, then clears the slot, advances the position, signals another consumption opportunity, and returns the event. Query, decoding, or deletion failure returns an error without advancing the position; a failed current entry is retained for retry. Batching reduces payload queries, but each successful retrieval still performs a database delete. No connection or transaction remains held during business processing.
 
-This is removal on retrieval, without status fields or ACK. A process interruption after deletion commits, including before `Next` returns or before Runtime finishes handling it, does not restore the record. Queue removal proves neither Observation nor Decision nor Action completion. Event and business history are preserved. Runtime's existing explicit energy and graceful-shutdown retention can enqueue a new pending copy; the queue does not infer processing progress from Decisions or Observations.
+This is removal on retrieval, without status fields or ACK. A process interruption after deletion commits, including before `Next` returns or before Runtime finishes handling it, does not automatically restore the record. Queue removal proves neither Observation nor Decision nor Action completion. Event and business history are preserved. Runtime's explicit energy and graceful-shutdown retention uses `queue.Restore` to reinstate the latest delivery at its original ID and invalidate the current cache only after persistence succeeds. The queue retains that latest removed row solely for explicit retention; it does not infer processing progress from Decisions or Observations.
 
 ### Wake-ups, controls, and restart
 
@@ -234,7 +234,7 @@ Subscription startup signals readiness immediately. Every successful retrieval s
 
 Startup and resubscription use a fresh cache and position to read the remaining database rows. Teardown cancels the subscription's periodic worker without closing a readiness channel that producers might still reference. No Runtime-owned replay list or persistent position is needed.
 
-Pending `scheduled_events` are the durable source for control-only alarm registration. Startup, `NotifyAlarmCreated`, and periodic checks request registration reads inside the queue. A subscription tracks which pending alarm IDs it has handed to Runtime for registration; a new subscription starts this control position afresh so timer registration can be recovered. Runtime's alarm module still owns arming, firing, and cancellation.
+Pending `scheduled_events` are the durable source for control-only alarm registration. Startup, `NotifyAlarmCreated`, and periodic checks request registration reads inside the queue. Its alarm cursor tracks progress within one scan round and resets when no later pending record remains. A subsequent notification or periodic check scans pending records again, allowing failed Runtime registration to retry within the same subscription. Ending a round does not immediately signal another round. Runtime's existing registry prevents duplicate timer creation; its alarm module still owns arming, firing, and cancellation.
 
 Development revision 3 merges equivalent historical buffer duplicates while retaining Session and Action context, then adds recipient/Event uniqueness and the Person/delivery-ID index. Conflicting duplicate payloads stop conversion rather than discard history. It does not synthesize deliveries for unrelated historical Events.
 

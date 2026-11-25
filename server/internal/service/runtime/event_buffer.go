@@ -3,7 +3,6 @@ package runtime
 import (
 	"time"
 
-	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/service/eventqueue"
@@ -40,7 +39,8 @@ func (r *agentRuntime) bufferInterruptedEvent(event *eventqueue.AgentEvent) erro
 	return nil
 }
 
-// persistBufferedEvent retains a delivery through the queue storage boundary.
+// persistBufferedEvent restores the current delivery through the queue storage
+// boundary, preserving its original order and invalidating the queue's cache.
 func (r *agentRuntime) persistBufferedEvent(event *eventqueue.AgentEvent) error {
-	return eventqueue.AppendTx(database.DB, event, r.agentPersonID)
+	return r.queue.Restore(event)
 }
