@@ -52,13 +52,13 @@ const (
 // It transforms an Agent from a passive configuration object into an active,
 // stateful entity with its own lifecycle.
 //
-// The runtime runs a single goroutine event loop (for-select + eventCh + heartbeatTimer).
+// The runtime runs a single goroutine event loop (select + queue readiness + heartbeatTimer).
 // Work execution runs in separate goroutines, allowing the event loop to remain responsive.
 type agentRuntime struct {
 	activeWorks        []*work
 	agentConfigID      int64
-	agentPersonID      int64                         // Agent's PersonID for participant_session queries
-	eventCh            <-chan *eventqueue.AgentEvent // Read-only channel subscribed from eventqueue.Global
+	agentPersonID      int64                    // Agent's PersonID for participant_session queries
+	queue              *eventqueue.Subscription // Person-scoped durable delivery subscription
 	messageCommitCh    chan *commitRequest
 	heartbeatInterval  time.Duration      // Base heartbeat interval (adaptive)
 	idleTicks          int                // Consecutive idle heartbeats (for tickless backoff)
@@ -89,12 +89,12 @@ type agentRuntime struct {
 // which adds event subscription and work recovery.
 func newAgentRuntime(
 	agentConfigID int64,
-	eventCh <-chan *eventqueue.AgentEvent,
+	queue *eventqueue.Subscription,
 	heartbeatInterval time.Duration,
 ) *agentRuntime {
 	return &agentRuntime{
 		agentConfigID:     agentConfigID,
-		eventCh:           eventCh,
+		queue:             queue,
 		messageCommitCh:   make(chan *commitRequest, 16),
 		cognitionWake:     make(chan struct{}, 1),
 		heartbeatInterval: heartbeatInterval,
@@ -133,7 +133,6 @@ func (r *agentRuntime) Run(ctx context.Context) {
 		defer internalWg.Done()
 		r.runCognitionWorker(ctx)
 	}()
-	r.replayBufferedEvents(ctx)
 	r.notifyWaitingActions()
 	r.signalCognition()
 
@@ -170,31 +169,42 @@ func (r *agentRuntime) Run(ctx context.Context) {
 			applogger.Info("agentRuntime stopped", "agent_config_id", r.agentConfigID)
 			return
 
-		case event := <-r.eventCh:
+		case <-r.queue.Ready():
+			// Energy remains Runtime business policy. Pausing normal delivery
+			// leaves rows durable while control-only alarm registration proceeds.
+			state, err := energy.RecoverEnergy(r.agentPersonID)
+			if err != nil {
+				applogger.Error("failed to recover energy before queue retrieval", "person_id", r.agentPersonID, "error", err)
+			}
+			r.queue.SetPaused(err != nil || state.Energy < int(energyCost(SituationSourceExternal)))
+			event, err := r.queue.Next(ctx)
+			if err != nil {
+				if ctx.Err() == nil {
+					applogger.Error("failed to retrieve agent event", "person_id", r.agentPersonID, "error", err)
+				}
+				continue
+			}
 			if event == nil {
-				r.pauseCurrentCognition()
-				applogger.Error("agent event channel closed", "agent_config_id", r.agentConfigID)
-				return
+				continue
 			}
 			r.busy.Add(1)
 			r.pauseCurrentCognition()
 			// External events reset idleTicks so the adaptive backoff
 			// (Active→Steady→Dormant) restarts from heartbeatBase.
 			r.idleTicks = 0
-			if sleepSince, err := dops.GetAgentSleepSince(r.agentPersonID); err != nil {
-				applogger.Error("failed to read agent sleep state", "person_id", r.agentPersonID, "error", err)
-			} else if sleepSince != "" {
-				r.replayBufferedEvents(ctx)
-			}
-			processed := r.handleEvent(ctx, event, false)
-			if processed && ctx.Err() == nil && event.EventID > 0 {
-				if err := dops.DeleteAgentEventBufferForEvent(r.agentPersonID, event.EventID); err != nil {
-					applogger.Error("failed to clear processed event delivery", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+			if event.Type != eventqueue.EventTypeAlarmCreated {
+				if sleepSince, err := dops.GetAgentSleepSince(r.agentPersonID); err != nil {
+					applogger.Error("failed to read agent sleep state", "person_id", r.agentPersonID, "error", err)
+				} else if sleepSince != "" {
+					if err := dops.ClearAgentSleepSince(r.agentPersonID); err != nil {
+						applogger.Error("failed to clear agent sleep state", "person_id", r.agentPersonID, "error", err)
+					}
 				}
 			}
+			r.handleEvent(ctx, event)
 			// A shutdown can cancel Comprehend or Decide after this event was
-			// removed from the channel. Preserve an undecided event for startup
-			// replay instead of losing its only queue delivery.
+			// returned by the queue. Preserve an undecided event for startup
+			// retrieval instead of losing its only queue delivery.
 			if ctx.Err() != nil {
 				if err := r.bufferInterruptedEvent(event); err != nil {
 					applogger.Error("failed to buffer shutdown-interrupted event", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
@@ -219,7 +229,7 @@ func (r *agentRuntime) Run(ctx context.Context) {
 	}
 }
 
-func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentEvent, isReplay bool) bool {
+func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentEvent) bool {
 	if event == nil {
 		applogger.Error("handleEvent: nil event")
 		return true
@@ -270,20 +280,15 @@ func (r *agentRuntime) handleEvent(ctx context.Context, event *eventqueue.AgentE
 	}
 	state, err := energy.RecoverEnergy(r.agentPersonID)
 	if err != nil {
-		applogger.Error("energy recovery failed", "error", err)
+		applogger.Error("energy recovery failed", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		// Admission is still unresolved after Next removed the delivery. Keep
+		// its original place without treating an unknown energy state as sleep.
+		if err := r.persistBufferedEvent(event); err != nil {
+			applogger.Error("failed to restore event after energy recovery error", "person_id", r.agentPersonID, "event_id", event.EventID, "error", err)
+		}
 		return false
 	}
 	if state.Energy < int(energyCost(SituationSourceExternal)) {
-		if isReplay {
-			applogger.Info("skipped buffered agent event due to insufficient energy",
-				"person_id", r.agentPersonID,
-				"event_type", event.Type,
-				"session_id", event.SessionID,
-				"event_id", event.EventID,
-				"energy", state.Energy,
-			)
-			return false
-		}
 		if err := r.bufferEvent(event); err != nil {
 			applogger.Error("failed to buffer event", "error", err)
 		}
@@ -1360,13 +1365,7 @@ func (r *agentRuntime) handleCreateAlarmAction(act action.Action, situation *Sit
 		return
 	}
 
-	eventqueue.SendEvent(r.agentConfigID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeAlarmCreated,
-		SessionID: sessionID,
-		Payload: &eventqueue.AlarmCreatedPayload{
-			ScheduledEventID: record.ID,
-		},
-	})
+	eventqueue.NotifyAlarmCreated(r.agentPersonID)
 
 	until := time.Until(triggerAt).Round(time.Minute)
 	applogger.Info("action.CreateAlarm: alarm set",
@@ -1474,9 +1473,7 @@ func (r *agentRuntime) adjustHeartbeatInterval() time.Duration {
 // the event loop. Loads the agent's LLM config, subscribes to the event queue,
 // and recovers abandoned works from a previous run.
 func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
-	eventCh := eventqueue.Subscribe(agentConfigID)
-
-	runtime := newAgentRuntime(agentConfigID, eventCh, 30*time.Second)
+	runtime := newAgentRuntime(agentConfigID, nil, 30*time.Second)
 
 	// Resolve agent's PersonID for participant_session queries
 	ac, err := dops.Get[model.AgentConfig](agentConfigID)
@@ -1512,6 +1509,7 @@ func createAgentRuntime(agentConfigID int64) (*agentRuntime, error) {
 			"agent_config_id", agentConfigID, "person_id", ac.PersonID, "error", err)
 	}
 
+	runtime.queue = eventqueue.Subscribe(ac.PersonID)
 	return runtime, nil
 }
 

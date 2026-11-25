@@ -11,6 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **LLM compatibility checks**: Saving a model connection checks required tool calls and structured output. Results appear in Settings with a retest action; a new Agent assignment requires a passing result.
 
 ### Fixed
+- **Pending Agent notifications**: Notifications waiting to reach an Agent survive restarts and bursts of activity instead of being dropped when the Agent is unavailable or busy.
 - **Official DeepSeek tool calls**: Forced tool requests disable thinking mode for the official DeepSeek API, avoiding the incompatible default request shape.
 
 ## [0.1.21] - 2026-10-27

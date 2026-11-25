@@ -106,9 +106,11 @@ func initializeCurrent(tx *gorm.DB, version string) error {
 	models := allModels()
 	if version == "0.1.21" {
 		for i, entry := range models {
-			if _, ok := entry.(*model.LLMConfig); ok {
+			switch entry.(type) {
+			case *model.LLMConfig:
 				models[i] = &releasedLLMConfig{}
-				break
+			case *model.AgentEventBuffer:
+				models[i] = &releasedAgentEventBuffer{}
 			}
 		}
 	}

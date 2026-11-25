@@ -191,6 +191,12 @@ func fireScheduledEvent(event *model.ScheduledEvent) {
 		applogger.Error("fireScheduledEvent: failed to record durable Event", "scheduled_event_id", event.ID, "error", err)
 		return
 	}
+	outgoing := &eventqueue.AgentEvent{Type: eventqueue.EventTypeScheduled, SessionID: event.SessionID, EventID: eventID,
+		Payload: &eventqueue.ScheduledEventPayload{ScheduledEventID: event.ID, Message: event.Message, Action: event.Action, ActionContent: event.ActionContent, ExpressionInstruction: event.ExpressionInstruction}}
+	if err := eventqueue.AppendTx(tx, outgoing, event.PersonID); err != nil {
+		applogger.Error("fireScheduledEvent: persist recipient delivery", "scheduled_event_id", event.ID, "error", err)
+		return
+	}
 	if err := tx.Commit().Error; err != nil {
 		applogger.Error("fireScheduledEvent: failed to commit alarm and Event", "scheduled_event_id", event.ID, "error", err)
 		return
@@ -204,31 +210,7 @@ func fireScheduledEvent(event *model.ScheduledEvent) {
 		"action", event.Action,
 	)
 
-	// Bridge: resolve agentConfigID from personID for eventqueue routing.
-	// The event queue is keyed by agentConfigID because the runtime event loop
-	// subscribes per-agent-config, but scheduled_events is now keyed by person_id.
-	var ac model.AgentConfig
-	if err := database.DB.Where("person_id = ?", event.PersonID).First(&ac).Error; err != nil {
-		applogger.Error("fireScheduledEvent: failed to resolve agent config from person_id",
-			"event_id", event.ID,
-			"person_id", event.PersonID,
-			"error", err,
-		)
-		return
-	}
-
-	eventqueue.SendEvent(ac.ID, &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeScheduled,
-		SessionID: event.SessionID,
-		EventID:   eventID,
-		Payload: &eventqueue.ScheduledEventPayload{
-			ScheduledEventID:      event.ID,
-			Message:               event.Message,
-			Action:                event.Action,
-			ActionContent:         event.ActionContent,
-			ExpressionInstruction: event.ExpressionInstruction,
-		},
-	})
+	eventqueue.Notify(event.PersonID)
 }
 
 // armScheduledEvent loads a scheduled event by ID and arms it for firing: it
@@ -268,7 +250,7 @@ func armScheduledEvent(eventID int64) {
 
 // recoverScheduledEvents restores pending scheduled events after a server restart.
 // When the server shuts down, alarm goroutines are cancelled and in-flight
-// eventqueue events are drained. This function recovers orphaned events by:
+// queue memory caches are released. This function recovers orphaned events by:
 //   - Immediately triggering events whose trigger_at has already passed
 //   - Re-registering goroutines for events whose trigger_at is still in the future
 //

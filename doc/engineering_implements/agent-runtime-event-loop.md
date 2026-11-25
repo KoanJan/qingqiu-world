@@ -13,13 +13,13 @@ graph TB
     end
 
     subgraph "Event Transport"
-        EQ["eventqueue<br/>per-agent buffered channel<br/>(buffer=64)"]
+        EQ["eventqueue<br/>durable recipient rows + bounded batch cache<br/>capacity-one readiness signal"]
     end
 
     subgraph "Agent Runtime (one goroutine per agent)"
-        Loop["Event Loop<br/>for-select over eventCh + heartbeatTimer"]
-        Wakeup["Wake-up Check<br/>sleep_since non-empty?<br/>→ replayBufferedEvents"]
-        Handle["handleEvent<br/>(shared by channel + replay)"]
+        Loop["Event Loop<br/>select over queue.Ready + heartbeatTimer"]
+        Wakeup["Energy admission<br/>pause normal queue delivery when depleted"]
+        Handle["queue.Next → handleEvent<br/>one event at a time"]
         Energy["Phase 0: Energy<br/>RecoverEnergy → hard-block?"]
         Comprehend["Comprehend Phase<br/>parallel: preprocessing + person_state + KB retrieval"]
         Situation["Build Situation<br/>External: Event + Comprehension<br/>Internal: heartbeat description"]
@@ -40,7 +40,7 @@ graph TB
 
     subgraph "Energy & Buffer"
         AgentState["agent_states<br/>energy / last_recovered_date / sleep_since"]
-        EventBuffer["agent_event_buffers<br/>persisted events during sleep"]
+        EventBuffer["agent_event_buffers<br/>all intended Agent deliveries"]
     end
 
     subgraph "Heartbeat"
@@ -97,58 +97,32 @@ Usage principle: **fetch at point of use, don't hold or pass the pointer**. Each
 
 ## Event Loop
 
-The event loop is the heart of the runtime, running in a dedicated goroutine per agent:
+The event loop runs in a dedicated goroutine per Agent. Runtime determines whether its energy permits normal delivery; queue internals own SQL, batches, positions, and removal. Alarm registration remains available even while normal delivery is paused.
 
 ```mermaid
 flowchart TD
-    Start["Run() entry"] --> MsgGoroutine["Start message-commit goroutine"]
-    MsgGoroutine --> StartupReplay["replayBufferedEvents(ctx)<br/>(drain buffer persisted before shutdown)"]
-    StartupReplay --> Select{"select"}
-
-    Select -->|event from eventCh| ResetIdle["idleTicks = 0"]
-    ResetIdle --> WakeCheck{"sleep_since<br/>non-empty?"}
-    WakeCheck -->|yes| Replay["replayBufferedEvents(ctx)"]
-    WakeCheck -->|no| HandleEvent["handleEvent(event, isReplay=false)"]
-    Replay --> HandleEvent
-    HandleEvent --> LoopContinue["Continue loop"]
-
-    Select -->|heartbeat tick| HBPhase["Build heartbeat Situation<br/>→ Decide → executeActions"]
-    HBPhase --> LoopContinue
-
-    Select -->|ctx.Done| Drain["Drain all works<br/>→ shutdown"]
+    Start["Run: start message-commit and cognition workers"] --> Select{"select"}
+    Select -->|queue.Ready| Energy["Recover energy and set queue pause state"]
+    Energy --> Next["queue.Next(ctx)"]
+    Next -->|event| Handle["Reset idle backoff; handleEvent(ctx, event)"]
+    Next -->|empty| Select
+    Next -->|error| Error["Log error; await later notification or periodic check"]
+    Error --> Select
+    Handle --> Select
+    Select -->|heartbeat| Heartbeat["Existing heartbeat maintenance and Decide"]
+    Heartbeat --> Select
+    Select -->|cancellation| Stop["Stop workers and await active work"]
 ```
+
+`Ready` is a coalesced signal, not an event channel. `Next` does not wait for future events: it returns `(event, nil)`, `(nil, nil)` when empty, or `(nil, err)` on failure, cancellation, or subscription stop. Database access may wait for a connection or I/O under the caller's context. Runtime returns to `select` after each event, retaining heartbeat and cancellation opportunities.
 
 ### `handleEvent` — unified event entry
 
-Event handling logic is extracted into a single private method `handleEvent(ctx, event, isReplay bool) bool`, shared by both the channel-dispatch path and the buffer-replay path.
-
-```mermaid
-flowchart TD
-    Enter["handleEvent(event, isReplay)"] --> Recover["energy.RecoverEnergy(personID)"]
-    Recover --> EnergyCheck{"Energy < cost?"}
-    EnergyCheck -->|yes, isReplay=true| PauseReplay["log + return false<br/>(pause replay, keep buffer record)"]
-    EnergyCheck -->|yes, isReplay=false| Buffer["bufferEvent(event)<br/>write agent_event_buffer<br/>set sleep_since if empty"]
-    Buffer --> ReturnFalse["return false"]
-    EnergyCheck -->|no| BatchCheck{"last_read_message_id<br/>>= payload.MessageID?"}
-    BatchCheck -->|yes, already read| Skip["return true<br/>(already observed with prior batch)"]
-    BatchCheck -->|no| ComprehendPhase["Run Comprehend Phase"]
-    ComprehendPhase --> Observe["Observe exact events<br/>actually comprehended"]
-    Observe --> BuildSituation["Situation<br/>Subject + Environment + Matter"]
-    BuildSituation --> DecidePhase["Run Decide<br/>with optional recall tools"]
-    DecidePhase --> AdvanceRead["Persist Decision + Actions<br/>and read boundary"]
-    AdvanceRead --> Deduct{"len(Actions) > 0?"}
-    Deduct -->|yes| DeductEnergy["energy.DeductEnergy(personID, cost)"]
-    Deduct -->|no| SkipDeduct["skip deduction"]
-    DeductEnergy --> ExecActions
-    SkipDeduct --> ExecActions["Execute Actions<br/>(Chat / CreateTask / RouteTask / CancelTask / CreateAlarm)"]
-    ExecActions --> ReturnTrue["return true"]
-```
+`handleEvent(ctx, event) bool` retains the existing Comprehend, Observation, Decide, and action behavior. Control-only `AlarmCreated` arms its scheduled record and returns without an Observation or Decision. The queue has already removed a normal event's buffer row before returning it; this method's boolean result is not a queue acknowledgement.
 
 ### Event handling flow
 
-1. **Phase 0 — Energy**: `energy.RecoverEnergy(personID)` lazily applies daily recovery and returns the current `AgentState`. If `Energy < cost`:
-   - **Replay path** (`isReplay=true`): log and `return false`. The current buffer record is NOT deleted.
-   - **Channel path** (`isReplay=false`): `bufferEvent` serializes the event payload to `agent_event_buffers`, sets `sleep_since` to `now` if it was empty, and `return false`.
+1. **Phase 0 — Energy**: Runtime uses `energy.RecoverEnergy(personID)` before `Next` and pauses ordinary retrieval when energy is insufficient or its lookup fails. Pending rows remain in storage. `handleEvent` rechecks energy at the business boundary; insufficient energy or a lookup failure restores the removed delivery through `queue.Restore`. The queue reinstates its original buffer ID and context, then clears its batch and read position so a fresh bounded read preserves delivery order. Only known energy depletion records `sleep_since`; a lookup failure does not imply sleep. No independent replay loop is used.
 
 2. **Observation creation**: After Comprehend, the runtime records the triggering durable Event and the exact Message Events it read. A message already consumed by an earlier batch already has its Observation; a buffered or unread message is not observed. An outgoing Message receives the sender's Observation when its Message and Event are committed.
 
@@ -177,7 +151,7 @@ flowchart TD
 | `NewPrivateChatMessage` | Another person sends a message | Energy check → Batch-skip check → Comprehend → record exact Observations → Situation → Decide → persist Decision, Actions, and read boundary → DeductEnergy → Execute |
 | `WorkCompleted` | Work finishes (Focus loop) | Energy check → Remove from activeWorks → Comprehend the result report → Situation → LLM Decide with recent experience and Work control attempts → DeductEnergy → Execute. Explicitly cancelled Work takes a fixed-rule empty Decision. |
 | `Scheduled` | Alarm fires | Session-bound alarm: rule-based Chat; standalone alarm: autonomous LLM Decide. A configured `send_message` alarm uses its direct delivery path. |
-| `AlarmCreated` | `CreateAlarm` action from Decide | Energy check → AlarmRegistry registers goroutine → return |
+| `AlarmCreated` | Pending scheduled record | AlarmRegistry registers goroutine → return; independent of normal delivery energy admission |
 | `GroupChatJoined` / `GroupChatLeft` | Session membership changes | Fixed-rule empty Decision |
 | `SystemNotification` | World notification | Comprehend → Situation → LLM Decide |
 
@@ -231,37 +205,38 @@ Called after Decide, only when `len(Actions) > 0`. Deducts `cost` from energy, n
 | `SituationSourceExternal` | 1 | Decide triggered by an eventqueue event |
 | `SituationSourceInternal` | 5 | Decide triggered by a heartbeat |
 
-## Event Buffer & Wake-up Recovery
+## Durable Event Queue & Startup Reads
 
-When energy hits zero, events are persisted to `agent_event_buffers` and replayed when energy recovers.
+`agent_event_buffers` records all intended Agent deliveries when their Event is produced, including deliveries whose Runtime is absent or energy-depleted. The producer commits its Event and recipient rows in one transaction, then calls `eventqueue.Notify` with Person IDs. `(person_id, event_id)` is unique while a delivery remains pending; enqueue creates no Observation.
 
 ### Buffer storage
 
 | Field | Type | Description |
 |---|---|---|
-| `person_id` | int64 | Agent identity |
+| `id` | int64 | Monotonic delivery ID used for deterministic queue order |
+| `person_id` | int64 | Intended Agent identity |
 | `event_type` | int | Runtime event type |
-| `session_id` | int64 | Session the event belongs to |
-| `event_id` | int64 | ID of the associated memory event |
-| `payload_json` | text | JSON-serialized event payload |
+| `session_id` | int64 | Associated Session, or zero for person-level events |
+| `event_id` | int64 | Associated durable Event |
+| `payload_json` | text | Typed payload and optional originating Action context |
 
-### Buffer path (hard-block)
+### Bounded retrieval and removal
 
-When `handleEvent` detects insufficient energy: serialize payload → `CreateAgentEventBuffer` → `SetAgentSleepSinceIfEmpty(now)` → return false.
+Each subscription has one current batch of at most 64 records, one consumption index, an in-memory delivery position, and a capacity-one readiness signal. There is one serial `Next` consumer. Producers and periodic checks only signal; they do not mutate the cache. When the current batch is exhausted, `Next` queries later delivery IDs in ascending order. It returns the available rows without waiting to fill the batch.
 
-### Wake-up detection
+Batch loading leaves all rows in the database. For each normal event, `Next` decodes the current cached row, deletes only that buffer row, then clears the slot, advances the position, signals another consumption opportunity, and returns the event. Query, decoding, or deletion failure returns an error without advancing the position; a failed current entry is retained for retry. Batching reduces payload queries, but each successful retrieval still performs a database delete. No connection or transaction remains held during business processing.
 
-Two detection points:
-1. **Startup**: `Run()` calls `replayBufferedEvents(ctx)` before entering the `for-select` loop.
-2. **Per-event**: On every event from `eventCh`, if `sleep_since` is non-empty, call `replayBufferedEvents(ctx)` before handling the new event.
+This is removal on retrieval, without status fields or ACK. A process interruption after deletion commits, including before `Next` returns or before Runtime finishes handling it, does not automatically restore the record. Queue removal proves neither Observation nor Decision nor Action completion. Event and business history are preserved. Runtime's explicit energy and graceful-shutdown retention uses `queue.Restore` to reinstate the latest delivery at its original ID and invalidate the current cache only after persistence succeeds. The queue retains that latest removed row solely for explicit retention; it does not infer processing progress from Decisions or Observations.
 
-### Replay (`replayBufferedEvents`)
+### Wake-ups, controls, and restart
 
-- Buffers replayed in `event_id ASC` order.
-- Each record deleted only after `handleEvent` returns `true`.
-- Bad records (decode failure) are deleted with log, no retry.
-- `sleep_since` cleared only after entire buffer drains.
-- `isReplay=true` propagated to Comprehend.
+Subscription startup signals readiness immediately. Every successful retrieval signals again so cached events and later batches remain accessible. Producers use nonblocking, coalesced notifications after commit. Queue-side checks every 30 seconds compensate for missed notifications and provide later retry opportunities without an immediate error loop. `nil, nil` is a valid result for stale signals or an empty queue.
+
+Startup and resubscription use a fresh cache and position to read the remaining database rows. Teardown cancels the subscription's periodic worker without closing a readiness channel that producers might still reference. No Runtime-owned replay list or persistent position is needed.
+
+Pending `scheduled_events` are the durable source for control-only alarm registration. Startup, `NotifyAlarmCreated`, and periodic checks request registration reads inside the queue. Its alarm cursor tracks progress within one scan round and resets when no later pending record remains. A subsequent notification or periodic check scans pending records again, allowing failed Runtime registration to retry within the same subscription. Ending a round does not immediately signal another round. Runtime's existing registry prevents duplicate timer creation; its alarm module still owns arming, firing, and cancellation.
+
+Development revision 3 merges equivalent historical buffer duplicates while retaining Session and Action context, then adds recipient/Event uniqueness and the Person/delivery-ID index. Conflicting duplicate payloads stop conversion rather than discard history. It does not synthesize deliveries for unrelated historical Events.
 
 ## Comprehend Phase
 
@@ -379,7 +354,7 @@ flowchart TD
     Loop --> Complete{"Completion?"}
     Complete -->|success or failure| Deferred["Deferred cleanup"]
     Complete -->|cancelled| HandleCancel["Handle cancellation<br/>(appealable)"]
-    Deferred --> Done["WorkCompleted event<br/>→ eventCh"]
+    Deferred --> Done["WorkCompleted Event + recipient row<br/>→ queue notification"]
     HandleCancel --> Done
 ```
 
@@ -449,17 +424,17 @@ Alarms implement the `CreateAlarm` action — the agent asks to be woken at a sp
 ```mermaid
 flowchart TD
     Decide["Decide produces CreateAlarm<br/>with AlarmPlan"] --> Persist["Persist to scheduled_events<br/>status=pending"]
-    Persist --> FireEvent["Fire AlarmCreated event<br/>→ eventCh"]
+    Persist --> FireEvent["NotifyAlarmCreated(personID)<br/>queue reads pending registration"]
     FireEvent --> Runtime["Runtime creates alarm goroutine"]
     Runtime --> Wait["Goroutine sleeps until trigger_at"]
     Wait --> Recheck["Re-check DB status"]
-    Recheck -->|still pending| MarkTriggered["Mark status=triggered"]
+    Recheck -->|still pending| MarkTriggered["Commit status=triggered<br/>+ Scheduled Event + recipient row"]
     Recheck -->|already triggered/expired| Skip["Skip (idempotent)"]
-    MarkTriggered --> PushEvent["Push Scheduled event<br/>→ eventCh"]
+    MarkTriggered --> PushEvent["Notify recipient<br/>Runtime retrieves Scheduled event"]
 ```
 
 - Each alarm is a goroutine tracked in `alarmRegistry`.
-- On runtime restart, `recoverOrphanAlarms` restores all pending alarms.
+- On runtime restart, `recoverScheduledEvents` restores all pending alarms.
 - `AlarmCreated` events are handled before the energy check — they register the alarm goroutine and return immediately.
 
 ## Startup & Recovery
@@ -469,7 +444,7 @@ flowchart TD
 3. **Recover active works**: `recoverActiveWorks` marks running works as `Abandoned`, resets participant status.
 4. **Start agent runtimes**: one `agentRuntime` per `agent_config`. Each runtime calls `energy.RecoverEnergy(personID)` at construction.
 5. **Recover scheduled events**: `recoverScheduledEvents` restores pending alarms.
-6. **Drain event buffer**: each runtime's `Run()` calls `replayBufferedEvents(ctx)` before entering the loop.
+6. **Read pending deliveries**: subscription startup signals `Ready`; Runtime retrieves one event at a time through `Next`, using the same path as normal delivery.
 
 ### Work recovery
 

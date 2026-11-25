@@ -4,8 +4,12 @@ import (
 	"fmt"
 	"time"
 
+	"gorm.io/gorm"
+
+	"qingqiu-world-server/internal/database"
 	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
+	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/service/eventqueue"
 	"qingqiu-world-server/internal/service/memory"
 	"qingqiu-world-server/internal/service/world"
@@ -34,9 +38,8 @@ func buildBiographyContent(createdAt time.Time) string {
 // It mirrors SendNewMessageEvent: the runtime event loop consumes the event and
 // records an observation, so the agent gains awareness of its beginning.
 //
-// This MUST be called after StartRuntime, otherwise the event is dropped because
-// no subscriber exists yet. The biography itself takes no decision or action —
-// the runtime only observes it.
+// Delivery remains pending even when no Runtime has subscribed yet.
+// The Runtime processes it through its existing event path.
 func SendBiographyEvent(agentConfigID, personID int64) {
 	person, err := dops.GetPerson(personID)
 	if err != nil {
@@ -57,23 +60,22 @@ func SendBiographyEvent(agentConfigID, personID int64) {
 		return
 	}
 
-	eventID, err := memory.RecordBiographyEvent(biography.ID)
+	var eventID int64
+	err = database.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		eventID, err = memory.RecordReferencedEventTx(tx, model.EventTypeBiography, biography.ID)
+		if err != nil {
+			return err
+		}
+		return eventqueue.AppendTx(tx, &eventqueue.AgentEvent{Type: eventqueue.EventTypeBiography, EventID: eventID,
+			Payload: &eventqueue.BiographyPayload{BiographyID: biography.ID, Content: content}}, personID)
+	})
 	if err != nil {
-		applogger.Error("SendBiographyEvent: failed to record biography event",
-			"biography_id", biography.ID,
-			"error", err,
-		)
+		applogger.Error("SendBiographyEvent: persist Event and delivery", "biography_id", biography.ID, "error", err)
 		return
 	}
-
-	eventqueue.SendEvent(agentConfigID, &eventqueue.AgentEvent{
-		Type:    eventqueue.EventTypeBiography,
-		EventID: eventID,
-		Payload: &eventqueue.BiographyPayload{
-			BiographyID: biography.ID,
-			Content:     content,
-		},
-	})
+	refreshMemorySource(model.MemorySourceEvent, eventID)
+	eventqueue.Notify(personID)
 
 	applogger.Info("biography event dispatched",
 		"agent_config_id", agentConfigID,

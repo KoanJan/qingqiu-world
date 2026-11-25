@@ -158,55 +158,29 @@ func (w *work) Run(ctx context.Context) {
 			gist += "\nCancellation reason: " + cancelReason
 		}
 
-		// Persist the episodic memory event; eventID links the eventqueue
-		// event to the memory event so the runtime can create an observation.
-		eventID, err := memory.RecordWorkCompletedEvent(w.ID, gist)
-		if err != nil {
-			applogger.Error("work: failed to record work-completed memory event",
-				"work_id", w.ID, "error", err)
-			return
-		}
-		person, personErr := dops.GetPerson(w.agent.agentPersonID)
-		if personErr != nil {
-			applogger.Error("work: failed to check owner before result delivery", "work_id", w.ID, "error", personErr)
-			return
-		}
-		if person.Status != model.PersonStatusActive {
-			return
-		}
-
-		// Keep the recipient explicit until its observation is processed. A
-		// restart can replay this buffer without manufacturing another Event.
-		outgoing := &eventqueue.AgentEvent{
-			Type:          eventqueue.EventTypeWorkCompleted,
-			SessionID:     w.sessionID,
-			EventID:       eventID,
-			TriggerAction: w.triggerAction,
-			Payload: &eventqueue.WorkCompletedPayload{
-				WorkID:         w.ID,
-				Guidance:       w.plan.Guidance,
-				Status:         status,
-				WorkOutput:     output,
-				WorkError:      workErr,
-				CancelActionID: cancelActionID,
-				CancelReason:   cancelReason,
-			},
-		}
-		encoded, err := serializeEventPayload(outgoing)
-		if err != nil {
-			applogger.Error("work: failed to encode result delivery", "work_id", w.ID, "event_id", eventID, "error", err)
-			return
-		}
-		if err := database.DB.Transaction(func(tx *gorm.DB) error {
-			if err := dops.RequireActivePersonTx(tx, w.agent.agentPersonID); err != nil {
+		outgoing := &eventqueue.AgentEvent{Type: eventqueue.EventTypeWorkCompleted, SessionID: w.sessionID, TriggerAction: w.triggerAction,
+			Payload: &eventqueue.WorkCompletedPayload{WorkID: w.ID, Guidance: w.plan.Guidance, Status: status, WorkOutput: output, WorkError: workErr, CancelActionID: cancelActionID, CancelReason: cancelReason}}
+		err := database.DB.Transaction(func(tx *gorm.DB) error {
+			var err error
+			outgoing.EventID, err = memory.RecordReferencedEventTx(tx, model.EventTypeWorkCompleted, w.ID)
+			if err != nil {
 				return err
 			}
-			return tx.Create(&model.AgentEventBuffer{PersonID: w.agent.agentPersonID, EventType: int(outgoing.Type), SessionID: w.sessionID, EventID: eventID, PayloadJSON: encoded}).Error
-		}); err != nil {
-			applogger.Error("work: failed to persist result delivery", "work_id", w.ID, "event_id", eventID, "error", err)
+			var person model.Person
+			if err := tx.Select("id").First(&person, w.agent.agentPersonID).Error; err != nil {
+				return err
+			}
+			// Runtime availability affects notification, not this intended delivery.
+			return eventqueue.AppendTx(tx, outgoing, w.agent.agentPersonID)
+		})
+		if err != nil {
+			applogger.Error("work: persist completion Event and delivery", "work_id", w.ID, "error", err)
 			return
 		}
-		eventqueue.SendEvent(w.agent.agentConfigID, outgoing)
+		refreshMemorySource(model.MemorySourceEvent, outgoing.EventID)
+		memory.EnqueueEventEmbedding(outgoing.EventID, gist)
+		eventqueue.Notify(w.agent.agentPersonID)
+
 	}()
 
 	applogger.Info("work started",
@@ -558,15 +532,12 @@ func recoverActiveWorks(agentConfigID int64) []*work {
 	personID := ac.PersonID
 
 	var workRecords []model.Work
-	// A result Event may have committed before its recipient buffer. Repair
-	// both boundaries without loading every historical Work into Go memory.
+	// Repair missing Work facts without reconstructing deliveries that Next
+	// may already have consumed. Event and new delivery rows now commit together.
 	if err := database.DB.Where(`person_id = ? AND (status = ?
 		OR NOT EXISTS (SELECT 1 FROM events e WHERE e.event_type = ? AND e.ref_id = works.id)
-		OR NOT EXISTS (SELECT 1 FROM focus_handoffs h WHERE h.person_id = works.person_id AND h.work_id = works.id AND h.source = ?)
-		OR EXISTS (SELECT 1 FROM events e WHERE e.event_type = ? AND e.ref_id = works.id
-			AND NOT EXISTS (SELECT 1 FROM agent_observations o WHERE o.event_id = e.id AND o.person_id = works.person_id)
-			AND NOT EXISTS (SELECT 1 FROM agent_event_buffers b WHERE b.event_id = e.id AND b.person_id = works.person_id)))`,
-		personID, model.WorkStatusRunning, model.EventTypeWorkCompleted, model.FocusSourceExternal, model.EventTypeWorkCompleted).Find(&workRecords).Error; err != nil {
+		OR NOT EXISTS (SELECT 1 FROM focus_handoffs h WHERE h.person_id = works.person_id AND h.work_id = works.id AND h.source = ?))`,
+		personID, model.WorkStatusRunning, model.EventTypeWorkCompleted, model.FocusSourceExternal).Find(&workRecords).Error; err != nil {
 		applogger.Error("recoverActiveWorks: failed to load work records", "agent_config_id", agentConfigID, "error", err)
 		return nil
 	}
@@ -655,26 +626,13 @@ func repairWorkResult(personID int64, wr model.Work) error {
 		if person.Status != model.PersonStatusActive {
 			return nil
 		}
-		var observed int64
-		if err := tx.Model(&model.AgentObservation{}).Where("person_id = ? AND event_id = ?", personID, eventID).Count(&observed).Error; err != nil {
-			return err
-		}
-		if observed > 0 {
-			return nil
-		}
-		var buffered int64
-		if err := tx.Model(&model.AgentEventBuffer{}).Where("person_id = ? AND event_id = ?", personID, eventID).Count(&buffered).Error; err != nil {
-			return err
-		}
-		if buffered > 0 {
+		// An existing Event without a buffer may already have been removed
+		// by Next. Do not reconstruct consumed deliveries from missing observations.
+		if lookup == nil {
 			return nil
 		}
 		outgoing := &eventqueue.AgentEvent{Type: eventqueue.EventTypeWorkCompleted, SessionID: wr.SessionID, EventID: eventID, Payload: payload}
-		encoded, err := serializeEventPayload(outgoing)
-		if err != nil {
-			return err
-		}
-		return tx.Create(&model.AgentEventBuffer{PersonID: personID, EventType: int(outgoing.Type), SessionID: wr.SessionID, EventID: eventID, PayloadJSON: encoded}).Error
+		return eventqueue.AppendTx(tx, outgoing, personID)
 	})
 	if err != nil {
 		return err

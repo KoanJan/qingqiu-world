@@ -12,8 +12,9 @@ import (
 	"sync"
 	"time"
 
+	"gorm.io/gorm"
+
 	"qingqiu-world-server/internal/database"
-	"qingqiu-world-server/internal/dops"
 	applogger "qingqiu-world-server/internal/logger"
 	"qingqiu-world-server/internal/model"
 	"qingqiu-world-server/internal/notification"
@@ -92,7 +93,7 @@ func (rm *runtimeManager) StopRuntime(agentConfigID int64) {
 	<-done
 	rm.mu.Lock()
 	if rm.done[agentConfigID] == done {
-		eventqueue.Unsubscribe(agentConfigID)
+		eventqueue.Unsubscribe(rm.runtimes[agentConfigID].agentPersonID)
 		delete(rm.runtimes, agentConfigID)
 		delete(rm.cancels, agentConfigID)
 		delete(rm.done, agentConfigID)
@@ -125,7 +126,7 @@ func (rm *runtimeManager) StopAll() {
 // internal goroutines (event loops, works, draft handlers) to finish.
 //
 // After Shutdown returns, it is safe to Unsubscribe from the event queue
-// and close channels without risk of panic from pending work goroutines.
+// and release their subscription resources.
 func (rm *runtimeManager) Shutdown(timeout time.Duration) {
 	// Phase 1: Signal all runtimes to stop
 	rm.StopAll()
@@ -146,11 +147,11 @@ func (rm *runtimeManager) Shutdown(timeout time.Duration) {
 		applogger.Error("Agent runtimes shutdown timed out", "timeout", timeout)
 	}
 
-	// Phase 3: Safe to clean up channels.
+	// Phase 3: Release subscription resources; pending rows remain durable.
 	// All work goroutines have finished — none will try to send events.
 	rm.mu.Lock()
 	for agentConfigID := range rm.runtimes {
-		eventqueue.Unsubscribe(agentConfigID)
+		eventqueue.Unsubscribe(rm.runtimes[agentConfigID].agentPersonID)
 	}
 	rm.runtimes = make(map[int64]*agentRuntime)
 	rm.cancels = make(map[int64]context.CancelFunc)
@@ -224,7 +225,7 @@ func Start(publisher notification.Publisher) {
 
 	// Recover scheduled events that were orphaned by the previous shutdown.
 	// Must be called after all agent runtimes have started so that recovered
-	// events can be routed to their subscribed channels.
+	// events can be read by their subscriptions.
 	recoverScheduledEvents()
 }
 
@@ -234,7 +235,7 @@ func Start(publisher notification.Publisher) {
 // of calling memory or eventqueue directly.
 //
 // Production: creates a memory event record (sync) + enqueues embedding (async).
-// Distribution: sends the event to the agent's event queue channel.
+// Distribution: persists intended deliveries with the Event, then signals the queue.
 //
 // The agent runtime event loop is the consumer — it receives the event and
 // calls memory.CreateObservation using the EventID carried in the payload.
@@ -249,39 +250,26 @@ func SendNewMessageEvent(sessionID, messageID, personID int64, content, speakerN
 		Content:   content,
 	})
 
-	// Production: record memory event before dispatching.
-	eventID, err := memory.RecordMessageEvent(messageID, content)
-	if err != nil {
-		applogger.Error("failed to record memory event for user message",
-			"message_id", messageID, "error", err)
-		return
-	}
-
-	// Distribution: notify agent runtime.
-	event := &eventqueue.AgentEvent{
-		Type:      eventqueue.EventTypeNewPrivateChatMessage,
-		SessionID: sessionID,
-		EventID:   eventID,
-		Payload: &eventqueue.NewMessagePayload{
-			MessageID:      messageID,
-			MessageContent: content,
-			SpeakerName:    speakerName,
-		},
-	}
-	recipients, err := dops.GetSessionAIParticipantIDs(sessionID)
-	if err != nil {
-		applogger.Error("failed to resolve active recipients for message", "session_id", sessionID, "event_id", eventID, "error", err)
-		return
-	}
-	for _, recipientID := range recipients {
-		if recipientID == personID {
-			continue
-		}
-		ac, err := dops.GetAgentConfigByPersonID(recipientID)
+	var eventID int64
+	var recipients []int64
+	err := database.DB.Transaction(func(tx *gorm.DB) error {
+		var err error
+		recipients, err = messageRecipientsTx(tx, sessionID, personID)
 		if err != nil {
-			applogger.Error("failed to resolve recipient agent config", "person_id", recipientID, "event_id", eventID, "error", err)
-			continue
+			return err
 		}
-		eventqueue.SendEvent(ac.ID, event)
+		eventID, err = memory.RecordReferencedEventTx(tx, model.EventTypeMessage, messageID)
+		if err != nil {
+			return err
+		}
+		event := messageDelivery(sessionID, messageID, eventID, content, speakerName)
+		return eventqueue.AppendTx(tx, event, recipients...)
+	})
+	if err != nil {
+		applogger.Error("failed to persist user message Event and deliveries", "message_id", messageID, "error", err)
+		return
 	}
+	refreshMemorySource(model.MemorySourceEvent, eventID)
+	memory.EnqueueEventEmbedding(eventID, content)
+	eventqueue.Notify(recipients...)
 }

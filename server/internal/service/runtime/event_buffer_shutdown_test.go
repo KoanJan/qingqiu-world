@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"context"
 	"testing"
 
 	"qingqiu-world-server/internal/database"
@@ -19,13 +20,15 @@ func TestInterruptedEventBufferPreservesUndecidedDelivery(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := db.AutoMigrate(&model.Decision{}, &model.AgentEventBuffer{}); err != nil {
+	if err := db.AutoMigrate(&model.Decision{}, &model.AgentEventBuffer{}, &model.ScheduledEvent{}); err != nil {
 		t.Fatal(err)
 	}
 	database.DB = db
 	t.Cleanup(func() { database.DB = old })
 
-	runtime := &agentRuntime{agentPersonID: 9}
+	queue := eventqueue.Subscribe(9)
+	t.Cleanup(func() { eventqueue.Unsubscribe(9) })
+	runtime := &agentRuntime{agentPersonID: 9, queue: queue}
 	event := &eventqueue.AgentEvent{
 		Type:      eventqueue.EventTypeNewPrivateChatMessage,
 		SessionID: 11,
@@ -35,6 +38,13 @@ func TestInterruptedEventBufferPreservesUndecidedDelivery(t *testing.T) {
 			MessageContent: "A message interrupted by shutdown",
 			SpeakerName:    "Sender",
 		},
+	}
+	if err := eventqueue.AppendTx(db, event, 9); err != nil {
+		t.Fatal(err)
+	}
+	event, err = queue.Next(context.Background())
+	if err != nil || event == nil {
+		t.Fatalf("retrieve=%+v %v", event, err)
 	}
 	for i := 0; i < 2; i++ {
 		if err := runtime.bufferInterruptedEvent(event); err != nil {
@@ -48,7 +58,7 @@ func TestInterruptedEventBufferPreservesUndecidedDelivery(t *testing.T) {
 	if len(buffers) != 1 {
 		t.Fatalf("expected one replayable event, got %d", len(buffers))
 	}
-	replayed, err := deserializeBufferedEvent(buffers[0])
+	replayed, err := eventqueue.Deserialize(buffers[0])
 	if err != nil || replayed.EventID != event.EventID || replayed.SessionID != event.SessionID {
 		t.Fatalf("buffer lost event identity: %+v, %v", replayed, err)
 	}
@@ -78,11 +88,11 @@ func TestBufferedCancellationKeepsItsTerminalMeaning(t *testing.T) {
 			CancelActionID: 815, CancelReason: "Patrick asked me to stop",
 		},
 	}
-	encoded, err := serializeEventPayload(event)
+	encoded, err := eventqueue.Serialize(event)
 	if err != nil {
 		t.Fatal(err)
 	}
-	replayed, err := deserializeBufferedEvent(model.AgentEventBuffer{
+	replayed, err := eventqueue.Deserialize(model.AgentEventBuffer{
 		EventType: int(event.Type), SessionID: event.SessionID,
 		EventID: event.EventID, PayloadJSON: encoded,
 	})

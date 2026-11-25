@@ -13,7 +13,7 @@ import (
 )
 
 // TestWorkRecoveryDistinguishesInterruptionAndRepairsDelivery verifies both
-// crash boundaries without restarting a model-backed runtime.
+// creation and consumed-delivery boundaries without a model-backed runtime.
 func TestWorkRecoveryDistinguishesInterruptionAndRepairsDelivery(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("DATA_ROOT", root)
@@ -59,7 +59,11 @@ func TestWorkRecoveryDistinguishesInterruptionAndRepairsDelivery(t *testing.T) {
 			t.Fatalf("Work %d events = %+v, err=%v", workID, events, err)
 		}
 		var buffers []model.AgentEventBuffer
-		if err := db.Where("person_id = ? AND event_id = ?", 1, events[0].ID).Find(&buffers).Error; err != nil || len(buffers) != 1 {
+		wantBuffers := 1
+		if workID == 21 {
+			wantBuffers = 0
+		} // An existing Event may already have been removed by Next.
+		if err := db.Where("person_id = ? AND event_id = ?", 1, events[0].ID).Find(&buffers).Error; err != nil || len(buffers) != wantBuffers {
 			t.Fatalf("Work %d buffers = %+v, err=%v", workID, buffers, err)
 		}
 	}

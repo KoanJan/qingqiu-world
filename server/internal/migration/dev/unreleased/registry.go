@@ -25,4 +25,11 @@ var registered = []Step{
 		SQLPath:      "scripts/2.sql",
 		Convert:      scripts.Convert2,
 	},
+	{
+		BaseRelease:  "0.1.21",
+		FromRevision: 2,
+		Revision:     3,
+		Description:  "Persist unique Agent deliveries for bounded queue access",
+		Convert:      scripts.Convert3,
+	},
 }

@@ -76,7 +76,7 @@ func TestDeceasePreservesSharedSessionAndNotifiesKnownPeerOnce(t *testing.T) {
 	if err := json.Unmarshal([]byte(source.PayloadJSON), &message); err != nil || !strings.Contains(message, "Departing has died") {
 		t.Fatalf("notice snapshot = %q err=%v", source.PayloadJSON, err)
 	}
-	replayed, err := deserializeBufferedEvent(buffer)
+	replayed, err := eventqueue.Deserialize(buffer)
 	if err != nil || replayed.Payload != message || replayed.FormatDescription() != "[System notification] "+message {
 		t.Fatalf("system notification replay = %+v err=%v", replayed, err)
 	}
